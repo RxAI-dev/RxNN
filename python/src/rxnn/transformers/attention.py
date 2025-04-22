@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from positional import RotaryPositionalEmbedding, RelativePositionalEmbedding
+from .positional import RotaryPositionalEmbedding, RelativePositionalEmbedding
 
 
 class MultiHeadAttention(nn.Module):

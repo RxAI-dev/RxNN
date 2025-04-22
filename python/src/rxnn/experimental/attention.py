@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from src.transformers.attention import MultiHeadAttention
+from rxnn.transformers.attention import MultiHeadAttention
 
 class FlexAttention(MultiHeadAttention):
     def __init__(

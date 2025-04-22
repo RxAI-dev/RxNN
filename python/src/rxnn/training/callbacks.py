@@ -3,10 +3,9 @@ import numpy as np
 import torch
 import torch.nn as nn
 from typing import Union
-from src.utils import human_format
 from torch.nn.parallel import DistributedDataParallel
 from huggingface_hub import PyTorchModelHubMixin
-
+from ..utils import human_format
 
 class TrainerCallback:
     def on_epoch_start(self, model: torch.nn.Module, epoch: int) -> None:

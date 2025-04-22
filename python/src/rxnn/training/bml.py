@@ -5,8 +5,8 @@ import math
 from huggingface_hub import PyTorchModelHubMixin
 from typing import Union
 import torch.distributed as dist
-from src.transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
-from src.training.base import BaseTrainer
+from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
+from ..training.base import BaseTrainer
 
 class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):

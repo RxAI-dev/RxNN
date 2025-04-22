@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from typing import Callable
-from callbacks import TrainerCallback
+from .callbacks import TrainerCallback
 
 
 class BaseTrainer(ABC):
@@ -192,7 +192,7 @@ class BaseTrainer(ABC):
                                                epoch * len(dataloader) + batch_idx)
 
                     for callback in self.callbacks:
-                        should_stop = callback.on_batch_end(self.model, batch_idx, loss.item(), batch)
+                        should_stop = callback.on_batch_end(self.model, batch_idx, loss.item() * self.gradient_accumulation_steps, batch)
                         if should_stop:
                             self.is_running = False
 

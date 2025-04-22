@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from attention import MultiHeadAttention
-from ff import FeedForward, GatedFeedForward
-from moe import MoeFeedForward, GatedMoeFeedForward
+from .attention import MultiHeadAttention
+from .ff import FeedForward, GatedFeedForward
+from .moe import MoeFeedForward, GatedMoeFeedForward
 
 
 class ReactiveTransformerLayer(nn.Module):

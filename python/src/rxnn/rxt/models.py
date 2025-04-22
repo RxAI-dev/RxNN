@@ -2,13 +2,13 @@ import torch
 from torch import nn
 from typing import TypedDict, Union
 from huggingface_hub import PyTorchModelHubMixin
-from src.transformers.positional import RotaryPositionalEmbedding
-from src.transformers.attention import init_attention
-from src.transformers.layers import ReactiveTransformerLayer
-from src.transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder
-from src.transformers.ff import get_activation_layer
-from src.memory.stm import ShortTermMemory
-from src.utils import get_model_size
+from ..transformers.positional import RotaryPositionalEmbedding
+from ..transformers.attention import init_attention
+from ..transformers.layers import ReactiveTransformerLayer
+from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder
+from ..transformers.ff import get_activation_layer
+from ..memory.stm import ShortTermMemory
+from ..utils import get_model_size
 
 
 class RxTAlphaComponentConfig(TypedDict):

@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
-from positional import AbsolutePositionalEmbedding
-from mask import create_causal_mask
-from src.memory.stm import ShortTermMemory
+from .positional import AbsolutePositionalEmbedding
+from .mask import create_causal_mask
+from ..memory.stm import ShortTermMemory
 
 
 class ReactiveTransformerBase(nn.Module):
