@@ -1,0 +1,139 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class MoeRouter(nn.Module):
+    """Mixture-of-Experts Router layer - computes routing weights for each expert."""
+
+    def __init__(self, embed_dim: int, num_experts: int, top_k: int = 1, *args, **kwargs):
+        super(MoeRouter, self).__init__(*args, **kwargs)
+        self.top_k = top_k
+        self.num_experts = num_experts
+        self.gate = nn.Linear(embed_dim, num_experts, bias=False)
+        self.aux_loss = 0.0  # For expert load balancing
+
+    def forward(self, x: torch.Tensor):
+        # x shape: [batch_size*seq_len, embed_dim]
+        logits = self.gate(x)
+        probs = F.softmax(logits, dim=-1)
+
+        # Expert load balancing loss
+        if self.training:
+            probs_for_bal = F.softmax(logits, dim=0)
+            self.aux_loss = (probs_for_bal.mean(dim=0) *
+                             torch.log(probs_for_bal.mean(dim=0) + 1e-9)).sum()
+
+        top_k_weights, top_k_indices = probs.topk(self.top_k, dim=-1)
+        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        return top_k_weights, top_k_indices
+
+
+class MoeFeedForward(nn.Module):
+    """Mixture-of-Experts Feed-Forward layer - combines multiple experts into a single model."""
+
+    def __init__(
+            self,
+            embed_dim: int,
+            hidden_dim: int,
+            num_experts: int,
+            activation: nn.Module,
+            top_k: int = 1,
+            dropout: float = 0.0,
+            *args,
+            **kwargs
+    ):
+        super(MoeFeedForward, self).__init__(*args, **kwargs)
+        self.embed_dim = embed_dim
+        self.num_experts = num_experts
+        self.top_k = top_k
+
+        self.router = MoeRouter(embed_dim, num_experts, top_k)
+
+        # Batch all expert parameters together
+        self.w1 = nn.Parameter(torch.empty(num_experts, embed_dim, self._w1_dim_factor(hidden_dim)))
+        self.b1 = nn.Parameter(torch.zeros(num_experts, self._w1_dim_factor(hidden_dim)))
+        self.w2 = nn.Parameter(torch.empty(num_experts, hidden_dim, embed_dim))
+        self.b2 = nn.Parameter(torch.zeros(num_experts, embed_dim))
+        self.activation = activation
+        self.dropout = nn.Dropout(dropout)
+
+        # Initialize parameters
+        self._init_linear_parameters()
+        nn.init.zeros_(self.b1)
+        nn.init.zeros_(self.b2)
+
+    def _init_linear_parameters(self):
+        nn.init.kaiming_normal_(self.w1, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.w2, nonlinearity='relu')
+
+    def _w1_dim_factor(self, hidden_dim: int) -> int:
+        return hidden_dim
+
+    def _activate(self, h: torch.Tensor):
+        return self.activation(h)
+
+    def forward(self, x: torch.Tensor):
+        orig_shape = x.shape
+        x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
+
+        # Get routing weights and indices
+        weights, indices = self.router(x)  # [batch*seq_len, top_k]
+
+        # Create expert masks and combine it with masks
+        mask = F.one_hot(indices, self.num_experts).float()  # [batch*seq_len, top_k, num_experts]
+        weights = (weights.unsqueeze(-1) * mask).sum(dim=1)  # [batch*seq_len, num_experts]
+
+        # Expert computation
+        x = x.unsqueeze(1).expand(-1, self.num_experts, -1)  # [batch*seq_len, num_experts, embed_dim]
+
+        # First linear layer
+        h = torch.einsum('bie,ieh->bih', x, self.w1) + self.b1  # [batch*seq_len, num_experts, hidden_dim]
+        h = self._activate(h)
+        h = self.dropout(h)
+
+        # Second linear layer (projection back to embed_dim)
+        out = torch.einsum('bih,ihe->bie', h, self.w2) + self.b2  # [batch*seq_len, num_experts, embed_dim]
+
+        # Weighted sum of expert outputs
+        out = (out * weights.unsqueeze(-1)).sum(dim=1)  # [batch*seq_len, embed_dim]
+
+        return out.view(*orig_shape)
+
+
+class GatedMoeFeedForward(MoeFeedForward):
+    """Gated Mixture-of-Experts Feed-Forward layer - enable GLU-based activations for MoE"""
+
+    def __init__(
+            self,
+            embed_dim: int,
+            hidden_dim: int,
+            num_experts: int,
+            activation: nn.Module = nn.SiLU(),
+            top_k: int = 1,
+            dropout: float = 0.1,
+            *args,
+            **kwargs
+    ):
+        super(GatedMoeFeedForward, self).__init__(
+            embed_dim=embed_dim,
+            hidden_dim=hidden_dim,
+            num_experts=num_experts,
+            activation=activation,
+            top_k=top_k,
+            dropout=dropout,
+            *args,
+            **kwargs
+        )
+
+    def _init_linear_parameters(self):
+        nn.init.kaiming_normal_(self.w1, nonlinearity='relu')
+        nn.init.kaiming_normal_(self.w2, nonlinearity='linear')
+
+    def _w1_dim_factor(self, hidden_dim: int) -> int:
+        return 2 * hidden_dim
+
+    def _activate(self, h: torch.Tensor):
+        a, b = h.chunk(2, dim=-1)
+        return a * self.activation(b)

@@ -1,0 +1,19 @@
+import torch
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+import math
+
+def get_transformer_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    num_training_steps: int,
+    warmup_steps: int = 0
+):
+    if warmup_steps > 0:
+        # Warmup + cosine decay
+        def lr_lambda(current_step):
+            if current_step < warmup_steps:
+                return float(current_step) / max(1, warmup_steps)
+            remaining = max(0, current_step - warmup_steps)
+            return 0.5 * (1.0 + math.cos(math.pi * remaining / (num_training_steps - warmup_steps)))
+        return LambdaLR(optimizer, lr_lambda)
+    else:
+        return CosineAnnealingLR(optimizer, T_max=num_training_steps)

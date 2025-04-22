@@ -1,0 +1,345 @@
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import math
+from huggingface_hub import PyTorchModelHubMixin
+from typing import Union
+import torch.distributed as dist
+from src.transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
+from src.training.base import BaseTrainer
+
+class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+    def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
+        super(MLMHead, self).__init__(*args, **kwargs)
+        self.dense = nn.Linear(embed_dim, embed_dim)
+        self.act = nn.GELU()
+        self.layer_norm = nn.LayerNorm(embed_dim)
+        self.decoder = nn.Linear(embed_dim, vocab_size)
+
+    def forward(self, hidden_states):
+        x = self.dense(hidden_states)
+        x = self.act(x)
+        x = self.layer_norm(x)
+        return self.decoder(x)
+
+
+class MLMTrainingModel(nn.Module):
+    def __init__(
+            self,
+            encoder: ReactiveTransformerEncoder,
+            mlm_head: MLMHead,
+            *args,
+            **kwargs
+    ):
+        super(MLMTrainingModel, self).__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.mlm_head = mlm_head
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        h, _ = self.encoder(x, attention_mask=attention_mask)
+        y = self.mlm_head(h)
+        return y
+
+
+class MLMTrainer(BaseTrainer):
+    def __init__(
+            self,
+            model: MLMTrainingModel,
+            device: torch.device,
+            vocab_size: int,
+            use_amp: bool = False,
+            dtype: torch.dtype = None,
+            **kwargs
+    ):
+        super(MLMTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype, **kwargs)
+        self.vocab_size = vocab_size
+
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs = batch['input_ids']
+        attention_mask = batch['attention_mask']
+        labels = batch['labels']
+
+        logits = self.model(
+            inputs,
+            attention_mask=attention_mask
+        )
+
+        return F.cross_entropy(
+            logits.view(-1, self.vocab_size),
+            labels.view(-1),
+            ignore_index=-100
+        ), logits
+
+    def validate(self, batch_size: int) -> tuple[float, dict]:
+        self.model.eval()
+        val_dataloader = self._valid_loader(batch_size)
+        val_loss = torch.tensor(0.0).to(self.device)
+        correct = torch.tensor(0).to(self.device)
+        total = torch.tensor(0).to(self.device)
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                if self.get_batch_size(batch) == batch_size:
+                    loss, logits = self.valid_step(batch)
+                    val_loss += loss
+                    labels = batch[self.target_field_name].to(self.device)
+                    valid_indices = labels != -100
+                    if valid_indices.any():
+                        preds = logits.argmax(-1)
+                        correct += (preds[valid_indices] == labels[valid_indices]).sum()
+                        total += valid_indices.sum()
+
+        avg_loss = (val_loss / len(val_dataloader)).item()
+        if self.use_ddp:
+            dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+
+        metrics = {
+            'accuracy': (correct / total * 100).item() if total > 0 else 0.0
+        }
+        self.model.train()
+        return avg_loss, metrics
+
+
+class AutoregressiveTrainer(BaseTrainer):
+    def __init__(
+            self,
+            model: ReactiveTransformerDecoder,
+            device: torch.device,
+            vocab_size: int,
+            use_amp: bool = False,
+            dtype: torch.dtype = None,
+            **kwargs
+    ):
+        super(AutoregressiveTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype,
+                                                    target_field_name='targets', **kwargs)
+        self.vocab_size = vocab_size
+
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs = batch['input_ids']
+        attention_mask = batch['attention_mask']
+        targets = batch['targets']
+
+        outputs = self.model(
+            inputs,
+            attention_mask=attention_mask
+        )
+
+        shifted_logits = outputs[:, :-1].contiguous()
+        shifted_targets = targets[:, 1:].contiguous()
+
+        return F.cross_entropy(
+            shifted_logits.view(-1, self.vocab_size),
+            shifted_targets.view(-1)
+        ), outputs
+
+    def validate(self, batch_size: int) -> tuple[float, dict]:
+        self.model.eval()
+        val_dataloader = self._valid_loader(batch_size)
+        val_loss = torch.tensor(0.0).to(self.device)
+        correct = torch.tensor(0).to(self.device)
+        total = torch.tensor(0).to(self.device)
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                if self.get_batch_size(batch) == batch_size:
+                    loss, logits = self.valid_step(batch)
+                    val_loss += loss
+                    shifted_logits = logits[:, :-1].contiguous()
+                    shifted_targets = batch[self.target_field_name][:, 1:].to(self.device).contiguous()
+                    valid_indices = shifted_targets != -100
+                    if valid_indices.any():
+                        preds = shifted_logits.argmax(-1)
+                        correct += (preds[valid_indices] == shifted_targets[valid_indices]).sum()
+                        total += valid_indices.sum()
+
+        avg_loss = (val_loss / len(val_dataloader)).item()
+
+        if self.use_ddp:
+            dist.all_reduce(correct, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+
+        metrics = {
+            'accuracy': (correct / total * 100).item() if total > 0 else 0.0
+        }
+        self.model.train()
+        return avg_loss, metrics
+
+
+class JointTrainingModel(nn.Module):
+    def __init__(
+            self,
+            encoder: ReactiveTransformerEncoder,
+            decoder: ReactiveTransformerDecoder,
+            mlm_head: MLMHead,
+            *args,
+            **kwargs
+    ):
+        super(JointTrainingModel, self).__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.mlm_head = mlm_head
+        self.decoder = decoder
+
+    def forward(self, x_e: torch.Tensor, x_d: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[
+        torch.Tensor, torch.Tensor]:
+        encoder_result, _ = self.encoder(x_e, attention_mask=attention_mask)
+        y_e = self.mlm_head(encoder_result)
+        y_d = self.decoder(x_d, attention_mask=attention_mask)
+        return y_e, y_d
+
+
+class JointLMTrainer(BaseTrainer):
+    def __init__(
+            self,
+            model: JointTrainingModel,
+            device: torch.device,
+            vocab_size: int,
+            use_amp: bool = False,
+            dtype: torch.dtype = None,
+            components_loss_log_interval: int = None,
+            encoder_loss_scale: float = 1.0,
+            **kwargs
+    ):
+        super(JointLMTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype, **kwargs)
+        self.vocab_size = vocab_size
+        self.components_loss_log_interval = components_loss_log_interval
+        self.encoder_loss_scale = encoder_loss_scale
+
+    def train_step(self, batch: dict[str, Union[torch.Tensor, dict[torch.Tensor]]], batch_idx: int) -> torch.Tensor:
+        if self.use_amp:
+            batch = {
+                k: ({kk: vv.to(self.device) for kk, vv in v.items()} if not torch.is_tensor(v) else v.to(self.device))
+                for k, v in batch.items()}
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                (encoder_loss, decoder_loss), _ = self.compute_loss(batch)
+        else:
+            batch = {k: (
+                {kk: vv.to(self.device, dtype=self.dtype) for kk, vv in v.items()} if not torch.is_tensor(v) else v.to(
+                    self.device, dtype=self.dtype)) for k, v in batch.items()}
+            (encoder_loss, decoder_loss), _ = self.compute_loss(batch)
+        if self.components_loss_log_interval is not None:
+            if batch_idx % self.components_loss_log_interval == 0:
+                print(f"Encoder loss: {encoder_loss.item():.4f}")
+                print(f"Decoder loss: {decoder_loss.item():.4f}")
+                if self.encoder_loss_scale != 1.0:
+                    print(
+                        f"Encoder loss scaled by {self.encoder_loss_scale}: {(encoder_loss * self.encoder_loss_scale).item() :.4f}")
+        return (encoder_loss * self.encoder_loss_scale) + decoder_loss
+
+    def compute_loss(self, batch: dict[str, dict[str, torch.Tensor]]) -> tuple[
+        tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
+        encoder_inputs = batch['encoder']['input_ids']
+        encoder_labels = batch['encoder']['labels']
+        decoder_inputs = batch['decoder']['input_ids']
+        decoder_targets = batch['decoder']['targets']
+        attention_mask = batch['attention_mask']
+
+        encoder_logits, decoder_logits = self.model(
+            encoder_inputs,
+            decoder_inputs,
+            attention_mask=attention_mask
+        )
+
+        encoder_loss = F.cross_entropy(
+            encoder_logits.view(-1, self.vocab_size),
+            encoder_labels.view(-1),
+            ignore_index=-100
+        )
+
+        shifted_logits = decoder_logits[:, :-1].contiguous()
+        shifted_targets = decoder_targets[:, 1:].contiguous()
+
+        decoder_loss = F.cross_entropy(
+            shifted_logits.view(-1, self.vocab_size),
+            shifted_targets.view(-1)
+        )
+
+        return (encoder_loss, decoder_loss), (encoder_logits, decoder_logits)
+
+    def _valid_writer(self, epoch: int, val_loss: float, val_metrics: dict):
+        self.writer.add_scalar('Loss/validation', val_loss, epoch)
+        self.writer.add_scalar('Perplexity/validation', math.exp(val_loss), epoch)
+        if val_metrics['accuracy']:
+            self.writer.add_scalar('Encoder accuracy/validation', val_metrics['accuracy']['encoder'], epoch)
+            self.writer.add_scalar('Decoder accuracy/validation', val_metrics['accuracy']['decoder'], epoch)
+        if val_metrics['loss']:
+            self.writer.add_scalar('Encoder loss/validation', val_metrics['loss']['encoder'], epoch)
+            self.writer.add_scalar('Encoder perplexity/validation', math.exp(val_metrics['loss']['encoder']), epoch)
+            self.writer.add_scalar('Decoder accuracy/validation', val_metrics['loss']['decoder'], epoch)
+            self.writer.add_scalar('Decoder perplexity/validation', math.exp(val_metrics['loss']['decoder']), epoch)
+
+    def validate(self, batch_size: int) -> tuple[float, dict]:
+        self.model.eval()
+        val_loss = torch.tensor(0.0).to(self.device)
+        dec_loss = torch.tensor(0.0).to(self.device)
+        enc_loss = torch.tensor(0.0).to(self.device)
+        correct_mlm = torch.tensor(0).to(self.device)
+        total_mlm = torch.tensor(0).to(self.device)
+        correct_alm = torch.tensor(0).to(self.device)
+        total_alm = torch.tensor(0).to(self.device)
+
+        val_dataloader = self._valid_loader(batch_size)
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                if self.get_batch_size(batch) == batch_size:
+                    if self.use_amp:
+                        batch = {
+                            k: ({kk: vv.to(self.device) for kk, vv in v.items()} if not torch.is_tensor(v) else v.to(
+                                self.device)) for k, v in batch.items()}
+                        with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                            (encoder_loss, decoder_loss), (encoder_logits, decoder_logits) = self.compute_loss(batch)
+                    else:
+                        batch = {k: (
+                            {kk: vv.to(self.device, dtype=self.dtype) for kk, vv in v.items()} if not torch.is_tensor(
+                                v) else v.to(self.device, dtype=self.dtype)) for k, v in batch.items()}
+                        (encoder_loss, decoder_loss), (encoder_logits, decoder_logits) = self.compute_loss(batch)
+                enc_loss += encoder_loss
+                dec_loss += decoder_loss
+                val_loss += (enc_loss * self.encoder_loss_scale) + dec_loss
+
+                encoder_labels = batch['encoder']['labels'].to(self.device)
+                valid_mlm_indices = encoder_labels != -100
+                if valid_mlm_indices.any():
+                    preds_mlm = encoder_logits.argmax(-1)
+                    correct_mlm += (preds_mlm[valid_mlm_indices] == encoder_labels[valid_mlm_indices]).sum()
+                    total_mlm += valid_mlm_indices.sum()
+
+                shifted_logits = decoder_logits[:, :-1].contiguous()
+                shifted_targets = batch['decoder']['targets'][:, 1:].to(self.device).contiguous()
+                valid_alm_indices = shifted_targets != -100
+                if valid_alm_indices.any():
+                    preds_alm = shifted_logits.argmax(-1)
+                    correct_alm += (preds_alm[valid_alm_indices] == shifted_targets[valid_alm_indices]).sum()
+                    total_alm += valid_alm_indices.sum()
+
+        loader_len = len(val_dataloader)
+        avg_loss = val_loss / loader_len
+        avg_dec_loss = dec_loss / loader_len
+        avg_enc_loss = enc_loss / loader_len
+
+        if self.use_ddp:
+            dist.all_reduce(avg_dec_loss, op=dist.ReduceOp.SUM)
+            dist.all_reduce(avg_enc_loss, op=dist.ReduceOp.SUM)
+            dist.all_reduce(correct_mlm, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_mlm, op=dist.ReduceOp.SUM)
+            dist.all_reduce(correct_alm, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_alm, op=dist.ReduceOp.SUM)
+            avg_dec_loss = avg_dec_loss / dist.get_world_size()
+            avg_enc_loss = avg_enc_loss / dist.get_world_size()
+
+        mlm_acc = (correct_mlm / total_mlm * 100).item() if total_mlm > 0 else 0.0
+        alm_acc = (correct_alm / total_alm * 100).item() if total_alm > 0 else 0.0
+
+        metrics = {
+            'accuracy': {
+                'encoder': mlm_acc,
+                'decoder': alm_acc,
+            },
+            'loss': {
+                'encoder': avg_enc_loss,
+                'decoder': avg_dec_loss,
+            }
+        }
+        self.model.train()
+        return avg_loss, metrics

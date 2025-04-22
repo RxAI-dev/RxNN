@@ -1,3 +1,6 @@
+<img src="logo_rxai.webp" width="300" />
+<img src="logo_rxnn.webp" width="300" />
+
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
 

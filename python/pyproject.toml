@@ -1,0 +1,37 @@
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry]
+name = "rxnn"
+version = "0.1.0"
+description = "RxNN: Reactive Neural Networks Platform"
+
+packages = [
+    { include = "src" },
+]
+
+license = "Apache-2.0"
+
+authors = [
+    "Adam Filipek <adamfilipek@rxai.dev>"
+]
+
+repository = "https://github.com/RxAI-dev/rxnn/python"
+homepage = "https://rxai.dev/rxnn"
+
+# README file(s) are used as the package description
+readme = ["README.md", "LICENSE"]
+
+# Keywords (translated to tags on the package index)
+keywords = ["deep-learning", "ai", "machine-learning"]
+
+[tool.poetry.dependencies]
+python = ">=3.10"
+torch = "^2.6.0"
+transformers = "^4.51.0"
+datasets = "^3.5.0"
+tokenizers = "^0.21.0"
+huggingface-hub = "^0.30.0"
+tensorboard = "^2.19.0"
+flash-attention = "^1.0.0"

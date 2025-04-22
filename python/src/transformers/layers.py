@@ -1,0 +1,150 @@
+import torch
+import torch.nn as nn
+from attention import MultiHeadAttention
+from ff import FeedForward, GatedFeedForward
+from moe import MoeFeedForward, GatedMoeFeedForward
+
+
+class ReactiveTransformerLayer(nn.Module):
+    """Reactive Transformer layer - extending the classic Transformer layer with Memory Cross-Attention"""
+
+    def __init__(
+            self,
+            embed_dim: int,
+            ff_dim: int,
+            self_attention: MultiHeadAttention,
+            memory_cross_attention: MultiHeadAttention,
+            use_rms_norm: bool = False,
+            use_post_norm: bool = False,
+            ff_activation: nn.Module = nn.GELU(),
+            ff_dropout: float = 0.1,
+            use_gated: bool = False,
+            use_moe: bool = False,
+            num_experts: int = 1,
+            moe_top_k: int = 1,
+            *args,
+            **kwargs,
+    ):
+        super(ReactiveTransformerLayer, self).__init__(*args, **kwargs)
+
+        self.attention = self_attention
+
+        self.memory_cross_attention = memory_cross_attention
+
+        if use_gated:
+            if use_moe:
+                self.ff = GatedMoeFeedForward(embed_dim, ff_dim, num_experts, ff_activation, top_k=moe_top_k,
+                                              dropout=ff_dropout)
+            else:
+                self.ff = GatedFeedForward(embed_dim, ff_dim, ff_activation, dropout=ff_dropout)
+        else:
+            if use_moe:
+                self.ff = MoeFeedForward(embed_dim, ff_dim, num_experts, ff_activation, top_k=moe_top_k,
+                                         dropout=ff_dropout)
+            else:
+                self.ff = FeedForward(embed_dim, ff_dim, ff_activation, dropout=ff_dropout)
+
+        if use_rms_norm:
+            self.norm1 = nn.RMSNorm(embed_dim)
+            self.norm2 = nn.RMSNorm(embed_dim)
+            self.norm3 = nn.RMSNorm(embed_dim)
+        else:
+            self.norm1 = nn.LayerNorm(embed_dim)
+            self.norm2 = nn.LayerNorm(embed_dim)
+            self.norm3 = nn.LayerNorm(embed_dim)
+        self.use_post_norm = use_post_norm
+
+    def trainable_cross_attention_(self, is_trainable: bool):
+        for param in self.memory_cross_attention.parameters():
+            param.requires_grad_(is_trainable)
+
+    def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        # First step, self-attention
+        residual = x
+        if not self.use_post_norm:
+            x = self.norm1(x)
+        x = self.attention(x, x, x, mask=mask)
+        x = residual + x
+        if self.use_post_norm:
+            x = self.norm1(x)
+        # Second step, Memory cross-attention
+        residual = x
+        if not self.use_post_norm:
+            x = self.norm2(x)
+        x = self.memory_cross_attention(x, stm, stm)
+        x = residual + x
+        if self.use_post_norm:
+            x = self.norm2(x)
+
+        # Third step, Feed Forward network
+        residual = x
+        if not self.use_post_norm:
+            x = self.norm3(x)
+        x = self.ff(x)
+        x = residual + x
+        if self.use_post_norm:
+            x = self.norm3(x)
+        return x
+
+
+class ClassicTransformerLayer(nn.Module):
+    """Classic Transformer layer - classic decoder-only/encoder-only Transformer layer with self-attention and Feed-Forward network."""
+
+    def __init__(
+            self,
+            embed_dim: int,
+            ff_dim: int,
+            self_attention: MultiHeadAttention,
+            use_rms_norm: bool = False,
+            use_post_norm: bool = False,
+            ff_activation: nn.Module = nn.GELU(),
+            ff_dropout: float = 0.1,
+            use_gated: bool = False,
+            use_moe: bool = False,
+            num_experts: int = 1,
+            moe_top_k: int = 1,
+            *args,
+            **kwargs,
+    ):
+        super(ClassicTransformerLayer, self).__init__(*args, **kwargs)
+
+        self.attention = self_attention
+
+        if use_gated:
+            if use_moe:
+                self.ff = GatedMoeFeedForward(embed_dim, ff_dim, num_experts, top_k=moe_top_k, dropout=ff_dropout)
+            else:
+                self.ff = GatedFeedForward(embed_dim, ff_dim, dropout=ff_dropout)
+        else:
+            if use_moe:
+                self.ff = MoeFeedForward(embed_dim, ff_dim, num_experts, ff_activation, top_k=moe_top_k,
+                                         dropout=ff_dropout)
+            else:
+                self.ff = FeedForward(embed_dim, ff_dim, ff_activation, dropout=ff_dropout)
+
+        if use_rms_norm:
+            self.norm1 = nn.RMSNorm(embed_dim)
+            self.norm2 = nn.RMSNorm(embed_dim)
+        else:
+            self.norm1 = nn.LayerNorm(embed_dim)
+            self.norm2 = nn.LayerNorm(embed_dim)
+        self.use_post_norm = use_post_norm
+
+    def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        # First step, self-attention
+        residual = x
+        if not self.use_post_norm:
+            x = self.norm1(x)
+        x = self.attention(x, x, x, mask=mask)
+        x = residual + x
+        if self.use_post_norm:
+            x = self.norm1(x)
+        # Second step, Feed Forward network
+        residual = x
+        if not self.use_post_norm:
+            x = self.norm2(x)
+        x = self.ff(x)
+        x = residual + x
+        if self.use_post_norm:
+            x = self.norm2(x)
+        return x

@@ -1,0 +1,275 @@
+import torch
+import math
+import os
+
+from abc import ABC, abstractmethod
+from torch.utils.tensorboard import SummaryWriter
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel
+from typing import Callable
+from callbacks import TrainerCallback
+
+
+class BaseTrainer(ABC):
+    def __init__(
+            self,
+            model: torch.nn.Module,
+            device: torch.device,
+            optimizer: torch.optim.Optimizer = None,
+            dataset: torch.utils.data.Dataset = None,
+            validation_dataset: torch.utils.data.Dataset = None,
+            callbacks: list[TrainerCallback] = None,
+            log_dir: str = None,
+            use_ddp: bool = False,
+            use_amp: bool = False,
+            dtype: torch.dtype = None,
+            target_field_name: str = 'labels',
+            get_batch_size: Callable[[dict], int] = None,
+            gradient_accumulation_steps: int = 1,
+    ):
+        if get_batch_size is None:
+            self.get_batch_size = lambda batch: batch['attention_mask'].size(0)
+        else:
+            self.get_batch_size = get_batch_size
+        if use_amp:
+            self.model = model.to(device)
+        else:
+            self.model = model.to(device, dtype=dtype)
+        self.device = device
+        self.optimizer = optimizer
+        self.dataset = dataset
+        self.callbacks = callbacks or []
+        self.writer = SummaryWriter(log_dir) if log_dir else None
+        self.use_ddp = use_ddp
+        self.use_amp = use_amp
+        self.dtype = dtype
+        self.is_running = False
+        self.validation_dataset = validation_dataset
+        self.best_val_loss = float('inf')
+        self.validation_metrics = {}
+        self.target_field_name = target_field_name
+        self.total_tokens = 0
+        self.gradient_accumulation_steps = gradient_accumulation_steps
+        self.accumulated_loss = 0.0
+        self.optimizer_step_count = 0
+
+    @abstractmethod
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        pass
+
+    def train_step(self, batch: dict[str, torch.Tensor], _batch_idx: int) -> torch.Tensor:
+        if self.use_amp:
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                loss, _ = self.compute_loss(batch)
+        else:
+            batch = {k: v.to(self.device, dtype=self.dtype) for k, v in batch.items()}
+            loss, _ = self.compute_loss(batch)
+        return loss
+
+    def __call__(
+            self,
+            epochs: int,
+            batch_size: int,
+            dataset: torch.utils.data.Dataset = None,
+            optimizer: torch.optim.Optimizer = None,
+            scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+    ) -> None:
+        self.is_running = True
+        if dataset is None:
+            assert self.dataset is not None, 'You have to specify a dataset for training'
+            dataset = self.dataset
+        if optimizer is None:
+            assert self.optimizer is not None, 'You have to specify an optimizer for training'
+            optimizer = self.optimizer
+
+        if self.use_ddp:
+            rank = int(os.environ['RANK'])
+            world_size = int(os.environ['WORLD_SIZE'])
+            dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
+            self.model = DistributedDataParallel(self.model, device_ids=[self.device.index])
+            train_sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
+            dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                sampler=train_sampler,
+                pin_memory=True,
+            )
+        else:
+            train_sampler = None
+            dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                pin_memory=True
+            )
+
+        scaler = torch.amp.GradScaler() if self.use_amp else None
+
+        self.model.train()
+        for epoch in range(epochs):
+            if self.is_running:
+                if train_sampler is not None:
+                    train_sampler.set_epoch(epoch)
+                self._run_epoch(dataloader, epoch, optimizer, batch_size, scaler=scaler, scheduler=scheduler)
+                if self.use_ddp:
+                    dist.barrier()
+
+        if self.use_ddp:
+            dist.destroy_process_group()
+        self.is_running = False
+        self.on_training_end()
+
+    def _run_epoch(
+            self,
+            dataloader: torch.utils.data.DataLoader,
+            epoch: int,
+            optimizer: torch.optim.Optimizer,
+            batch_size: int,
+            scaler: torch.cuda.amp.GradScaler = None,
+            scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+    ) -> None:
+        for callback in self.callbacks:
+            callback.on_epoch_start(self.model, epoch)
+
+        self.accumulated_loss = 0.0
+        self.optimizer_step_count = 0
+
+        for batch_idx, batch in enumerate(dataloader):
+            if self.is_running:
+                for callback in self.callbacks:
+                    callback.on_batch_start(self.model, batch_idx, batch)
+                if self.get_batch_size(batch) == batch_size:
+                    loss = self.train_step(batch, batch_idx)
+                    self.accumulated_loss += loss.item()
+                    loss = loss / self.gradient_accumulation_steps
+
+                    if self.use_amp:
+                        scaler.scale(loss).backward()
+                    else:
+                        loss.backward()
+
+                    self.optimizer_step_count += 1
+                    if self.optimizer_step_count % self.gradient_accumulation_steps == 0:
+                        # Clip gradients after accumulation
+                        if self.use_amp:
+                            scaler.unscale_(optimizer)
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0, error_if_nonfinite=False)
+                        if self.use_amp:
+                            scaler.step(optimizer)
+                            scaler.update()
+                        else:
+                            optimizer.step()
+
+                        optimizer.zero_grad()
+
+                        if scheduler is not None:
+                            scheduler.step()
+
+                        if self.writer:
+                            loss_item = self.accumulated_loss / self.gradient_accumulation_steps
+                            self.writer.add_scalar(
+                                'Loss/train',
+                                loss_item,
+                                epoch * len(dataloader) + batch_idx
+                            )
+                            self.writer.add_scalar(
+                                'Loss per epoch/train',
+                                loss_item,
+                                batch_idx
+                            )
+                            self.writer.add_scalar(
+                                'Perplexity/train',
+                                torch.exp(torch.tensor(loss_item)),
+                                epoch * len(dataloader) + batch_idx
+                            )
+                        self.accumulated_loss = 0.0
+                        self.optimizer_step_count = 0
+
+                    if self.writer:
+                        self.total_tokens += batch['attention_mask'].sum().item()
+                        self.writer.add_scalar('Processed tokens', self.total_tokens,
+                                               epoch * len(dataloader) + batch_idx)
+
+                    for callback in self.callbacks:
+                        should_stop = callback.on_batch_end(self.model, batch_idx, loss.item(), batch)
+                        if should_stop:
+                            self.is_running = False
+
+        if self.validation_dataset:
+            val_loss, val_metrics = self.validate(batch_size)
+            val_loss_tensor = torch.tensor(val_loss).to(self.device)
+            if self.use_ddp:
+                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
+                val_loss = val_loss_tensor.item() / dist.get_world_size()
+            self.validation_metrics[epoch] = val_metrics
+
+            if self.writer:
+                self._valid_writer(epoch, val_loss, val_metrics)
+
+            for callback in self.callbacks:
+                callback.on_validation_end(self.model, epoch, val_loss, val_metrics)
+
+        for callback in self.callbacks:
+            should_stop = callback.on_epoch_end(self.model, epoch)
+            if should_stop:
+                self.is_running = False
+
+        if self.writer:
+            self.writer.flush()
+
+    def on_training_end(self):
+        for callback in self.callbacks:
+            callback.on_training_end(self.model)
+        if self.writer:
+            self.writer.close()
+
+    def _valid_writer(self, epoch: int, val_loss: float, val_metrics: dict):
+        self.writer.add_scalar('Loss/validation', val_loss, epoch)
+        self.writer.add_scalar('Perplexity/validation', math.exp(val_loss), epoch)
+        if val_metrics['accuracy']:
+            self.writer.add_scalar('Accuracy/validation', val_metrics['accuracy'], epoch)
+
+    def valid_step(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        if self.use_amp:
+            batch = {k: v.to(self.device) for k, v in batch.items()}
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                loss, outputs = self.compute_loss(batch)
+        else:
+            batch = {k: v.to(self.device, dtype=self.dtype) for k, v in batch.items()}
+            loss, outputs = self.compute_loss(batch)
+        return loss, outputs
+
+    def _valid_loader(self, batch_size: int):
+        val_dataset = self.validation_dataset
+        if self.use_ddp:
+            val_sampler = torch.utils.data.DistributedSampler(val_dataset, shuffle=False)
+            return torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                pin_memory=True,
+                sampler=val_sampler,
+            )
+        else:
+            return torch.utils.data.DataLoader(
+                val_dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                pin_memory=True
+            )
+
+    def validate(self, batch_size: int) -> tuple[float, dict]:
+        self.model.eval()
+        val_dataloader = self._valid_loader(batch_size)
+        val_loss = 0.0
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                if self.get_batch_size(batch) == batch_size:
+                    loss, outputs = self.valid_step(batch)
+                    val_loss += loss.item()
+
+        avg_loss = val_loss / len(val_dataloader)
+        metrics = {}
+        self.model.train()
+        return avg_loss, metrics
