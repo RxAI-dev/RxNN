@@ -53,10 +53,14 @@ class ReactiveTransformerLayer(nn.Module):
             self.norm2 = nn.LayerNorm(embed_dim)
             self.norm3 = nn.LayerNorm(embed_dim)
         self.use_post_norm = use_post_norm
+        self.use_moe = use_moe
 
     def trainable_cross_attention_(self, is_trainable: bool):
         for param in self.memory_cross_attention.parameters():
             param.requires_grad_(is_trainable)
+
+    def moe_router_loss(self):
+        return self.ff.router_loss() if self.use_moe else None
 
     def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         # First step, self-attention
@@ -129,6 +133,10 @@ class ClassicTransformerLayer(nn.Module):
             self.norm1 = nn.LayerNorm(embed_dim)
             self.norm2 = nn.LayerNorm(embed_dim)
         self.use_post_norm = use_post_norm
+        self.use_moe = use_moe
+
+    def moe_router_loss(self):
+        return self.ff.router_loss() if self.use_moe else torch.tensor(0.0)
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         # First step, self-attention

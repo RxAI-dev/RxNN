@@ -49,6 +49,7 @@ class BaseTrainer(ABC):
         self.validation_metrics = {}
         self.target_field_name = target_field_name
         self.total_tokens = 0
+        self.total_steps = 0
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.accumulated_loss = 0.0
         self.optimizer_step_count = 0
@@ -140,8 +141,10 @@ class BaseTrainer(ABC):
                 for callback in self.callbacks:
                     callback.on_batch_start(self.model, batch_idx, batch)
                 if self.get_batch_size(batch) == batch_size:
+                    self.total_steps += 1
                     loss = self.train_step(batch, batch_idx)
-                    self.accumulated_loss += loss.item()
+                    orig_loss = loss.item()
+                    self.accumulated_loss += orig_loss
                     loss = loss / self.gradient_accumulation_steps
 
                     if self.use_amp:
@@ -192,7 +195,7 @@ class BaseTrainer(ABC):
                                                epoch * len(dataloader) + batch_idx)
 
                     for callback in self.callbacks:
-                        should_stop = callback.on_batch_end(self.model, batch_idx, loss.item() * self.gradient_accumulation_steps, batch)
+                        should_stop = callback.on_batch_end(self.model, batch_idx, orig_loss, batch)
                         if should_stop:
                             self.is_running = False
 
@@ -225,10 +228,11 @@ class BaseTrainer(ABC):
             self.writer.close()
 
     def _valid_writer(self, epoch: int, val_loss: float, val_metrics: dict):
-        self.writer.add_scalar('Loss/validation', val_loss, epoch)
-        self.writer.add_scalar('Perplexity/validation', math.exp(val_loss), epoch)
+        self.writer.add_scalar('Loss/Valid', val_loss, epoch)
+        self.writer.add_scalar('Perplexity/Valid', math.exp(val_loss), epoch)
         if val_metrics['accuracy']:
-            self.writer.add_scalar('Accuracy/validation', val_metrics['accuracy'], epoch)
+            self.writer.add_scalar('Node Accuracy/Valid', val_metrics['node_accuracy'], epoch)
+            self.writer.add_scalar('Avg. Accuracy/Valid', val_metrics['accuracy'], epoch)
 
     def valid_step(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
         if self.use_amp:

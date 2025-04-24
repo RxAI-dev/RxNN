@@ -11,7 +11,8 @@ class MoeRouter(nn.Module):
         self.top_k = top_k
         self.num_experts = num_experts
         self.gate = nn.Linear(embed_dim, num_experts, bias=False)
-        self.aux_loss = 0.0  # For expert load balancing
+        # For expert load balancing
+        self.register_buffer('aux_loss', torch.tensor(0.0), persistent=False)
 
     def forward(self, x: torch.Tensor):
         # x shape: [batch_size*seq_len, embed_dim]
@@ -19,10 +20,8 @@ class MoeRouter(nn.Module):
         probs = F.softmax(logits, dim=-1)
 
         # Expert load balancing loss
-        if self.training:
-            probs_for_bal = F.softmax(logits, dim=0)
-            self.aux_loss = (probs_for_bal.mean(dim=0) *
-                             torch.log(probs_for_bal.mean(dim=0) + 1e-9)).sum()
+        mean_probs = probs.mean(dim=0)  # Mean probability per expert across batch
+        self.aux_loss = (mean_probs * torch.log(mean_probs + 1e-9)).sum()  # Entropy-based loss
 
         top_k_weights, top_k_indices = probs.topk(self.top_k, dim=-1)
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
@@ -73,6 +72,9 @@ class MoeFeedForward(nn.Module):
 
     def _activate(self, h: torch.Tensor):
         return self.activation(h)
+
+    def router_loss(self):
+        return self.router.aux_loss
 
     def forward(self, x: torch.Tensor):
         orig_shape = x.shape

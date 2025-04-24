@@ -37,6 +37,10 @@ class ReactiveTransformerBase(nn.Module):
         for i in range(self.num_own_layers):
             self.layers[i].trainable_cross_attention_(is_trainable)
 
+    def moe_router_loss(self):
+        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe] + [
+            self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe]).mean()
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
         x = self.embedding(x)
@@ -118,6 +122,9 @@ class ClassicTransformerBase(nn.Module):
 
         self.layers = layers
         self.num_layers = len(layers) if layers else 0
+
+    def moe_router_loss(self):
+        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_layers) if self.layers[i].use_moe]).mean()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding

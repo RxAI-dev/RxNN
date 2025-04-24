@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 import math
 from huggingface_hub import PyTorchModelHubMixin
 from typing import Union
@@ -90,12 +91,15 @@ class MLMTrainer(BaseTrainer):
                         total += valid_indices.sum()
 
         avg_loss = (val_loss / len(val_dataloader)).item()
+        acc = (correct / total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
+        node_acc = acc.item()
         if self.use_ddp:
-            dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+            acc = acc / dist.get_world_size()
 
         metrics = {
-            'accuracy': (correct / total * 100).item() if total > 0 else 0.0
+            'accuracy': acc.item(),
+            'node_accuracy': node_acc,
         }
         self.model.train()
         return avg_loss, metrics
@@ -154,13 +158,99 @@ class AutoregressiveTrainer(BaseTrainer):
                         total += valid_indices.sum()
 
         avg_loss = (val_loss / len(val_dataloader)).item()
-
+        acc = (correct / total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
+        node_acc = acc.item()
         if self.use_ddp:
-            dist.all_reduce(correct, op=dist.ReduceOp.SUM)
-            dist.all_reduce(total, op=dist.ReduceOp.SUM)
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+            acc = acc / dist.get_world_size()
 
         metrics = {
-            'accuracy': (correct / total * 100).item() if total > 0 else 0.0
+            'accuracy': acc.item(),
+            'node_accuracy': node_acc,
+        }
+        self.model.train()
+        return avg_loss, metrics
+
+
+class AutoregressiveMoeTrainer(BaseTrainer):
+    def __init__(
+            self,
+            model: ReactiveTransformerDecoder,
+            device: torch.device,
+            vocab_size: int,
+            use_amp: bool = False,
+            dtype: torch.dtype = None,
+            router_loss_scale: float = 0.1,
+            **kwargs
+    ):
+        super(AutoregressiveMoeTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype,
+                                                    target_field_name='targets', **kwargs)
+        self.vocab_size = vocab_size
+        self.router_loss_scale = router_loss_scale
+
+    def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
+        inputs = batch['input_ids']
+        attention_mask = batch['attention_mask']
+        targets = batch['targets']
+
+        outputs = self.model(
+            inputs,
+            attention_mask=attention_mask
+        )
+
+        shifted_logits = outputs[:, :-1].contiguous()
+        shifted_targets = targets[:, 1:].contiguous()
+
+        main_loss = F.cross_entropy(
+            shifted_logits.view(-1, self.vocab_size),
+            shifted_targets.view(-1)
+        )
+
+        model = next(self.model.children()) if isinstance(self.model, DistributedDataParallel) else self.model
+
+        router_loss = model.model.moe_router_loss()
+        loss = main_loss + self.router_loss_scale * router_loss
+
+        if self.writer is not None:
+            if self.model.training:
+                self.writer.add_scalar('Router aux loss/Train', router_loss.item(), self.total_steps)
+                self.writer.add_scalar('Model loss/Train', main_loss.item(), self.total_steps)
+            else:
+                self.writer.add_scalar('Router aux loss/Valid', router_loss.item(), self.total_steps)
+                self.writer.add_scalar('Model loss/Valid', main_loss.item(), self.total_steps)
+
+        return loss, outputs
+
+    def validate(self, batch_size: int) -> tuple[float, dict]:
+        self.model.eval()
+        val_dataloader = self._valid_loader(batch_size)
+        val_loss = torch.tensor(0.0).to(self.device)
+        correct = torch.tensor(0).to(self.device)
+        total = torch.tensor(0).to(self.device)
+
+        with torch.no_grad():
+            for batch in val_dataloader:
+                if self.get_batch_size(batch) == batch_size:
+                    loss, logits = self.valid_step(batch)
+                    val_loss += loss
+                    shifted_logits = logits[:, :-1].contiguous()
+                    shifted_targets = batch[self.target_field_name][:, 1:].to(self.device).contiguous()
+                    valid_indices = shifted_targets != -100
+                    if valid_indices.any():
+                        preds = shifted_logits.argmax(-1)
+                        correct += (preds[valid_indices] == shifted_targets[valid_indices]).sum()
+                        total += valid_indices.sum()
+
+        avg_loss = (val_loss / len(val_dataloader)).item()
+        acc = (correct / total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
+        node_acc = acc.item()
+        if self.use_ddp:
+            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
+            acc = acc / dist.get_world_size()
+
+        metrics = {
+            'accuracy': acc.item(),
+            'node_accuracy': node_acc,
         }
         self.model.train()
         return avg_loss, metrics
@@ -257,16 +347,18 @@ class JointLMTrainer(BaseTrainer):
         return (encoder_loss, decoder_loss), (encoder_logits, decoder_logits)
 
     def _valid_writer(self, epoch: int, val_loss: float, val_metrics: dict):
-        self.writer.add_scalar('Loss/validation', val_loss, epoch)
-        self.writer.add_scalar('Perplexity/validation', math.exp(val_loss), epoch)
+        self.writer.add_scalar('Loss/Valid', val_loss, epoch)
+        self.writer.add_scalar('Perplexity/Valid', math.exp(val_loss), epoch)
         if val_metrics['accuracy']:
-            self.writer.add_scalar('Encoder accuracy/validation', val_metrics['accuracy']['encoder'], epoch)
-            self.writer.add_scalar('Decoder accuracy/validation', val_metrics['accuracy']['decoder'], epoch)
+            self.writer.add_scalar('Encoder node accuracy/Valid', val_metrics['accuracy']['node_encoder'], epoch)
+            self.writer.add_scalar('Decoder node accuracy/Valid', val_metrics['accuracy']['node_decoder'], epoch)
+            self.writer.add_scalar('Encoder avg. accuracy/Valid', val_metrics['accuracy']['encoder'], epoch)
+            self.writer.add_scalar('Decoder avg. accuracy/Valid', val_metrics['accuracy']['decoder'], epoch)
         if val_metrics['loss']:
-            self.writer.add_scalar('Encoder loss/validation', val_metrics['loss']['encoder'], epoch)
-            self.writer.add_scalar('Encoder perplexity/validation', math.exp(val_metrics['loss']['encoder']), epoch)
-            self.writer.add_scalar('Decoder accuracy/validation', val_metrics['loss']['decoder'], epoch)
-            self.writer.add_scalar('Decoder perplexity/validation', math.exp(val_metrics['loss']['decoder']), epoch)
+            self.writer.add_scalar('Encoder loss/Valid', val_metrics['loss']['encoder'], epoch)
+            self.writer.add_scalar('Encoder perplexity/Valid', math.exp(val_metrics['loss']['encoder']), epoch)
+            self.writer.add_scalar('Decoder accuracy/Valid', val_metrics['loss']['decoder'], epoch)
+            self.writer.add_scalar('Decoder perplexity/Valid', math.exp(val_metrics['loss']['decoder']), epoch)
 
     def validate(self, batch_size: int) -> tuple[float, dict]:
         self.model.eval()
@@ -317,28 +409,30 @@ class JointLMTrainer(BaseTrainer):
         avg_loss = val_loss / loader_len
         avg_dec_loss = dec_loss / loader_len
         avg_enc_loss = enc_loss / loader_len
-
+        mlm_acc = (correct_mlm / total_mlm * 100) if total_mlm > 0 else torch.tensor(0.0).to(self.device)
+        alm_acc = (correct_alm / total_alm * 100) if total_alm > 0 else torch.tensor(0.0).to(self.device)
+        node_mlm_acc = mlm_acc.item()
+        node_alm_acc = alm_acc.item()
         if self.use_ddp:
             dist.all_reduce(avg_dec_loss, op=dist.ReduceOp.SUM)
             dist.all_reduce(avg_enc_loss, op=dist.ReduceOp.SUM)
-            dist.all_reduce(correct_mlm, op=dist.ReduceOp.SUM)
-            dist.all_reduce(total_mlm, op=dist.ReduceOp.SUM)
-            dist.all_reduce(correct_alm, op=dist.ReduceOp.SUM)
-            dist.all_reduce(total_alm, op=dist.ReduceOp.SUM)
+            dist.all_reduce(mlm_acc, op=dist.ReduceOp.SUM)
+            dist.all_reduce(alm_acc, op=dist.ReduceOp.SUM)
             avg_dec_loss = avg_dec_loss / dist.get_world_size()
             avg_enc_loss = avg_enc_loss / dist.get_world_size()
-
-        mlm_acc = (correct_mlm / total_mlm * 100).item() if total_mlm > 0 else 0.0
-        alm_acc = (correct_alm / total_alm * 100).item() if total_alm > 0 else 0.0
+            mlm_acc = mlm_acc / dist.get_world_size()
+            alm_acc = alm_acc / dist.get_world_size()
 
         metrics = {
             'accuracy': {
-                'encoder': mlm_acc,
-                'decoder': alm_acc,
+                'encoder': mlm_acc.item(),
+                'decoder': alm_acc.item(),
+                'node_encoder': node_mlm_acc,
+                'node_decoder': node_alm_acc,
             },
             'loss': {
-                'encoder': avg_enc_loss,
-                'decoder': avg_dec_loss,
+                'encoder': avg_enc_loss.item(),
+                'decoder': avg_dec_loss.item(),
             }
         }
         self.model.train()

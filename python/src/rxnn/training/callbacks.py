@@ -83,9 +83,12 @@ class PrintAccuracyCallback(TrainerCallback):
 
     def on_validation_end(self, model: nn.Module, epoch: int, val_loss: float, val_metrics: dict) -> None:
         if self.joint_mode:
+            print(f"Epoch {epoch} - encoder node accuracy: {val_metrics['accuracy']['node_encoder']:.4f}")
+            print(f"Epoch {epoch} - decoder node accuracy: {val_metrics['accuracy']['node_decoder']:.4f}")
             print(f"Epoch {epoch} - encoder accuracy: {val_metrics['accuracy']['encoder']:.4f}")
             print(f"Epoch {epoch} - decoder accuracy: {val_metrics['accuracy']['decoder']:.4f}")
         else:
+            print(f"Epoch {epoch} - node accuracy: {val_metrics['node_accuracy']:.4f}")
             print(f"Epoch {epoch} - accuracy: {val_metrics['accuracy']:.4f}")
 
 
@@ -130,6 +133,7 @@ class ModelSaveCallback(TrainerCallback):
             save_checkpoint_after_n_batches: int = None,
             push_batch_checkpoint: bool = False,
             display_exc_trace: bool = False,
+            use_ddp: bool = False,
     ):
         self.save_dir = save_dir
         self.save_best_only = save_best_only
@@ -146,10 +150,11 @@ class ModelSaveCallback(TrainerCallback):
         self.push_batch_checkpoint = push_batch_checkpoint
         self.finished_epochs = 0
         self.display_exc_trace = display_exc_trace
+        self.rank = int(os.environ['RANK']) if use_ddp else 0
 
     def on_batch_end(self, model: torch.nn.Module, batch_idx: int, loss: int, batch: dict[str, torch.Tensor]) -> Union[
         bool, None]:
-        if self.save_checkpoint_after_n_batches is not None and batch_idx != 0 and batch_idx % self.save_checkpoint_after_n_batches == 0:
+        if self.rank == 0 and self.save_checkpoint_after_n_batches is not None and batch_idx != 0 and batch_idx % self.save_checkpoint_after_n_batches == 0:
             if isinstance(model, DistributedDataParallel):
                 model = next(model.children())
             try:
@@ -195,89 +200,91 @@ class ModelSaveCallback(TrainerCallback):
             val_loss: float,
             val_metrics: dict
     ):
-        self.finished_epochs += 1
-        if val_loss < self.best_loss:
-            self.best_loss = val_loss
+        if self.rank == 0:
+            self.finished_epochs += 1
+            if val_loss < self.best_loss:
+                self.best_loss = val_loss
+                if isinstance(model, DistributedDataParallel):
+                    model = next(model.children())
+                try:
+                    if model.save_pretrained is not None:
+                        ckpt_path = os.path.join(
+                            self.save_dir,
+                            f'epoch_{epoch}_val_loss_{val_loss:.4f}'
+                        )
+                        path_exists = os.path.exists(ckpt_path)
+                        if not path_exists:
+                            os.makedirs(ckpt_path)
+                        model.save_pretrained(save_directory=ckpt_path)
+                    else:
+                        path_exists = os.path.exists(self.save_dir)
+                        if not path_exists:
+                            os.makedirs(self.save_dir)
+                        ckpt_path = os.path.join(
+                            self.save_dir,
+                            f'epoch_{epoch}_val_loss_{val_loss:.4f}.pt'
+                        )
+                        torch.save(model.state_dict(), ckpt_path)
+                    self.ckpt_paths.append(ckpt_path)
+
+                    # Keep only N best checkpoints
+                    if len(self.ckpt_paths) > self.max_keep:
+                        oldest_path = self.ckpt_paths.pop(0)
+                        if model.save_pretrained is not None:
+                            shutil.rmtree(oldest_path)
+                        else:
+                            os.remove(oldest_path)
+                except Exception as e:
+                    print(f"Error saving epoch checkpoint: {str(e)}")
+                    if self.display_exc_trace:
+                        traceback.print_exc()
+
+                try:
+                    if self.push_to_hub and self.push_checkpoint_weights and model.push_to_hub is not None and self.hub_model_id:
+                        model.push_to_hub(
+                            repo_id=self.hub_model_id,
+                            commit_message=f'Epoch {epoch} - Val loss {val_loss:.4f}',
+                            token=self.hf_token,
+                            private=self.private_repo,
+                        )
+                except Exception as e:
+                    print(f"Error pushing epoch checkpoint: {str(e)}")
+                    if self.display_exc_trace:
+                        traceback.print_exc()
+
+    def on_training_end(self, model: Union[torch.nn.Module, PyTorchModelHubMixin]):
+        if self.rank == 0:
             if isinstance(model, DistributedDataParallel):
                 model = next(model.children())
             try:
+                # Save final model
                 if model.save_pretrained is not None:
                     ckpt_path = os.path.join(
                         self.save_dir,
-                        f'epoch_{epoch}_val_loss_{val_loss:.4f}'
+                        'final_model'
                     )
-                    path_exists = os.path.exists(ckpt_path)
-                    if not path_exists:
-                        os.makedirs(ckpt_path)
                     model.save_pretrained(save_directory=ckpt_path)
                 else:
-                    path_exists = os.path.exists(self.save_dir)
-                    if not path_exists:
-                        os.makedirs(self.save_dir)
-                    ckpt_path = os.path.join(
-                        self.save_dir,
-                        f'epoch_{epoch}_val_loss_{val_loss:.4f}.pt'
-                    )
+                    ckpt_path = os.path.join(self.save_dir, 'final_model.pt')
                     torch.save(model.state_dict(), ckpt_path)
-                self.ckpt_paths.append(ckpt_path)
-
-                # Keep only N best checkpoints
-                if len(self.ckpt_paths) > self.max_keep:
-                    oldest_path = self.ckpt_paths.pop(0)
-                    if model.save_pretrained is not None:
-                        shutil.rmtree(oldest_path)
-                    else:
-                        os.remove(oldest_path)
+                print(f"Final model saved to {ckpt_path}")
             except Exception as e:
-                print(f"Error saving epoch checkpoint: {str(e)}")
+                print(f"Error saving final model: {str(e)}")
                 if self.display_exc_trace:
                     traceback.print_exc()
-
             try:
-                if self.push_to_hub and self.push_checkpoint_weights and model.push_to_hub is not None and self.hub_model_id:
+                if self.push_to_hub and model.push_to_hub is not None:
                     model.push_to_hub(
                         repo_id=self.hub_model_id,
-                        commit_message=f'Epoch {epoch} - Val loss {val_loss:.4f}',
+                        commit_message=self.final_commit_message or f'Final pre-trained model, after {self.finished_epochs} epochs',
                         token=self.hf_token,
                         private=self.private_repo,
                     )
+                print(f"Model uploaded to repo: {self.hub_model_id}")
             except Exception as e:
-                print(f"Error pushing epoch checkpoint: {str(e)}")
+                print(f"Error pushing final model: {str(e)}")
                 if self.display_exc_trace:
                     traceback.print_exc()
-
-    def on_training_end(self, model: Union[torch.nn.Module, PyTorchModelHubMixin]):
-        if isinstance(model, DistributedDataParallel):
-            model = next(model.children())
-        try:
-            # Save final model
-            if model.save_pretrained is not None:
-                ckpt_path = os.path.join(
-                    self.save_dir,
-                    'final_model'
-                )
-                model.save_pretrained(save_directory=ckpt_path)
-            else:
-                ckpt_path = os.path.join(self.save_dir, 'final_model.pt')
-                torch.save(model.state_dict(), ckpt_path)
-            print(f"Final model saved to {ckpt_path}")
-        except Exception as e:
-            print(f"Error saving final model: {str(e)}")
-            if self.display_exc_trace:
-                traceback.print_exc()
-        try:
-            if self.push_to_hub and model.push_to_hub is not None:
-                model.push_to_hub(
-                    repo_id=self.hub_model_id,
-                    commit_message=self.final_commit_message or f'Final pre-trained model, after {self.finished_epochs} epochs',
-                    token=self.hf_token,
-                    private=self.private_repo,
-                )
-            print(f"Model uploaded to repo: {self.hub_model_id}")
-        except Exception as e:
-            print(f"Error pushing final model: {str(e)}")
-            if self.display_exc_trace:
-                traceback.print_exc()
 
 
 class JointModelSaveCallback(TrainerCallback):
@@ -298,6 +305,7 @@ class JointModelSaveCallback(TrainerCallback):
             push_batch_checkpoint: bool = False,
             mlm_mode: bool = False,
             display_exc_trace: bool = False,
+            use_ddp: bool = False,
     ):
         self.save_dir = save_dir
         self.save_best_only = save_best_only
@@ -317,6 +325,7 @@ class JointModelSaveCallback(TrainerCallback):
         self.finished_epochs = 0
         self.mlm_mode = mlm_mode
         self.display_exc_trace = display_exc_trace
+        self.rank = int(os.environ['RANK']) if use_ddp else 0
 
     def _save_batch(self, model: Union[nn.Module, PyTorchModelHubMixin], component: str, hub_id: str = None):
         try:
@@ -362,7 +371,7 @@ class JointModelSaveCallback(TrainerCallback):
 
     def on_batch_end(self, model: torch.nn.Module, batch_idx: int, loss: int, batch: dict[str, torch.Tensor]) -> Union[
         bool, None]:
-        if self.save_checkpoint_after_n_batches is not None and batch_idx != 0 and batch_idx % self.save_checkpoint_after_n_batches == 0:
+        if self.rank == 0 and self.save_checkpoint_after_n_batches is not None and batch_idx != 0 and batch_idx % self.save_checkpoint_after_n_batches == 0:
             if isinstance(model, DistributedDataParallel):
                 model = next(model.children())
             self._save_batch(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
@@ -430,15 +439,16 @@ class JointModelSaveCallback(TrainerCallback):
             val_loss: float,
             val_metrics: dict
     ):
-        self.finished_epochs += 1
-        if val_loss < self.best_loss:
-            self.best_loss = val_loss
-            if isinstance(model, DistributedDataParallel):
-                model = next(model.children())
-            self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
-            if not self.mlm_mode:
-                self._save_validation(model.decoder, 'decoder', epoch, val_loss, hub_id=self.hub_model_decoder)
-            self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
+        if self.rank == 0:
+            self.finished_epochs += 1
+            if val_loss < self.best_loss:
+                self.best_loss = val_loss
+                if isinstance(model, DistributedDataParallel):
+                    model = next(model.children())
+                self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
+                if not self.mlm_mode:
+                    self._save_validation(model.decoder, 'decoder', epoch, val_loss, hub_id=self.hub_model_decoder)
+                self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
 
     def _save_final(self, model: Union[nn.Module, PyTorchModelHubMixin], component: str, hub_id: str = None):
         try:
@@ -482,9 +492,10 @@ class JointModelSaveCallback(TrainerCallback):
                 traceback.print_exc()
 
     def on_training_end(self, model: Union[torch.nn.Module, PyTorchModelHubMixin]):
-        if isinstance(model, DistributedDataParallel):
-            model = next(model.children())
-        self._save_final(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
-        if not self.mlm_mode:
-            self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
-        self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
+        if self.rank == 0:
+            if isinstance(model, DistributedDataParallel):
+                model = next(model.children())
+            self._save_final(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
+            if not self.mlm_mode:
+                self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
+            self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
