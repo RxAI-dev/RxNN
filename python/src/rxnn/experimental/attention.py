@@ -4,7 +4,24 @@ from ..transformers.attention import MultiHeadAttention, GroupedQueryAttention
 from ..transformers.positional import RotaryPositionalEmbedding
 from ..transformers.moe import MoeRouter
 
-class MoeGroupedAttention(GroupedQueryAttention):
+# Created by Reactive AI
+
+class GroupedMoeAttention(GroupedQueryAttention):
+    """
+    Grouped MoE Attention (GMA) - GQA extended with Mixture-of-Experts (MoE) routing.
+    Instead of mapping keys/values to static head groups, it dynamically selects head expert groups. It has the same
+    number of total keys/values heads as query heads, but uses only a selected group for attention calculation.
+    - with num_groups set to 1, it will be MoE MultiQueryAttention
+
+    Compared to traditional GQA/MQA, it should provide better performance, because lot less data could be lost using
+    this approach - we are training the full number of keys/values heads, while using only a group.
+
+    In case of efficiency, it should be close to GQA/MQA linear performance, but with a small MoE routing overhead.
+
+    Optionally, it could use even more expert heads than attention heads - in example:
+    - 512 dim divided into 16 heads with 32 dim, using 4 head groups - may use i.e., 24 total expert heads - still only
+      4 will be used for attention calculation, while 16 is used to split dimensions (in that case it will have 16 query heads)
+    """
     def __init__(
             self,
             embed_dim: int,
@@ -23,7 +40,7 @@ class MoeGroupedAttention(GroupedQueryAttention):
             **kwargs,
     ):
         self.num_experts = num_experts if num_experts is not None else num_heads
-        super(MoeGroupedAttention, self).__init__(
+        super(GroupedMoeAttention, self).__init__(
             embed_dim,
             num_heads,
             num_groups=num_groups,
@@ -55,47 +72,87 @@ class MoeGroupedAttention(GroupedQueryAttention):
             torch.nn.init.zeros_(self.bk)
             torch.nn.init.zeros_(self.bv)
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, skip_query_processing: bool = False):
+        # head_dim = d // self.num_heads
+        # group_heads = self.num_heads // self.num_groups
+        #
+        # # Process Query as in GQA
+        # q = self.q_proj(query).view(b, t, self.num_heads, head_dim).transpose(1, 2)
+        #
+        # # Process Key and Value with MoE routing
+        # key_flat = key.view(-1, d)
+        # weights, indices = self.router(key_flat)
+        # weights = weights.view(b, key.size(1), self.num_groups, 1)
+        # indices = indices.view(b, key.size(1), self.num_groups)
+        #
+        # # Compute all experts' K and V projections
+        # # Shape: (batch_size, seq_len, num_experts, head_dim * num_groups)
+        # k_all = torch.einsum(
+        #     'be, ehd -> bedh',
+        #     key_flat,
+        #     self.wk.view(self.num_experts, d, -1)
+        # ).view(b, key.size(1), self.num_experts, -1)
+        #
+        # v_all = torch.einsum(
+        #     'be, ehd -> bedh',
+        #     value.view(-1, d),
+        #     self.wv.view(self.num_experts, d, -1)
+        # ).view(b, value.size(1), self.num_experts, -1)
+        #
+        # # Select top_k experts and compute weighted sum
+        # selected_k = torch.gather(
+        #     k_all,
+        #     2,
+        #     indices.unsqueeze(-1).expand(-1, -1, -1, k_all.size(-1))
+        # )
+        # selected_v = torch.gather(
+        #     v_all,
+        #     2,
+        #     indices.unsqueeze(-1).expand(-1, -1, -1, v_all.size(-1))
+        # )
+        #
+        # selected_k = (selected_k * weights).sum(dim=2)
+        # selected_v = (selected_v * weights).sum(dim=2)
+        # # Reshape to GQA format: (B, G, S, head_dim)
+        # k = selected_k.view(b, key.size(1), self.num_groups, head_dim).transpose(1, 2)
+        # v = selected_v.view(b, value.size(1), self.num_groups, head_dim).transpose(1, 2)
+        #
+        # if not self.use_flash_attention:
+        #     group_heads = self.num_heads // self.num_groups
+        #
+        #     k = k.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
+        #     v = v.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
+        #
+        #     k = k.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
+        #     v = v.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
+        #
+        # return q, k, v
         head_dim = d // self.num_heads
-        group_heads = self.num_heads // self.num_groups
 
         # Process Query as in GQA
-        q = self.q_proj(query).view(b, t, self.num_heads, head_dim).transpose(1, 2)
+        q = self.q_proj(query).view(b, t, self.num_heads, head_dim).transpose(1, 2) if not skip_query_processing else query
 
         # Process Key and Value with MoE routing
-        key_flat = key.view(-1, d)
-        weights, indices = self.router(key_flat)
-        weights = weights.view(b, key.size(1), self.num_groups, 1)
-        indices = indices.view(b, key.size(1), self.num_groups)
+        key_flat = key.view(-1, d)  # (B*S, d)
+        value_flat = value.view(-1, d)  # (B*S, d)
 
-        # Compute all experts' K and V projections
-        # Shape: (batch_size, seq_len, num_experts, head_dim * num_groups)
-        k_all = torch.einsum(
-            'be, ehd -> bedh',
-            key_flat,
-            self.wk.view(self.num_experts, d, -1)
-        ).view(b, key.size(1), self.num_experts, -1)
+        # Get routing indices and weights for K
+        weights_k, indices_k = self.router(key_flat)
+        indices_k = indices_k.view(-1, self.top_k)  # (B*S, top_k)
+        weights_k = weights_k.view(-1, self.top_k, 1)  # (B*S, top_k, 1)
 
-        v_all = torch.einsum(
-            'be, ehd -> bedh',
-            value.view(-1, d),
-            self.wv.view(self.num_experts, d, -1)
-        ).view(b, value.size(1), self.num_experts, -1)
+        # Select and compute K projections for only the top_k experts
+        selected_k_weights = self.k_experts[indices_k]  # (B*S, top_k, d, k_out_dim)
+        k_proj = torch.einsum('bd, behd -> beh', key_flat.unsqueeze(1), selected_k_weights)
+        selected_k = (k_proj * weights_k).sum(dim=1)  # (B*S, k_out_dim)
+        selected_k = selected_k.view(b, key.size(1), -1)  # (B, S, k_out_dim)
 
-        # Select top_k experts and compute weighted sum
-        selected_k = torch.gather(
-            k_all,
-            2,
-            indices.unsqueeze(-1).expand(-1, -1, -1, k_all.size(-1))
-        )
-        selected_v = torch.gather(
-            v_all,
-            2,
-            indices.unsqueeze(-1).expand(-1, -1, -1, v_all.size(-1))
-        )
+        # Compute V using the same indices as K (since they share the same router)
+        selected_v_weights = self.v_experts[indices_k]
+        v_proj = torch.einsum('bd, behd -> beh', value_flat.unsqueeze(1), selected_v_weights)
+        selected_v = (v_proj * weights_k).sum(dim=1)
+        selected_v = selected_v.view(b, value.size(1), -1)  # (B, S, k_out_dim)
 
-        selected_k = (selected_k * weights).sum(dim=2)
-        selected_v = (selected_v * weights).sum(dim=2)
         # Reshape to GQA format: (B, G, S, head_dim)
         k = selected_k.view(b, key.size(1), self.num_groups, head_dim).transpose(1, 2)
         v = selected_v.view(b, value.size(1), self.num_groups, head_dim).transpose(1, 2)
@@ -111,8 +168,15 @@ class MoeGroupedAttention(GroupedQueryAttention):
 
         return q, k, v
 
+class SparseMoeAttention(GroupedMoeAttention):
+    """
+    Sparse MoE Attention (SMA) - Grouped MoE Attention extended even more for sublinear computational efficiency.
+    In addition to using Mixture-of-Experts (MoE) for key/value head groups, SMA is also using dynamically selected
+    query heads - with that approach, each token could attend to every other token, but only partially - only some part of
+    information from each token is used to identify related information parts from other tokens.
 
-class MoeSparseAttention(GroupedQueryAttention):
+    This solution could reduce the computational complexity of attention operation to sublinear level (<O(N))
+    """
     def __init__(
             self,
             embed_dim: int,
@@ -132,10 +196,9 @@ class MoeSparseAttention(GroupedQueryAttention):
             *args,
             **kwargs,
     ):
-        self.num_experts = num_experts if num_experts is not None else num_heads
         self.num_query_experts = num_query_experts if num_query_experts is not None else num_heads
         self.num_active_query_heads = num_active_query_heads if num_active_query_heads is not None else num_groups
-        super(MoeSparseAttention, self).__init__(
+        super(SparseMoeAttention, self).__init__(
             embed_dim,
             num_heads,
             num_groups=num_groups,
@@ -147,6 +210,7 @@ class MoeSparseAttention(GroupedQueryAttention):
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
+            num_experts=num_experts,
             *args,
             **kwargs,
         )
@@ -158,101 +222,32 @@ class MoeSparseAttention(GroupedQueryAttention):
         self.bq = nn.Parameter(torch.zeros(self.num_query_experts, hidden_dim)) if self.use_bias else None
         self._init_query_experts()
 
-    def _init_kv(self, embed_dim: int):
-        self.router = MoeRouter(embed_dim, self.num_experts, top_k=self.num_groups)
-        hidden_dim = embed_dim // (self.num_heads // self.num_groups)
-        self.wk = nn.Parameter(torch.empty(self.num_experts, embed_dim, hidden_dim))
-        self.bk = nn.Parameter(torch.zeros(self.num_experts, hidden_dim)) if self.use_bias else None
-        self.wv = nn.Parameter(torch.empty(self.num_experts, embed_dim, hidden_dim))
-        self.bv = nn.Parameter(torch.zeros(self.num_experts, hidden_dim)) if self.use_bias else None
-        self._init_experts()
-
     def _init_query_experts(self):
         torch.nn.init.xavier_uniform_(self.wq)
         if self.use_bias:
             torch.nn.init.zeros_(self.bq)
 
-    def _init_experts(self):
-        torch.nn.init.xavier_uniform_(self.wk)
-        torch.nn.init.xavier_uniform_(self.wv)
-        if self.use_bias:
-            torch.nn.init.zeros_(self.bk)
-            torch.nn.init.zeros_(self.bv)
-
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
         head_dim = d // self.num_heads
 
         # Process Query with MoE routing
-        query_flat = query.view(-1, d)
+        query_flat = query.view(-1, d)  # (B*T, d)
         weights_q, indices_q = self.router_q(query_flat)
-        weights_q = weights_q.view(b, t, self.num_active_query_heads, 1)
-        indices_q = indices_q.view(b, t, self.num_active_query_heads)
+        indices_q = indices_q.view(-1, self.top_k_q)  # (B*T, top_k_q)
+        weights_q = weights_q.view(-1, self.top_k_q, 1)  # (B*T, top_k_q, 1)
 
-        # Compute all experts' Q projections
-        q_all = torch.einsum(
-            'be, ehd -> bedh',
-            query_flat,
-            self.q_experts.view(self.num_query_experts, d, -1)
-        ).view(b, t, self.num_query_experts, -1)
+        # Select and compute Q projections for top_k experts
+        selected_q_weights = self.q_experts[indices_q]  # (B*T, top_k_q, d, head_dim*num_heads)
+        q_proj = torch.einsum('bd, behd -> beh', query_flat.unsqueeze(1), selected_q_weights)
+        selected_q = (q_proj * weights_q).sum(dim=1)  # (B*T, head_dim*num_heads)
+        selected_q = selected_q.view(b, t, -1)  # (B, T, head_dim*num_heads)
 
-        selected_q = torch.gather(
-            q_all,
-            2,
-            indices_q.unsqueeze(-1).expand(-1, -1, -1, q_all.size(-1))
-        )
-        selected_q = (selected_q * weights_q).sum(dim=2)
+        q = selected_q.view(b, t, self.num_heads, head_dim).transpose(1, 2)  # (B, H, T, head_dim)
 
-        q = selected_q.view(b, t, self.num_heads, head_dim).transpose(1, 2)
+        return super()._forward_qkv(q, key, value, b, t, d, skip_query_processing=True)
 
-        # Process Key and Value with MoE routing
-        key_flat = key.view(-1, d)
-        weights, indices = self.router(key_flat)
-        weights = weights.view(b, key.size(1), self.num_groups, 1)
-        indices = indices.view(b, key.size(1), self.num_groups)
 
-        # Compute all experts' K and V projections
-        # Shape: (batch_size, seq_len, num_experts, head_dim * num_groups)
-        k_all = torch.einsum(
-            'be, ehd -> bedh',
-            key_flat,
-            self.wk.view(self.num_experts, d, -1)
-        ).view(b, key.size(1), self.num_experts, -1)
-
-        v_all = torch.einsum(
-            'be, ehd -> bedh',
-            value.view(-1, d),
-            self.wv.view(self.num_experts, d, -1)
-        ).view(b, value.size(1), self.num_experts, -1)
-
-        # Select top_k experts and compute weighted sum
-        selected_k = torch.gather(
-            k_all,
-            2,
-            indices.unsqueeze(-1).expand(-1, -1, -1, k_all.size(-1))
-        )
-        selected_v = torch.gather(
-            v_all,
-            2,
-            indices.unsqueeze(-1).expand(-1, -1, -1, v_all.size(-1))
-        )
-
-        selected_k = (selected_k * weights).sum(dim=2)
-        selected_v = (selected_v * weights).sum(dim=2)
-
-        # Reshape to GQA format: (B, G, S, head_dim)
-        k = selected_k.view(b, key.size(1), self.num_groups, head_dim).transpose(1, 2)
-        v = selected_v.view(b, value.size(1), self.num_groups, head_dim).transpose(1, 2)
-
-        if not self.use_flash_attention:
-            group_heads = self.num_heads // self.num_groups
-
-            k = k.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
-            v = v.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
-
-            k = k.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
-            v = v.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
-
-        return q, k, v
+# Others
 
 class FlexAttention(MultiHeadAttention):
     def __init__(

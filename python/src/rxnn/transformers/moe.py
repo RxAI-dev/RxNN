@@ -77,29 +77,63 @@ class MoeFeedForward(nn.Module):
         return self.router.aux_loss
 
     def forward(self, x: torch.Tensor):
+        # orig_shape = x.shape
+        # x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
+        #
+        # # Get routing weights and indices
+        # weights, indices = self.router(x)  # [batch*seq_len, top_k]
+        #
+        # # Create expert masks and combine it with masks
+        # mask = F.one_hot(indices, self.num_experts).float()  # [batch*seq_len, top_k, num_experts]
+        # weights = (weights.unsqueeze(-1) * mask).sum(dim=1)  # [batch*seq_len, num_experts]
+        #
+        # # Expert computation
+        # x = x.unsqueeze(1).expand(-1, self.num_experts, -1)  # [batch*seq_len, num_experts, embed_dim]
+        #
+        # # First linear layer
+        # h = torch.einsum('bie,ieh->bih', x, self.w1) + self.b1  # [batch*seq_len, num_experts, hidden_dim]
+        # h = self._activate(h)
+        # h = self.dropout(h)
+        #
+        # # Second linear layer (projection back to embed_dim)
+        # out = torch.einsum('bih,ihe->bie', h, self.w2) + self.b2  # [batch*seq_len, num_experts, embed_dim]
+        #
+        # # Weighted sum of expert outputs
+        # out = (out * weights.unsqueeze(-1)).sum(dim=1)  # [batch*seq_len, embed_dim]
+        #
+        # return out.view(*orig_shape)
         orig_shape = x.shape
         x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
 
         # Get routing weights and indices
-        weights, indices = self.router(x)  # [batch*seq_len, top_k]
+        weights, indices = self.router(x)  # [batch*seq_len, top_k], [batch*seq_len, top_k]
 
-        # Create expert masks and combine it with masks
-        mask = F.one_hot(indices, self.num_experts).float()  # [batch*seq_len, top_k, num_experts]
-        weights = (weights.unsqueeze(-1) * mask).sum(dim=1)  # [batch*seq_len, num_experts]
+        # Flatten indices and weights
+        batch_size = x.size(0)
+        top_k = indices.size(1)
+        indices = indices.view(-1)  # [batch*seq_len * top_k]
+        weights = weights.view(-1, 1)  # [batch*seq_len * top_k, 1]
 
-        # Expert computation
-        x = x.unsqueeze(1).expand(-1, self.num_experts, -1)  # [batch*seq_len, num_experts, embed_dim]
+        # Select only the relevant experts for each token
+        selected_w1 = self.w1[indices]  # [batch*seq_len * top_k, embed_dim, hidden_dim]
+        selected_b1 = self.b1[indices]  # [batch*seq_len * top_k, hidden_dim]
+        selected_w2 = self.w2[indices]  # [batch*seq_len * top_k, hidden_dim, embed_dim]
+        selected_b2 = self.b2[indices]  # [batch*seq_len * top_k, embed_dim]
 
-        # First linear layer
-        h = torch.einsum('bie,ieh->bih', x, self.w1) + self.b1  # [batch*seq_len, num_experts, hidden_dim]
+        # Reshape x for batched computation
+        x_expanded = x.unsqueeze(1).repeat(1, top_k, 1).view(-1, self.embed_dim)  # [batch*seq_len * top_k, embed_dim]
+
+        # Compute only the selected experts
+        h = torch.einsum('be, beh -> bh', x_expanded, selected_w1) + selected_b1
         h = self._activate(h)
         h = self.dropout(h)
 
-        # Second linear layer (projection back to embed_dim)
-        out = torch.einsum('bih,ihe->bie', h, self.w2) + self.b2  # [batch*seq_len, num_experts, embed_dim]
+        out = torch.einsum('bh, bhe -> be', h, selected_w2) + selected_b2
 
-        # Weighted sum of expert outputs
-        out = (out * weights.unsqueeze(-1)).sum(dim=1)  # [batch*seq_len, embed_dim]
+        # Reshape back and apply weights
+        out = out.view(batch_size, top_k, -1)  # [batch*seq_len, top_k, embed_dim]
+        weights = weights.view(batch_size, top_k, 1)  # [batch*seq_len, top_k, 1]
+        out = (out * weights).sum(dim=1)  # Weighted sum over top_k experts
 
         return out.view(*orig_shape)
 
