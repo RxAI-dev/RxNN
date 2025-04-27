@@ -116,8 +116,12 @@ class GroupedMoeAttention(GroupedQueryAttention):
         q = self.q_proj(query).view(b, t, self.num_heads, -1).transpose(1, 2) if not skip_query_processing else query
 
         # Key/Value processing
-        B, S, _ = key.shape
-        weights_k, indices_k = self.router(key)
+        B, S, D = key.shape
+        key_flat = key.view(-1, D)
+        weights_k_flat, indices_k_flat = self.router(key_flat)
+        # Reshape back to original dimensions
+        weights_k = weights_k_flat.view(B, S, -1)
+        indices_k = indices_k_flat.view(B, S, -1)
         k = self._process_grouped_experts(key, self.wk, self.bk, weights_k, indices_k)
         v = self._process_grouped_experts(value, self.wv, self.bv, weights_k, indices_k)
 
@@ -210,8 +214,13 @@ class DeepMoeAttention(GroupedMoeAttention):
 
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, skip_query_processing: bool = False):
         # Query processing
-        B, T, _ = query.shape
-        weights_q, indices_q = self.query_router(query)
+        B, T, D = query.shape
+        # Flatten for query routing
+        query_flat = query.view(B * T, D)
+        weights_q_flat, indices_q_flat = self.query_router(query_flat)
+        # Reshape back
+        weights_q = weights_q_flat.view(B, T, -1)
+        indices_q = indices_q_flat.view(B, T, -1)
         q = self._process_grouped_experts(query, self.wq, self.bq, weights_q, indices_q)
         q = q.permute(0, 2, 1, 3).reshape(B, self.num_query_groups, T, -1)
 

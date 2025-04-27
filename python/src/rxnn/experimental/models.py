@@ -7,7 +7,6 @@ from ..transformers.attention import init_attention
 from ..transformers.layers import ClassicTransformerLayer
 from ..transformers.models import ClassicTransformerDecoder
 from ..transformers.ff import get_activation_layer
-from ..memory.stm import ShortTermMemory
 from ..utils import get_model_size
 from .attention import init_moe_attention
 
