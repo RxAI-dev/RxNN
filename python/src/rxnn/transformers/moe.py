@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from .ff import FeedForward, GatedFeedForward
 
 class MoeRouter(nn.Module):
     """Mixture-of-Experts Router layer - computes routing weights for each expert."""
@@ -14,17 +14,26 @@ class MoeRouter(nn.Module):
         # For expert load balancing
         self.register_buffer('aux_loss', torch.tensor(0.0), persistent=False)
 
+    def calculate_aux_loss(self, top_k_indices: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()
+        expert_usage = expert_mask.sum(dim=0).mean(dim=0)
+        mean_probs = probs.mean(dim=0)
+        return (expert_usage * mean_probs).sum() * self.num_experts
+
+
     def forward(self, x: torch.Tensor):
-        # x shape: [batch_size*seq_len, embed_dim]
+        # Input shape: [batch*seq_len, embed_dim]
         logits = self.gate(x)
         probs = F.softmax(logits, dim=-1)
 
-        # Expert load balancing loss
-        mean_probs = probs.mean(dim=0)  # Mean probability per expert across batch
-        self.aux_loss = (mean_probs * torch.log(mean_probs + 1e-9)).sum()  # Entropy-based loss
-
+        # Get top-k experts for each token
         top_k_weights, top_k_indices = probs.topk(self.top_k, dim=-1)
+
+        # Normalize weights (sum to 1 for each token)
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
+
+        # Load Balance Loss
+        self.aux_loss = self.calculate_aux_loss(top_k_indices, probs)
 
         return top_k_weights, top_k_indices
 
@@ -51,91 +60,43 @@ class MoeFeedForward(nn.Module):
         self.router = MoeRouter(embed_dim, num_experts, top_k)
 
         # Batch all expert parameters together
-        self.w1 = nn.Parameter(torch.empty(num_experts, embed_dim, self._w1_dim_factor(hidden_dim)))
-        self.b1 = nn.Parameter(torch.zeros(num_experts, self._w1_dim_factor(hidden_dim)))
-        self.w2 = nn.Parameter(torch.empty(num_experts, hidden_dim, embed_dim))
-        self.b2 = nn.Parameter(torch.zeros(num_experts, embed_dim))
-        self.activation = activation
-        self.dropout = nn.Dropout(dropout)
+        self._init_experts(num_experts, embed_dim, hidden_dim, activation, dropout)
 
-        # Initialize parameters
-        self._init_linear_parameters()
-        nn.init.zeros_(self.b1)
-        nn.init.zeros_(self.b2)
-
-    def _init_linear_parameters(self):
-        nn.init.kaiming_normal_(self.w1, nonlinearity='relu')
-        nn.init.kaiming_normal_(self.w2, nonlinearity='relu')
-
-    def _w1_dim_factor(self, hidden_dim: int) -> int:
-        return hidden_dim
-
-    def _activate(self, h: torch.Tensor):
-        return self.activation(h)
+    def _init_experts(self, num_experts: int, embed_dim: int, hidden_dim: int, activation: nn.Module, dropout: float):
+        self.experts = nn.ModuleList([
+            FeedForward(embed_dim, hidden_dim, activation, dropout)
+            for _ in range(num_experts)
+        ])
 
     def router_loss(self):
         return self.router.aux_loss
 
     def forward(self, x: torch.Tensor):
-        # orig_shape = x.shape
-        # x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
-        #
-        # # Get routing weights and indices
-        # weights, indices = self.router(x)  # [batch*seq_len, top_k]
-        #
-        # # Create expert masks and combine it with masks
-        # mask = F.one_hot(indices, self.num_experts).float()  # [batch*seq_len, top_k, num_experts]
-        # weights = (weights.unsqueeze(-1) * mask).sum(dim=1)  # [batch*seq_len, num_experts]
-        #
-        # # Expert computation
-        # x = x.unsqueeze(1).expand(-1, self.num_experts, -1)  # [batch*seq_len, num_experts, embed_dim]
-        #
-        # # First linear layer
-        # h = torch.einsum('bie,ieh->bih', x, self.w1) + self.b1  # [batch*seq_len, num_experts, hidden_dim]
-        # h = self._activate(h)
-        # h = self.dropout(h)
-        #
-        # # Second linear layer (projection back to embed_dim)
-        # out = torch.einsum('bih,ihe->bie', h, self.w2) + self.b2  # [batch*seq_len, num_experts, embed_dim]
-        #
-        # # Weighted sum of expert outputs
-        # out = (out * weights.unsqueeze(-1)).sum(dim=1)  # [batch*seq_len, embed_dim]
-        #
-        # return out.view(*orig_shape)
         orig_shape = x.shape
         x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
 
         # Get routing weights and indices
-        weights, indices = self.router(x)  # [batch*seq_len, top_k], [batch*seq_len, top_k]
+        weights, indices = self.router(x)  # [B*T, top_k], [B*T, top_k]
 
-        # Flatten indices and weights
-        batch_size = x.size(0)
-        top_k = indices.size(1)
-        indices = indices.view(-1)  # [batch*seq_len * top_k]
-        weights = weights.view(-1, 1)  # [batch*seq_len * top_k, 1]
+        # Create mask for expert contributions (B*T, num_experts)
+        expert_mask = F.one_hot(indices, self.num_experts).float()  # [B*T, top_k, num_experts]
+        expert_weights = (weights.unsqueeze(-1) * expert_mask).sum(dim=1)  # [B*T, num_experts]
 
-        # Select only the relevant experts for each token
-        selected_w1 = self.w1[indices]  # [batch*seq_len * top_k, embed_dim, hidden_dim]
-        selected_b1 = self.b1[indices]  # [batch*seq_len * top_k, hidden_dim]
-        selected_w2 = self.w2[indices]  # [batch*seq_len * top_k, hidden_dim, embed_dim]
-        selected_b2 = self.b2[indices]  # [batch*seq_len * top_k, embed_dim]
+        output = torch.zeros_like(x)
+        for expert_idx in range(self.num_experts):
+            # Mask for tokens where this expert is in top_k
+            mask = expert_weights[:, expert_idx] > 0
+            if not mask.any():
+                continue
 
-        # Reshape x for batched computation
-        x_expanded = x.unsqueeze(1).repeat(1, top_k, 1).view(-1, self.embed_dim)  # [batch*seq_len * top_k, embed_dim]
+            # Compute expert output for selected tokens
+            expert_input = x[mask]
+            expert_output = self.experts[expert_idx](expert_input)
 
-        # Compute only the selected experts
-        h = torch.einsum('be, beh -> bh', x_expanded, selected_w1) + selected_b1
-        h = self._activate(h)
-        h = self.dropout(h)
+            # Apply combined weights for this expert
+            output[mask] += expert_output * expert_weights[mask, expert_idx].unsqueeze(-1)
 
-        out = torch.einsum('bh, bhe -> be', h, selected_w2) + selected_b2
-
-        # Reshape back and apply weights
-        out = out.view(batch_size, top_k, -1)  # [batch*seq_len, top_k, embed_dim]
-        weights = weights.view(batch_size, top_k, 1)  # [batch*seq_len, top_k, 1]
-        out = (out * weights).sum(dim=1)  # Weighted sum over top_k experts
-
-        return out.view(*orig_shape)
+        return output.view(*orig_shape)
 
 
 class GatedMoeFeedForward(MoeFeedForward):
@@ -163,13 +124,8 @@ class GatedMoeFeedForward(MoeFeedForward):
             **kwargs
         )
 
-    def _init_linear_parameters(self):
-        nn.init.kaiming_normal_(self.w1, nonlinearity='relu')
-        nn.init.kaiming_normal_(self.w2, nonlinearity='linear')
-
-    def _w1_dim_factor(self, hidden_dim: int) -> int:
-        return 2 * hidden_dim
-
-    def _activate(self, h: torch.Tensor):
-        a, b = h.chunk(2, dim=-1)
-        return a * self.activation(b)
+    def _init_experts(self, num_experts: int, embed_dim: int, hidden_dim: int, activation: nn.Module, dropout: float):
+        self.experts = nn.ModuleList([
+            GatedFeedForward(embed_dim, hidden_dim, activation, dropout)
+            for _ in range(num_experts)
+        ])
