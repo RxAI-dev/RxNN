@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.attention import sdpa_kernel, SDPBackend
 import math
 from .positional import RotaryPositionalEmbedding, RelativePositionalEmbedding
 
@@ -17,7 +18,7 @@ class MultiHeadAttention(nn.Module):
             rope_only_for_query: bool = False,
             use_relative_embeddings: bool = False,
             max_seq_len: int = 1024,
-            use_flash_attention: bool = False,
+            use_flash_attention: bool = True,
             is_causal: bool = False,
             use_bias: bool = False,
             *args,
@@ -91,11 +92,24 @@ class MultiHeadAttention(nn.Module):
             attn_logits = attn_logits.masked_fill(mask == 0, float('-inf'))
         return F.softmax(attn_logits, dim=-1)
 
+    def _transpose_output(self, attn_output: torch.Tensor, b: int, t: int, d: int):
+        """Transpose attention output back to (B, T, D) shape"""
+        return attn_output.transpose(1, 2).contiguous().view(b, t, d)
+
     def _calculate_output(self, attn_weights: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int):
         """Calculate the output by multiplying attention weights with values and concatenating heads"""
-        return torch.matmul(attn_weights, v).transpose(1, 2).contiguous().view(b, t, d)
+        return self._transpose_output(torch.matmul(attn_weights, v), b, t, d)
 
     def _flash_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int,
+                         mask: torch.Tensor = None, enable_gqa: bool = False):
+        # After ~6h of fighthing, PyTorch based is still now working so I decided to use FlashAttention directly
+        # with sdpa_kernel(backends=[SDPBackend.FLASH_ATTENTION]):
+        #     return self._torch_attention(q, k, v, b, t, d, mask=mask, enable_gqa=enable_gqa)
+        from flash_attn import flash_attn_func
+        attn_output = flash_attn_func(q, k, v, dropout_p=self.dropout.p if self.training else 0.0, causal=self.is_causal)
+        return self._transpose_output(attn_output, b, t, d)
+
+    def _torch_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int,
                          mask: torch.Tensor = None, enable_gqa: bool = False):
         attn_output = F.scaled_dot_product_attention(
             q, k, v,
@@ -104,30 +118,29 @@ class MultiHeadAttention(nn.Module):
             is_causal=self.is_causal,
             enable_gqa=enable_gqa,
         )
+        return self._transpose_output(attn_output, b, t, d)
 
-        # Reshape back to (B, T, D)
-        return attn_output.transpose(1, 2).contiguous().view(b, t, d)
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
+        if self.use_flash_attention:
+            # Compute attention with FlashAttention
+            return self._flash_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask)
+        else:
+            # Compute attention using optimized PyTorch implementation
+            return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask)
 
-    def _calculate_flash_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int,
-                                   mask: torch.Tensor = None):
-        # Compute attention with FlashAttention
-        return self._flash_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask)
+    def _calculate_attention_with_relative_embedding(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
+        attn_weights = self._calculate_attn_weight_with_relative_embeddings(q, k, mask=mask)
+        attn_weights = self.dropout(attn_weights)
+        return self._calculate_output(attn_weights, v, b, t, d)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
         b, t, d = query.size()
         q, k, v = self._forward_qkv(query, key, value, b, t, d)
-        if self.use_flash_attention:
+        if not self.rel_embed:
             q, k = self._apply_rope(q, k)
-            attn_output = self._calculate_flash_attention(q, k, v, b, t, d, mask=mask)
+            attn_output = self._calculate_attention(q, k, v, b, t, d, mask=mask)
         else:
-            if not self.rel_embed:
-                attn_weights = self._calculate_attn_weights(q, k, d, mask=mask)
-            else:
-                attn_weights = self._calculate_attn_weight_with_relative_embeddings(q, k, mask=mask)
-
-            attn_weights = self.dropout(attn_weights)
-
-            attn_output = self._calculate_output(attn_weights, v, b, t, d)
+            attn_output = self._calculate_attention_with_relative_embedding(q, k, v, b, t, d, mask=mask)
         return self.out_proj(attn_output)
 
 
@@ -174,7 +187,7 @@ class GroupedQueryAttention(MultiHeadAttention):
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
         head_dim = d // self.num_heads
-        if self.use_flash_attention:
+        if not self.rel_embed:
             q = self.q_proj(query).view(b, t, self.num_heads, head_dim).transpose(1, 2)
             k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
             v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
@@ -198,12 +211,14 @@ class GroupedQueryAttention(MultiHeadAttention):
             v = v.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
         return q, k, v
 
-    def _calculate_flash_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int,
-                                   mask: torch.Tensor = None):
-        return self._flash_attention(
-            q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask,
-            enable_gqa=(self.num_heads != self.num_groups)
-        )
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
+        is_gqa = self.num_heads != self.num_groups
+        if self.use_flash_attention:
+            # Compute attention with FlashAttention
+            return self._flash_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=is_gqa)
+        else:
+            # Compute attention using optimized PyTorch implementation
+            return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=is_gqa)
 
 
 class MultiQueryAttention(MultiHeadAttention):
@@ -247,7 +262,7 @@ class MultiQueryAttention(MultiHeadAttention):
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
         """Override query, key, and value projections for GQA case - use multiple heads
         for query and single for key/values"""
-        if self.use_flash_attention:
+        if not self.rel_embed:
             q = self.q_proj(query).view(b, t, self.num_heads, d // self.num_heads).transpose(1, 2)
             k = self.k_proj(key).view(b, -1, 1, d // self.num_heads).transpose(1, 2)
             v = self.v_proj(value).view(b, -1, 1, d // self.num_heads).transpose(1, 2)
@@ -257,12 +272,13 @@ class MultiQueryAttention(MultiHeadAttention):
             v = self.v_proj(value).unsqueeze(1).expand(-1, self.num_heads, -1, -1)
         return q, k, v
 
-    def _calculate_flash_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int,
-                                   mask: torch.Tensor = None):
-        return self._flash_attention(
-            q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask,
-            enable_gqa=True
-        )
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
+        if self.use_flash_attention:
+            # Compute attention with FlashAttention
+            return self._flash_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=True)
+        else:
+            # Compute attention using optimized PyTorch implementation
+            return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=True)
 
 
 def init_attention(

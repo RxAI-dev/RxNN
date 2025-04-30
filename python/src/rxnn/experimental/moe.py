@@ -3,46 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from ..transformers.moe import MoeRouter
 
-class DynamicMoeRouter(nn.Module):
-    """Dynamic Mixture-of-Experts Router layer - dynamically selects top-k experts for each token."""
-
-    def __init__(self, embed_dim: int, num_experts: int, top_ks: tuple[int] = (1, 2, 3), *args, **kwargs):
-        super(DynamicMoeRouter, self).__init__(*args, **kwargs)
-        self.top_ks = top_ks
-        self.num_options = len(top_ks)
-        self.num_experts = num_experts
-        self.gate = nn.Linear(embed_dim, num_experts + self.num_options, bias=False)
-        # For expert load balancing
-        self.register_buffer('aux_loss', torch.tensor(0.0), persistent=False)
-
-    def calculate_aux_loss(self, top_k_indices: torch.Tensor, routing_probs: torch.Tensor) -> torch.Tensor:
-        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()
-        expert_usage = expert_mask.sum(dim=0).mean(dim=0)
-        mean_probs = routing_probs.mean(dim=0)
-        return (expert_usage * mean_probs).sum() * self.num_experts
-
-    def forward(self, x: torch.Tensor):
-        # Input shape: [batch*seq_len, embed_dim]
-        all_logits = self.gate(x)
-        routing_logits = all_logits[:, :-self.num_options]
-        options_logits = all_logits[:, -self.num_options:]
-
-        routing_probs = F.softmax(routing_logits, dim=-1)
-        top_k_id = torch.argmax(options_logits, dim=-1).item()
-
-        top_k = self.top_ks[top_k_id]
-
-        # Get top-k experts for each token
-        top_k_weights, top_k_indices = routing_probs.topk(top_k, dim=-1)
-
-        # Normalize weights (sum to 1 for each token)
-        top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
-
-        # Load Balance Loss
-        self.aux_loss = self.calculate_aux_loss(top_k_indices, routing_probs)
-
-        return top_k_weights, top_k_indices, top_k
-
 class MoeFeedForwardVectorized(nn.Module):
     """
     Vectorized MoE - current implementation is incorrect - it calculates all the experts, then selects the correct ones.

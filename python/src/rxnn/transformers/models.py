@@ -16,6 +16,7 @@ class ReactiveTransformerBase(nn.Module):
             shared_layers: nn.ModuleList = None,
             absolute_embedding: AbsolutePositionalEmbedding = None,
             use_flash_attention: bool = False,
+            use_relative_embedding: bool = False,
             *args,
             **kwargs,
     ):
@@ -25,6 +26,7 @@ class ReactiveTransformerBase(nn.Module):
         self.stm = stm
         self.pos_embedding = absolute_embedding
         self.use_flash_attention = use_flash_attention
+        self.use_relative_embedding = use_relative_embedding
 
         self.shared_layers = shared_layers
         self.layers = own_layers
@@ -38,8 +40,8 @@ class ReactiveTransformerBase(nn.Module):
             self.layers[i].trainable_cross_attention_(is_trainable)
 
     def moe_router_loss(self):
-        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe] + [
-            self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe]).mean()
+        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att] + [
+            self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe or self.shared_layers[i].use_moe_att]).mean()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
@@ -59,7 +61,7 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
         seq_len = x.size(1)
-        if not self.use_flash_attention:
+        if not self.use_flash_attention and self.use_relative_embedding:
             mask = create_causal_mask(seq_len, device=x.device)
             if attention_mask is not None:
                 mask &= attention_mask.unsqueeze(1).unsqueeze(1).bool()
@@ -111,6 +113,7 @@ class ClassicTransformerBase(nn.Module):
             layers: nn.ModuleList,
             absolute_embedding: AbsolutePositionalEmbedding = None,
             use_flash_attention: bool = False,
+            use_relative_embedding: bool = False,
             *args,
             **kwargs,
     ):
@@ -119,12 +122,13 @@ class ClassicTransformerBase(nn.Module):
         self.embedding = embedding
         self.pos_embedding = absolute_embedding
         self.use_flash_attention = use_flash_attention
+        self.use_relative_embedding = use_relative_embedding
 
         self.layers = layers
         self.num_layers = len(layers) if layers else 0
 
     def moe_router_loss(self):
-        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_layers) if self.layers[i].use_moe]).mean()
+        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att]).mean()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
@@ -144,7 +148,7 @@ class ClassicTransformerDecoder(ClassicTransformerBase):
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
         seq_len = x.size(1)
-        if not self.use_flash_attention:
+        if not self.use_flash_attention and self.use_relative_embedding:
             mask = create_causal_mask(seq_len, device=x.device)
             if attention_mask is not None:
                 mask &= attention_mask.unsqueeze(1).unsqueeze(1).bool()

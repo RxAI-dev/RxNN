@@ -22,6 +22,7 @@ class ReactiveTransformerLayer(nn.Module):
             use_moe: bool = False,
             num_experts: int = 1,
             moe_top_k: int = 1,
+            use_moe_att: bool = False,
             *args,
             **kwargs,
     ):
@@ -54,13 +55,31 @@ class ReactiveTransformerLayer(nn.Module):
             self.norm3 = nn.LayerNorm(embed_dim)
         self.use_post_norm = use_post_norm
         self.use_moe = use_moe
+        self.use_moe_att = use_moe_att
 
     def trainable_cross_attention_(self, is_trainable: bool):
         for param in self.memory_cross_attention.parameters():
             param.requires_grad_(is_trainable)
 
     def moe_router_loss(self):
-        return self.ff.router_loss() if self.use_moe else None
+        ff_router_loss = self.ff.router_loss() if self.use_moe else None
+        att_router_loss = None
+        if self.use_moe_att:
+            if self.attention.router_loss is not None and self.memory_cross_attention.router_loss is not None:
+                att_router_loss = (self.attention.router_loss() + self.memory_cross_attention.router_loss()) / 2
+            elif self.attention.router_loss is not None:
+                att_router_loss = self.attention.router_loss()
+            elif self.memory_cross_attention.router_loss is not None:
+                att_router_loss = self.memory_cross_attention.router_loss()
+
+        if ff_router_loss is not None and att_router_loss is not None:
+            return (ff_router_loss + att_router_loss) / 2
+        elif ff_router_loss is not None:
+            return ff_router_loss
+        elif att_router_loss is not None:
+            return att_router_loss
+        else:
+            return None
 
     def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         # First step, self-attention
@@ -107,6 +126,7 @@ class ClassicTransformerLayer(nn.Module):
             use_moe: bool = False,
             num_experts: int = 1,
             moe_top_k: int = 1,
+            use_moe_att: bool = False,
             *args,
             **kwargs,
     ):
@@ -116,9 +136,10 @@ class ClassicTransformerLayer(nn.Module):
 
         if use_gated:
             if use_moe:
-                self.ff = GatedMoeFeedForward(embed_dim, ff_dim, num_experts, top_k=moe_top_k, dropout=ff_dropout)
+                self.ff = GatedMoeFeedForward(embed_dim, ff_dim, num_experts, ff_activation, top_k=moe_top_k,
+                                              dropout=ff_dropout)
             else:
-                self.ff = GatedFeedForward(embed_dim, ff_dim, dropout=ff_dropout)
+                self.ff = GatedFeedForward(embed_dim, ff_dim, ff_activation, dropout=ff_dropout)
         else:
             if use_moe:
                 self.ff = MoeFeedForward(embed_dim, ff_dim, num_experts, ff_activation, top_k=moe_top_k,
@@ -134,9 +155,20 @@ class ClassicTransformerLayer(nn.Module):
             self.norm2 = nn.LayerNorm(embed_dim)
         self.use_post_norm = use_post_norm
         self.use_moe = use_moe
+        self.use_moe_att = use_moe_att
 
     def moe_router_loss(self):
-        return self.ff.router_loss() if self.use_moe else torch.tensor(0.0)
+        ff_router_loss = self.ff.router_loss() if self.use_moe else None
+        att_router_loss = self.attention.router_loss() if self.use_moe_att and self.attention.router_loss is not None else None
+
+        if ff_router_loss is not None and att_router_loss is not None:
+            return (ff_router_loss + att_router_loss) / 2
+        elif ff_router_loss is not None:
+            return ff_router_loss
+        elif att_router_loss is not None:
+            return att_router_loss
+        else:
+            return None
 
     def forward(self, x: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         # First step, self-attention

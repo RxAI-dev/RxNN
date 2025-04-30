@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 from .ff import FeedForward, GatedFeedForward
 
 class MoeRouter(nn.Module):
@@ -14,24 +15,47 @@ class MoeRouter(nn.Module):
         # For expert load balancing
         self.register_buffer('aux_loss', torch.tensor(0.0), persistent=False)
 
-    def calculate_aux_loss(self, top_k_indices: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
-        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()
-        expert_usage = expert_mask.sum(dim=0).mean(dim=0)
-        mean_probs = probs.mean(dim=0)
-        return (expert_usage * mean_probs).sum() * self.num_experts
+    # def calculate_aux_loss(self, top_k_indices: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+    #     expert_mask = F.one_hot(top_k_indices, self.num_experts).float()
+    #     expert_usage = expert_mask.sum(dim=0).mean(dim=0)
+    #     mean_probs = probs.mean(dim=0)
+    #     return (expert_usage * mean_probs).sum() * self.num_experts
 
+    def calculate_aux_loss(self, top_k_indices: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
+        # Get shapes
+        T, K = top_k_indices.shape  # Batch, Sequence length, Top-K
+
+        # 1. Compute expert selection mask (one-hot encoded)
+        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()  # (B, S, K, E)
+
+        # 2. Total number of times each expert is selected
+        expert_usage = expert_mask.sum(dim=(0, 1))  # (E,)
+
+        # 3. Fraction of tokens assigned to each expert
+        total_selections = T * K
+        fraction_expert = expert_usage / (total_selections + 1e-6)  # (E,)
+
+        # 4. Sum of probabilities for each expert's selected tokens
+        probs_expanded = probs.unsqueeze(1).expand(-1, K, -1)  # (B_K, K, E)
+        sum_probs = (probs_expanded * expert_mask).sum(dim=(0, 1))
+
+        # 5. Average probability per expert (avoid division by zero)
+        avg_probs = sum_probs / expert_usage.clamp(min=1e-6)  # (E,)
+
+        # 6. Compute load balancing loss
+        loss = (fraction_expert * avg_probs).sum() * self.num_experts
+
+        return loss
 
     def forward(self, x: torch.Tensor):
         # Input shape: [batch*seq_len, embed_dim]
         logits = self.gate(x)
         probs = F.softmax(logits, dim=-1)
-
         # Get top-k experts for each token
         top_k_weights, top_k_indices = probs.topk(self.top_k, dim=-1)
 
         # Normalize weights (sum to 1 for each token)
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
-
         # Load Balance Loss
         self.aux_loss = self.calculate_aux_loss(top_k_indices, probs)
 

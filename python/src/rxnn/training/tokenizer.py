@@ -206,3 +206,9 @@ class TokenizerTrainer:
         trainer = cls()
         trainer.load(tokenizer_file)
         return trainer
+
+def load_tokenizer_from_hf_hub(repo_id: str, **kwargs) -> PreTrainedTokenizerFast:
+    return TokenizerTrainer.from_pretrained(repo_id, **kwargs).get_hf_tokenizer()
+
+def load_tokenizer_from_file(path: str) -> PreTrainedTokenizerFast:
+    return TokenizerTrainer.hf_tokenizer_from_file(path)

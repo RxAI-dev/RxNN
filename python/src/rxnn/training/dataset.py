@@ -1,7 +1,8 @@
 import torch
 from torch.utils.data import Dataset
-from datasets import Dataset as HfDataset
-from transformers import PreTrainedTokenizer
+from datasets import Dataset as HfDataset, load_dataset, concatenate_datasets
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+from .tokenizer import load_tokenizer_from_hf_hub
 
 from typing import Union
 
@@ -10,10 +11,9 @@ class BaseDataset(Dataset):
     def __init__(
             self,
             texts: Union[list[str], HfDataset],
-            tokenizer: PreTrainedTokenizer,
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
             max_seq_len: int = 1024,
             hf_field: str = 'text',
-            merge_short_from: int = None,
             *args,
             **kwargs
     ):
@@ -22,7 +22,6 @@ class BaseDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.texts = texts
         self.hf_field = hf_field
-        self.merge_short_from = merge_short_from
 
     def get_tokenized_text(self, idx: int):
         if isinstance(self.texts, list):
@@ -44,6 +43,93 @@ class BaseDataset(Dataset):
             inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
 
         return inputs
+
+    @classmethod
+    def from_hf_hub(
+            cls,
+            dataset_id: str,
+            subset: str = None,
+            split: str = 'train',
+            target_field: str = 'text',
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast] = None,
+            tokenizer_hub_id: str = None,
+            max_seq_len: int = 1024,
+            load_kwargs: dict = None,
+            load_tokenizer_kwargs: dict = None,
+            **kwargs
+    ):
+        """
+        Load dataset from HuggingFace Hub and convert it to RxNN training dataset.
+
+        One of the `tokenizer` or `tokenizer_hub_id` args must be provided. If both are provided, `tokenizer` will be used.
+
+        Args:
+            dataset_id (str): Hub dataset repository name
+            subset (str): Dataset subset
+            split (str): Dataset split (default: "train")
+            target_field (str): Name of dataset field used for training (default: "text")
+            tokenizer (PreTrainedTokenizer): HuggingFace Tokenizer used for training (default: None)
+            tokenizer_hub_id (str): HuggingFace Hub ID of tokenizer to load (default: None)
+            max_seq_len (int): Maximum sequence length for training (default: 1024)
+            load_kwargs (dict): Additional args for HuggingFace API load_dataset function
+            load_tokenizer_kwargs (dict): Additional args for loading tokenizer from HuggingFace API with `huggingface_hub.hf_hub_download`
+            **kwargs: Additional args for RxNN Dataset class
+        """
+        assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if tokenizer is None:
+            tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
+
+        hf_dataset = load_dataset(dataset_id, subset, split=split, **load_kwargs)
+
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs)
+
+    @classmethod
+    def concat_from_hf_hub(
+            cls,
+            dataset_ids: tuple[str],
+            subsets: tuple[str] = None,
+            split: str = 'train',
+            target_field: str = 'text',
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast] = None,
+            tokenizer_hub_id: str = None,
+            max_seq_len: int = 1024,
+            load_kwargs: dict = None,
+            load_tokenizer_kwargs: dict = None,
+            **kwargs
+    ):
+        """
+        Load and concatenate multiple datasets from HuggingFace Hub and convert them to RxNN training dataset.
+        All datasets should use the same split and target field. If it's not the case, just use `load_dataset` and pass the
+        result to RxNN dataset constructor directly.
+
+        One of the `tokenizer` or `tokenizer_hub_id` args must be provided. If both are provided, `tokenizer` will be used.
+
+        Args:
+            dataset_ids (tuple[str]): Hub dataset repository names
+            subsets (tuple[str]): Dataset subsets (default: None)
+            split (str): Dataset split (default: "train")
+            target_field (str): Name of dataset field used for training (default: "text")
+            tokenizer (PreTrainedTokenizer): HuggingFace Tokenizer used for training (default: None)
+            tokenizer_hub_id (str): HuggingFace Hub ID of tokenizer to load (default: None)
+            max_seq_len (int): Maximum sequence length for training (default: 1024)
+            load_kwargs (dict): Additional args for HuggingFace API load_dataset function
+            load_tokenizer_kwargs (dict): Additional args for loading tokenizer from HuggingFace API with `huggingface_hub.hf_hub_download`
+            **kwargs: Additional args for RxNN Dataset class
+        """
+        assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if tokenizer is None:
+            tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
+
+        hf_datasets = [
+            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in zip(dataset_ids, subsets)
+        ] if subsets is not None else [
+            load_dataset(dataset_id, split=split, **load_kwargs) for dataset_id in dataset_ids
+        ]
+        hf_dataset = concatenate_datasets(hf_datasets)
+
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs)
 
 
 class JointLMDataset(BaseDataset):

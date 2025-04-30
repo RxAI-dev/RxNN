@@ -50,6 +50,10 @@ class BaseTrainer(ABC):
         self.target_field_name = target_field_name
         self.total_tokens = 0
         self.total_steps = 0
+        self.validation_steps = 0
+        self.total_validation_steps = 0
+        self.epoch_steps = 0
+        self.current_epoch = 0
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.accumulated_loss = 0.0
         self.optimizer_step_count = 0
@@ -108,8 +112,10 @@ class BaseTrainer(ABC):
         scaler = torch.amp.GradScaler() if self.use_amp else None
 
         self.model.train()
-        for epoch in range(epochs):
+        for epoch in range(self.current_epoch, self.current_epoch + epochs):
             if self.is_running:
+                self.current_epoch = epoch
+                self.epoch_steps = 0
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
                 self._run_epoch(dataloader, epoch, optimizer, batch_size, scaler=scaler, scheduler=scheduler)
@@ -142,6 +148,7 @@ class BaseTrainer(ABC):
                     callback.on_batch_start(self.model, batch_idx, batch)
                 if self.get_batch_size(batch) == batch_size:
                     self.total_steps += 1
+                    self.epoch_steps = batch_idx
                     loss = self.train_step(batch, batch_idx)
                     orig_loss = loss.item()
                     self.accumulated_loss += orig_loss
@@ -174,25 +181,28 @@ class BaseTrainer(ABC):
                             self.writer.add_scalar(
                                 'Loss/train',
                                 loss_item,
-                                epoch * len(dataloader) + batch_idx
+                                self.total_steps,
                             )
                             self.writer.add_scalar(
-                                'Loss per epoch/train',
+                                'Loss/train last epoch',
                                 loss_item,
                                 batch_idx
                             )
                             self.writer.add_scalar(
                                 'Perplexity/train',
                                 torch.exp(torch.tensor(loss_item)),
-                                epoch * len(dataloader) + batch_idx
+                                self.total_steps,
                             )
                         self.accumulated_loss = 0.0
                         self.optimizer_step_count = 0
 
                     if self.writer:
                         self.total_tokens += batch['attention_mask'].sum().item()
-                        self.writer.add_scalar('Processed tokens', self.total_tokens,
-                                               epoch * len(dataloader) + batch_idx)
+                        self.writer.add_scalar(
+                            'Processed tokens',
+                            self.total_tokens,
+                            self.total_steps
+                        )
 
                     for callback in self.callbacks:
                         should_stop = callback.on_batch_end(self.model, batch_idx, orig_loss, batch)
@@ -200,6 +210,7 @@ class BaseTrainer(ABC):
                             self.is_running = False
 
         if self.validation_dataset:
+            self.validation_steps = 0
             val_loss, val_metrics = self.validate(batch_size)
             val_loss_tensor = torch.tensor(val_loss).to(self.device)
             if self.use_ddp:
@@ -270,6 +281,8 @@ class BaseTrainer(ABC):
         with torch.no_grad():
             for batch in val_dataloader:
                 if self.get_batch_size(batch) == batch_size:
+                    self.validation_steps += 1
+                    self.total_validation_steps += 1
                     loss, outputs = self.valid_step(batch)
                     val_loss += loss.item()
 

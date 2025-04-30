@@ -35,7 +35,7 @@ class MoeAttentionTransformerConfig(TypedDict):
 
 
 class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
-    """Research model for experiments with Mixture-of-Experts Attention"""
+    """Research decoder model for experiments with Mixture-of-Experts Attention"""
 
     def __init__(
             self,
@@ -65,8 +65,7 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
-        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'gma_v',
-                            'dma_v'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "gma_v", "dma_v"'
+        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'gma_s', 'dma_s'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "gma_s", "dma_s".'
 
         embedding = nn.Embedding(vocab_size, embed_dim)
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
@@ -84,6 +83,8 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
                                                   num_query_experts=att_num_query_experts,
                                                   num_query_groups=att_num_query_groups)
 
+        use_moe_att = att_type in ['gma', 'dma', 'gma_s', 'dma_s']
+
         self.model = ClassicTransformerDecoder(
             embed_dim,
             vocab_size,
@@ -100,6 +101,7 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
                     ff_dropout=ff_dropout,
                     use_rms_norm=use_rms_norm,
                     self_attention=att_init(),
+                    use_moe_att=use_moe_att,
                 ) for _ in range(num_layers)
             ]),
             use_flash_attention=use_flash_attention,
@@ -111,6 +113,5 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
     def load_shared_embedding(self, embedding: nn.Embedding):
         self.model.embedding = embedding
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> Union[
-        torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
