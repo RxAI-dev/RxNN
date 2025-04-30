@@ -269,7 +269,7 @@ class SparseQueryAttention(MultiHeadAttention):
         self.v_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
 
     def _init_q(self, embed_dim: int):
-        self.q_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_query_groups))
+        self.q_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_query_groups), bias=self.use_bias)
 
     def _init_out(self, embed_dim: int):
         """Initialize output projection"""
@@ -314,240 +314,6 @@ class SparseQueryAttention(MultiHeadAttention):
         else:
             # Compute attention using optimized PyTorch implementation
             return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=is_gqa)
-
-
-
-
-class GroupedMoeAttentionSimplified(GroupedQueryAttention):
-    """
-    Grouped MoE Attention (GMA) - GQA extended with Mixture-of-Experts (MoE) routing.
-
-    Instead of mapping keys/values to static head groups, it dynamically selects head expert groups. It has the same
-    number of total keys/values heads as query heads, but uses only a selected group for attention calculation.
-    - with num_groups set to 1, it will be MoE MultiQueryAttention
-
-    Compared to traditional GQA/MQA, it should provide better performance, because lot less data could be lost using
-    this approach - we are training the full number of keys/values heads, while using only a group.
-
-    In case of efficiency, it should be close to GQA/MQA linear performance, but with a small MoE routing overhead.
-
-    Optionally, it could use even more expert heads than attention heads - in example:
-    - 512 dim divided into 16 heads with 32 dim, using 4 head groups - may use i.e., 24 total expert heads - still only
-    4 will be used for attention calculation, while 16 is used to split dimensions (in that case it will have 16 query heads)
-
-    © 2025 Adam Filipek
-    """
-
-    def __init__(
-            self,
-            embed_dim: int,
-            num_heads: int,
-            num_groups: int,
-            dropout: float = 0.0,
-            rope: RotaryPositionalEmbedding = None,
-            rope_only_for_query: bool = False,
-            use_relative_embeddings: bool = False,
-            max_seq_len: int = 1024,
-            use_flash_attention: bool = False,
-            is_causal: bool = False,
-            use_bias: bool = False,
-            num_experts: int = None,
-            *args,
-            **kwargs,
-    ):
-        self.num_experts = num_experts or num_heads
-        super(GroupedMoeAttentionSimplified, self).__init__(
-            embed_dim,
-            num_heads,
-            num_groups=num_groups,
-            dropout=dropout,
-            rope=rope,
-            rope_only_for_query=rope_only_for_query,
-            use_relative_embeddings=use_relative_embeddings,
-            max_seq_len=max_seq_len,
-            use_flash_attention=use_flash_attention,
-            is_causal=is_causal,
-            use_bias=use_bias,
-            *args,
-            **kwargs,
-        )
-
-    def router_loss(self):
-        return self.router.aux_loss
-
-    def _init_kv(self, embed_dim: int):
-        self.router = MoeRouter(embed_dim, self.num_experts, top_k=self.num_groups)
-
-        hidden_dim = embed_dim // self.num_heads
-        self.wk = nn.Parameter(torch.empty(self.num_experts, hidden_dim, embed_dim))
-        self.bk = nn.Parameter(torch.zeros(self.num_experts, hidden_dim)) if self.use_bias else None
-        self.wv = nn.Parameter(torch.empty(self.num_experts, hidden_dim, embed_dim))
-        self.bv = nn.Parameter(torch.zeros(self.num_experts, hidden_dim)) if self.use_bias else None
-        self._init_experts()
-
-    def _init_experts(self):
-        nn.init.xavier_uniform_(self.wk)
-        nn.init.xavier_uniform_(self.wv)
-        if self.use_bias:
-            nn.init.zeros_(self.bk)
-            nn.init.zeros_(self.bv)
-
-    def _process_grouped_experts(self, x: torch.Tensor, w: torch.Tensor, b: torch.Tensor, weights: torch.Tensor, indices: torch.Tensor):
-        B, S, G = indices.shape
-        x_flat = x.view(-1, x.size(-1))  # [B*S, D]
-
-        indices_flat = indices.view(-1, G)  # [B*S, G]
-        weights_flat = weights.view(-1, G)  # [B*S, G]
-
-        output = torch.zeros(B * S, G, w.size(1), device=x.device, dtype=x.dtype)  # [B*S, G, hidden_dim]
-
-        for e in range(self.num_experts):
-            # 1. Find tokens where expert `e` is used in ANY group
-            expert_mask = (indices_flat == e).any(dim=1)  # [B*S]
-            if not expert_mask.any():
-                continue
-
-            # 2. Project tokens using expert `e`
-            x_slice = x_flat[expert_mask]  # [num_selected, D]
-            proj = F.linear(x_slice, w[e], b[e] if b is not None else None)  # [num_selected, hidden_dim]
-
-            # 3. Scatter projections into correct groups
-            for g in range(G):
-                group_mask = indices_flat[expert_mask, g] == e  # [num_selected]
-                if not group_mask.any():
-                    continue
-
-                # Get tokens in this group using expert `e`
-                group_tokens = expert_mask.nonzero()[group_mask].squeeze(1)
-                # Weight and scatter
-                weighted_proj = proj[group_mask] * weights_flat[group_tokens, g].unsqueeze(-1)
-                output[group_tokens, g] += weighted_proj
-
-        return output.view(B, S, G, -1)
-
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int,
-                     skip_query_processing: bool = False):
-        q = self.q_proj(query).view(b, t, self.num_heads, -1).transpose(1, 2) if not skip_query_processing else query
-
-        # Key/Value processing
-        B, S, D = key.shape
-        key_flat = key.view(-1, D)
-        weights_k_flat, indices_k_flat = self.router(key_flat)
-        # Reshape back to original dimensions
-        weights_k = weights_k_flat.view(B, S, -1)
-        indices_k = indices_k_flat.view(B, S, -1)
-        k = self._process_grouped_experts(key, self.wk, self.bk, weights_k, indices_k)
-        v = self._process_grouped_experts(value, self.wv, self.bv, weights_k, indices_k)
-
-        # Expand to GQA format
-        k = k.permute(0, 2, 1, 3).reshape(B, self.num_groups, S, -1)
-        v = v.permute(0, 2, 1, 3).reshape(B, self.num_groups, S, -1)
-
-        if not self.rel_embed:
-            group_heads = self.num_heads // self.num_groups
-
-            k = k.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
-            v = v.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
-
-            k = k.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
-            v = v.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
-
-        return q, k, v
-
-
-class DeepMoeAttentionSimplified(GroupedMoeAttentionSimplified):
-    """
-    Deep MoE Attention (SMA) - Grouped MoE Attention extended even more for sublinear computational efficiency.
-
-    In addition to using Mixture-of-Experts (MoE) for key/value head groups, SMA is also using dynamically selected
-    query heads - with that approach, each token could attend to every other token, but only partially - only some part of
-    information from each token is used to identify related information parts from other tokens. So, DMA is not spatially
-    sparse (has access to all tokens), but rather structurally sparse (has access only to the part of token's information).
-
-    This solution could reduce the computational complexity of attention operation to sublinear level (<O(N)) and provide
-    a viable and efficient alternative to spatial sparse attention mechanisms like Flex Attention.
-
-    © 2025 Adam Filipek
-    """
-
-    def __init__(
-            self,
-            embed_dim: int,
-            num_heads: int,
-            num_groups: int,
-            dropout: float = 0.0,
-            rope: RotaryPositionalEmbedding = None,
-            rope_only_for_query: bool = False,
-            use_relative_embeddings: bool = False,
-            max_seq_len: int = 1024,
-            use_flash_attention: bool = False,
-            is_causal: bool = False,
-            use_bias: bool = False,
-            num_experts: int = None,
-            num_query_experts: int = None,
-            num_query_groups: int = None,
-            *args,
-            **kwargs,
-    ):
-        self.num_query_experts = num_query_experts if num_query_experts is not None else num_heads
-        self.num_query_groups = num_query_groups if num_query_groups is not None else num_groups
-        super(DeepMoeAttentionSimplified, self).__init__(
-            embed_dim,
-            num_heads,
-            num_groups=num_groups,
-            dropout=dropout,
-            rope=rope,
-            rope_only_for_query=rope_only_for_query,
-            use_relative_embeddings=use_relative_embeddings,
-            max_seq_len=max_seq_len,
-            use_flash_attention=use_flash_attention,
-            is_causal=is_causal,
-            use_bias=use_bias,
-            num_experts=num_experts,
-            *args,
-            **kwargs,
-        )
-
-    def router_loss(self):
-        return (self.router.aux_loss + self.query_router.aux_loss) / 2
-
-    def _init_q(self, embed_dim: int):
-        self.query_router = MoeRouter(embed_dim, self.num_query_experts, top_k=self.num_query_groups)
-
-        hidden_dim = embed_dim // self.num_heads
-        self.wq = nn.Parameter(torch.empty(self.num_query_experts, hidden_dim, embed_dim))
-        self.bq = nn.Parameter(torch.zeros(self.num_query_experts, hidden_dim)) if self.use_bias else None
-        self._init_query_experts()
-
-    def _init_query_experts(self):
-        nn.init.xavier_uniform_(self.wq)
-        if self.use_bias:
-            nn.init.zeros_(self.bq)
-
-    def _init_out(self, embed_dim: int):
-        """Initialize output projection"""
-        hidden_dim = embed_dim // (self.num_heads // self.num_query_groups)
-        self.out_proj = nn.Linear(hidden_dim, embed_dim)
-
-    def _transpose_output(self, attn_output: torch.Tensor, b: int, t: int, d: int):
-        """Transpose attention output back to (B, T, D) shape"""
-        hidden_dim = d // self.num_heads * self.num_query_groups
-        return attn_output.transpose(1, 2).contiguous().view(b, t, hidden_dim)
-
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, skip_query_processing: bool = False):
-        # Query processing
-        B, T, D = query.shape
-        # Flatten for query routing
-        query_flat = query.view(-1, D)
-        weights_q_flat, indices_q_flat = self.query_router(query_flat)
-        # Reshape back
-        weights_q = weights_q_flat.view(B, T, -1)
-        indices_q = indices_q_flat.view(B, T, -1)
-        q = self._process_grouped_experts(query, self.wq, self.bq, weights_q, indices_q)
-
-        q = q.permute(0, 2, 1, 3).reshape(B, self.num_query_groups, T, -1)
-        # Key/Value processing
-        return super()._forward_qkv(q, key, value, b, t, d, skip_query_processing=True)
 
 
 # Others
@@ -700,7 +466,7 @@ def init_experimental_attention(
         num_query_experts: int = None,
         num_query_groups: int = None,
 ) -> MultiHeadAttention:
-    assert attention_type in ['gma', 'dma', 'gma_s', 'dma_s', 'sqa'], "Error, attention type should be one of: 'gma', 'dma', 'gma_s', 'dma_s', 'sqa'"
+    assert attention_type in ['gma', 'dma', 'sqa'], "Error, attention type should be one of: 'gma', 'dma', 'sqa'"
 
     if attention_type == "gma":
         return GroupedMoeAttention(
@@ -734,7 +500,7 @@ def init_experimental_attention(
             num_query_experts=num_query_experts,
             num_query_groups=num_query_groups,
         )
-    elif attention_type == 'sqa':
+    else:
         return SparseQueryAttention(
             embed_dim,
             num_heads,
@@ -748,36 +514,4 @@ def init_experimental_attention(
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
-        )
-    elif attention_type == "gma_s":
-        return GroupedMoeAttentionSimplified(
-            embed_dim,
-            num_heads,
-            gqa_groups,
-            dropout=dropout,
-            rope=rope,
-            use_relative_embeddings=use_relative_embeddings,
-            max_seq_len=max_seq_len,
-            rope_only_for_query=rope_only_for_query,
-            use_flash_attention=use_flash_attention,
-            is_causal=is_causal,
-            use_bias=use_bias,
-            num_experts=num_experts,
-        )
-    else:
-        return DeepMoeAttentionSimplified(
-            embed_dim,
-            num_heads,
-            gqa_groups,
-            dropout=dropout,
-            rope=rope,
-            use_relative_embeddings=use_relative_embeddings,
-            max_seq_len=max_seq_len,
-            rope_only_for_query=rope_only_for_query,
-            use_flash_attention=use_flash_attention,
-            is_causal=is_causal,
-            use_bias=use_bias,
-            num_experts=num_experts,
-            num_query_experts=num_query_experts,
-            num_query_groups=num_query_groups,
         )

@@ -1,7 +1,18 @@
 # Hierarchical Mixture-of-Experts Attention - dynamic attention head selection based on token importance
 by Adam Filipek/Reactive AI
+
+> Because of poor results of Mixture-of-Experts based attention ([Group MoE Attention and Deep MoE Attention](./moe_attention.md)), I will
+> not work on Hierarchical variant at this time. Maybe I'll back to it some time, but for now I'll leave the algorithm description, maybe
+> someone will try to experiment with it. Anyway, according to my experiment's results I'm recommending trying
+> [SparseQueryAttention (SQA)](./sparse_query_attention.md) as a viable alternative for GQA and GQA with the biggest computational
+> complexity reduction (better results than MQA, ~10% faster).
+
 ## Abstract
-WORK IN PROGRESS
+In my previous research, I used Mixture-of-Expert routing for dynamic attention heads (experts) selection. In that approach, and in all other
+popular solutions, all tokens are treated the same, with the same importance. However, in Natural Language Processing, not all tokens have
+the same importance - some words are critical for a sequence, but others, like stop words, are not important at all. Using the same amount of
+information for each token may be not optimal. Hierarchical Mixture-of-Experts Attention is introducing more dynamic hierarchical routing,
+assigning different number of query and key/value heads to each token, based on its importance
 
 
 ## Hierarchical Mixture-of-Experts Attention (Hierarchical MoE Attention/HMA)

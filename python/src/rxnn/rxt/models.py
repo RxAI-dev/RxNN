@@ -82,22 +82,22 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
         if self_att_type in ['mha', 'gqa', 'mqa']:
             att_init = lambda: init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=True)
+                                              max_seq_len=seq_len, is_causal=is_causal)
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                           max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
+                                                           max_seq_len=seq_len, is_causal=is_causal, num_experts=att_num_experts,
                                                            num_query_experts=att_num_query_experts,
                                                            num_query_groups=att_num_query_groups)
 
         if cross_att_type in ['mha', 'gqa', 'mqa']:
-            cross_att_init = lambda: init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+            cross_att_init = lambda: init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=True)
+                                              max_seq_len=seq_len, is_causal=is_causal)
         else:
-            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                           max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
+                                                           max_seq_len=seq_len, is_causal=is_causal, num_experts=att_num_experts,
                                                            num_query_experts=att_num_query_experts,
                                                            num_query_groups=att_num_query_groups)
 
