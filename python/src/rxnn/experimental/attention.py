@@ -283,12 +283,12 @@ class SparseQueryAttention(MultiHeadAttention):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
         head_dim = d // self.num_heads
         if not self.rel_embed:
-            q = self.q_proj(query).view(b, t, self.num_query_heads, head_dim).transpose(1, 2)
+            q = self.q_proj(query).view(b, t, self.num_query_groups, head_dim).transpose(1, 2)
             k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
             v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
         else:
             group_heads = self.num_heads // self.num_groups
-            query_heads = self.num_query_heads // self.num_query_groups
+            query_heads = self.num_heads // self.num_query_groups
             # Process Q
             q = self.q_proj(query).view(b, -1, self.num_query_groups, head_dim).transpose(1, 2)  # (B, Q_G, T, head_dim)
 
