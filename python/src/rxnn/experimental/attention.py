@@ -683,7 +683,7 @@ class InfiniteAttention(MultiHeadAttention):
         attn = torch.softmax(attn, dim=-1)
         return torch.einsum('b h i j, b h j d -> b h i d', attn, v)
 
-def init_moe_attention(
+def init_experimental_attention(
         embed_dim: int,
         num_heads: int,
         attention_type: str,

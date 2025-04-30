@@ -8,7 +8,7 @@ from ..transformers.layers import ClassicTransformerLayer
 from ..transformers.models import ClassicTransformerDecoder
 from ..transformers.ff import get_activation_layer
 from ..utils import get_model_size
-from .attention import init_moe_attention
+from .attention import init_experimental_attention
 
 
 class MoeAttentionTransformerConfig(TypedDict):
@@ -77,11 +77,11 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
                                               max_seq_len=seq_len, is_causal=True)
         else:
-            att_init = lambda: init_moe_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
-                                                  use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                  max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
-                                                  num_query_experts=att_num_query_experts,
-                                                  num_query_groups=att_num_query_groups)
+            att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
+                                                           use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                           max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
+                                                           num_query_experts=att_num_query_experts,
+                                                           num_query_groups=att_num_query_groups)
 
         use_moe_att = att_type in ['gma', 'dma', 'gma_s', 'dma_s']
 

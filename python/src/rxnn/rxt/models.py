@@ -9,7 +9,7 @@ from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEn
 from ..transformers.ff import get_activation_layer
 from ..memory.stm import ShortTermMemory
 from ..utils import get_model_size
-
+from ..experimental.attention import init_experimental_attention
 
 class RxTAlphaComponentConfig(TypedDict):
     num_layers: int
@@ -31,6 +31,9 @@ class RxTAlphaComponentConfig(TypedDict):
     moe_top_k: int
     self_att_type: str
     cross_att_type: str
+    att_num_experts: int
+    att_num_query_experts: int
+    att_num_query_groups: int
 
 
 class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
@@ -58,20 +61,45 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
             moe_top_k: int = 1,
             self_att_type: str = 'gqa',
             cross_att_type: str = 'mqa',
+            att_num_experts: int = None,
+            att_num_query_experts: int = None,
+            att_num_query_groups: int = None,
             **kwargs
     ):
         super(RxTAlphaComponentBase, self).__init__(**kwargs)
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
-        assert self_att_type in ['mha', 'gqa', 'mqa'], 'Self-attention type could be "mha", "gqa", "mqa"'
-        assert cross_att_type in ['mha', 'gqa', 'mqa'], 'Memory cross-attention type could be "mha", "gqa", "mqa"'
+        assert self_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+        assert cross_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Memory cross-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
 
         embedding = nn.Embedding(vocab_size, embed_dim)
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
 
         ff_activation = get_activation_layer(ff_activation)
+
+        if self_att_type in ['mha', 'gqa', 'mqa']:
+            att_init = lambda: init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+                                              use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                              max_seq_len=seq_len, is_causal=True)
+        else:
+            att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+                                                           use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                           max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
+                                                           num_query_experts=att_num_query_experts,
+                                                           num_query_groups=att_num_query_groups)
+
+        if cross_att_type in ['mha', 'gqa', 'mqa']:
+            cross_att_init = lambda: init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+                                              use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                              max_seq_len=seq_len, is_causal=True)
+        else:
+            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
+                                                           use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                           max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
+                                                           num_query_experts=att_num_query_experts,
+                                                           num_query_groups=att_num_query_groups)
 
         layers = nn.ModuleList([
             ReactiveTransformerLayer(
@@ -84,13 +112,8 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
                 ff_activation=ff_activation,
                 ff_dropout=ff_dropout,
                 use_rms_norm=use_rms_norm,
-                self_attention=init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
-                                              use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=is_causal),
-                memory_cross_attention=init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
-                                                      use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                      max_seq_len=seq_len, rope_only_for_query=True,
-                                                      is_causal=is_causal)
+                self_attention=att_init(),
+                memory_cross_attention=cross_att_init(),
             ) for _ in range(num_layers)
         ])
         self.model = self._init_model(stm, layers, embedding, use_flash_attention, embed_dim, vocab_size)
