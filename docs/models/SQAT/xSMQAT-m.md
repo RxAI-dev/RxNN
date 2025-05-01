@@ -163,8 +163,8 @@ trainer(epochs=epochs, batch_size=batch_size, optimizer=optimizer, scheduler=sch
 ```
 
 ## Summary
-According to experiment results, this variant of SparseQueryAttention has greater training time reduction gains and still
-a little better performance than MQA. However, the regular and [symmetric](https://huggingface.co/ReactiveAI/sSQAT-m) version
-of SQA seems to provide better cost-effective results - slightly slower, but almost the GQA level performance
+According to experiment results, this variant has the worst performance and no gains in training time. It seems, that after
+some point, further key/value head reduction isn't a good idea and this variant is not recommended. For the fastest training
+time, [xSQA](https://huggingface.co/ReactiveAI/xSQAT-m) has the same results and is more efficient.
 
 
