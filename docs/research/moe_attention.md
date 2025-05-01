@@ -79,7 +79,7 @@ Because of the limited budget I only checked new layers on very small models:
 - RMS Norm
 - vocab: 5k (english only)
 - context size: 256
-- self-attention: MHA/GQA/MQA or GMA/DMA/HMA
+- self-attention: MHA/GQA/MQA or GMA/DMA
 - gqa groups: 2
 - dma query groups: 4
 
@@ -104,4 +104,58 @@ Because of the limited budget I only checked new layers on very small models:
 - GQA - 2.42M
 - MHA - 2.57M
 
-# RESEARCH IN PROGRESS
+### Results for micro models
+Trained on single epoch, using `roneneldan/TinyStories` dataset (totally 8279 steps), 5e-4 lr with cosine annealing schedule and 25% warmup steps
+
+- Model: validation loss / accuracy / time
+- MHA: 1.5569 / 63.08% / 29.5 min
+- GQA: 1.5668 / 62.94% / 28.8 min
+- MQA: 1.6054 / 62.21% / 28.9 min
+- GMA: 1.6384 / 61.85% / 29.6 min
+- DMA: 1.6665 / 61.50% / 29.9 min
+
+I tried also extended version, with 2 x more experts than heads (8 heads / 16 experts) and active 8 query/key/value heads, but it performs
+even worse:
+- xDMA: 1.7029 / 60.90% / 32 min
+
+Then I proceed to bigger models
+
+### Mini architecture details:
+- dim: 256
+- layers: 8
+- heads: 16
+- SwiGLU feed forward with 768 dim
+- RoPE
+- RMS Norm
+- vocab: 10k (english only)
+- context size: 1024
+- self-attention: MHA/GQA/MQA or GMA/DMA
+- gqa groups: 4
+- dma query groups: 8
+
+### Full models sizes
+- GMA - 12M
+- DMA - 11.8M
+- MQA — 11M
+- GQA - 11.2M
+- MHA - 12M
+
+### Results for mini models
+Trained on single epoch, using 50% of `wikimedia/wikipedia` dataset (45% for training, 5% for validation, totally 22526
+training steps), 5e-4 lr with cosine annealing schedule and 25% warmup steps
+
+- Model: validation loss / accuracy / time
+- MHA: 1.1976 / 77.35% / 269.3 min
+- GQA: 1.2177 / 77.12% / 258.2 min
+- MQA: 1.2497 / 76.64% / 260.8 min
+- GMA: 1.2977 / 76.04% / 272.7 min
+- DMA: 1.3660 / 75.09% / 266.9 min
+
+## Summary
+According to results, using Mixture-of-Experts to dynamically select active attention heads is not leading to better results.
+Regular GQA and even MQA are achieving better results, without additional routing overhead and finally are also faster.
+
+However, as reduced number of active query heads in DMA has small performance difference, compared to GMA, I tried also
+the other variant, that I'm calling **Sparse Query Attention**, that reduces query heads count statically. It achieved
+probably the best possible cost-effective results from all the GroupedQueryAttention: outperforming MQA, with almost
+GQA-level performance (0.01 loss difference) and ~10% training time/cost reduction. [More details](./sparse_query_attention.md)
