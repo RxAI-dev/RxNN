@@ -14,7 +14,6 @@ datasets:
 library_name: RxNN
 ---
 
-
 # SQAT-m: Sparse Query Attention Transformer mini
 Research model for Sparse Query Attention experiments - extension to Grouped Query Attention, that's also reducing the number 
 of used query heads, instead of further reducing key/value heads count (up to Multi Query Attention). That approach results
@@ -152,4 +151,8 @@ scheduler = get_transformer_lr_scheduler(
 
 trainer(epochs=epochs, batch_size=batch_size, optimizer=optimizer, scheduler=scheduler)
 ```
-### Summary 
+## Summary
+According to experiment results, SparseQueryAttention seems to be the most cost-effective variant of GroupedQueryAttention,
+leading to noticeable training time reduction and is a promising research direction. Currently, for our **Reactive Tranformer**
+architectures that were initially designed with GQA for self-attention and MQA for memory-attention, we consider using SQA
+instead for all attention layer types. More info will be released soon.
