@@ -38,4 +38,10 @@ Training time / time per batch:
 - MQA: ~261 min / 0.6947s
 - SQA: ~241 min / 0.6417s
 
+## Computational complexity comparison
+- MHA: `O(N*d * N*d)`
+- GQA `O(N*d * N*(d/heads*groups))`
+- MQA `O(N*d * N*(d/heads))`
+- SQA `O(N*(d/heads*query_groups) * N*(d/heads*groups))`
+
 ## RESEARCH IN PROGRESS

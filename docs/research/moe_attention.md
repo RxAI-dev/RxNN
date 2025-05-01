@@ -39,7 +39,7 @@ dynamically selected part of its information. Because only active query heads ar
 so the output projection should transform it back to the original dimensions.
 
 This solution could be a great option for very large context sizes, because of its computational complexity reduction. Compared
-to GQA `O(N * N/heads*groups)` and MQA `O(N * N/heads)` complexity, it's `O(N/heads*query_groups * N/heads*groups)`.
+to MHA `O(N*d * N*d)`, GQA `O(N*d * N*(d/heads*groups))` and MQA `O(N*d * N*(d/heads))` complexity, it's `O(N*(d/heads*query_groups) * N*(d/heads*groups))`.
 
 > I considered naming it Sparse MoE Attention, but sparse attention is rather known from spatial sparsity, so it could be misleading.
 

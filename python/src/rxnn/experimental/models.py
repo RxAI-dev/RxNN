@@ -11,7 +11,7 @@ from ..utils import get_model_size
 from .attention import init_experimental_attention
 
 
-class MoeAttentionTransformerConfig(TypedDict):
+class ExperimentalAttentionTransformerConfig(TypedDict):
     num_layers: int
     vocab_size: int
     embed_dim: int
@@ -34,8 +34,12 @@ class MoeAttentionTransformerConfig(TypedDict):
     att_num_query_groups: int
 
 
-class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
-    """Research decoder model for experiments with Mixture-of-Experts Attention"""
+class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
+    """
+    Research model for experiments with new attention layers.
+
+    Currently, accepts SparseQueryAttention, GroupedMoeAttention, DeepMoeAttention and standard variants (MHA/GQA/MQA) for reference models
+    """
 
     def __init__(
             self,
@@ -61,7 +65,7 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
             att_num_query_groups: int = None,
             **kwargs
     ):
-        super(MoeAttentionTransformer, self).__init__(**kwargs)
+        super(ExperimentalAttentionTransformer, self).__init__(**kwargs)
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
@@ -83,7 +87,7 @@ class MoeAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="tex
                                                            num_query_experts=att_num_query_experts,
                                                            num_query_groups=att_num_query_groups)
 
-        use_moe_att = att_type in ['gma', 'dma', 'gma_s', 'dma_s']
+        use_moe_att = att_type in ['gma', 'dma']
 
         self.model = ClassicTransformerDecoder(
             embed_dim,
