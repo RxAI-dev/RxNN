@@ -113,7 +113,9 @@ class BaseTrainer(ABC):
 
         self.model.train()
         for epoch in range(self.current_epoch, self.current_epoch + epochs):
-            if self.is_running:
+            if not self.is_running:
+                break
+            else:
                 self.current_epoch = epoch
                 self.epoch_steps = 0
                 if train_sampler is not None:
@@ -143,7 +145,9 @@ class BaseTrainer(ABC):
         self.optimizer_step_count = 0
 
         for batch_idx, batch in enumerate(dataloader):
-            if self.is_running:
+            if not self.is_running:
+                break
+            else:
                 for callback in self.callbacks:
                     callback.on_batch_start(self.model, batch_idx, batch)
                 if self.get_batch_size(batch) == batch_size:
