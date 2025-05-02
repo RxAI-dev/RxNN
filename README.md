@@ -50,3 +50,4 @@ released with next versions of **RxNN** framework:
 - 1.x.x: Multimodal reactive models (could be released earlier, depending on progress)
 - 2.0.0: Real-Time Vision Reactor - Worker class models
 - x.x.x: ...and more!
+

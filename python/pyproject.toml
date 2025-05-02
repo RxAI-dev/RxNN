@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "rxnn"
-version = "0.1.59"
+version = "0.1.62"
 description = "RxNN: Reactive Neural Networks Platform"
 
 license = "Apache-2.0"
@@ -30,4 +30,4 @@ datasets = "^3.5.0"
 tokenizers = "^0.21.0"
 huggingface-hub = "^0.30.0"
 tensorboard = "^2.19.0"
-flash-attention = "^1.0.0"
+
