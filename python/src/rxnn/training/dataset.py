@@ -15,7 +15,7 @@ class BaseDataset(Dataset):
             max_seq_len: int = 1024,
             hf_field: str = 'text',
             cache_tokenized: bool = False,
-            cache_remove_text: bool = False,
+            cache_remove_text: bool = True,
             *args,
             **kwargs
     ):
@@ -28,6 +28,9 @@ class BaseDataset(Dataset):
         self.cache_tokenized = cache_tokenized
         self.cache_remove_text = cache_remove_text
         self.inputs = [] if self.cache_tokenized else None
+
+    def __len__(self):
+        return len(self.texts if not self.is_pre_tokenized else self.inputs)
 
     def get_tokenized_text(self, idx: int):
         if self.is_pre_tokenized:
@@ -67,8 +70,8 @@ class BaseDataset(Dataset):
             subset = self.texts.select(range(split_point, len(self.texts)) if not from_start else range(split_point))
             self.texts = self.texts.select(range(split_point) if not from_start else range(split_point, len(self.texts)))
         else:
-            subset = self.texts[split_point:] if not from_start else self.texts[:split_point]
-            self.texts = self.texts[:split_point] if not from_start else self.texts[split_point:]
+            subset = self.texts[split_point:-1] if not from_start else self.texts[0:split_point]
+            self.texts = self.texts[0:split_point] if not from_start else self.texts[split_point:-1]
         return self.__class__(subset, self.tokenizer, self.max_seq_len, self.hf_field, **kwargs)
 
     def pre_tokenize(self, remove_texts: bool = True):
@@ -213,9 +216,6 @@ class JointLMDataset(BaseDataset):
             'attention_mask': attention_mask,
         }
 
-    def __len__(self):
-        return len(self.texts)
-
 
 class MaskedLMDataset(BaseDataset):
     def __init__(
@@ -253,9 +253,6 @@ class MaskedLMDataset(BaseDataset):
             'labels': labels
         }
 
-    def __len__(self):
-        return len(self.texts)
-
 
 class AutoregressiveLMDataset(BaseDataset):
     def __init__(
@@ -281,6 +278,3 @@ class AutoregressiveLMDataset(BaseDataset):
             'attention_mask': attention_mask,
             'targets': targets
         }
-
-    def __len__(self):
-        return len(self.texts)
