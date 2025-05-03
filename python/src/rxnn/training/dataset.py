@@ -16,6 +16,8 @@ class BaseDataset(Dataset):
             hf_field: str = 'text',
             cache_tokenized: bool = False,
             cache_remove_text: bool = True,
+            tokenize_in_background: bool = False,
+            batch_size: int = 1,
             *args,
             **kwargs
     ):
@@ -27,16 +29,69 @@ class BaseDataset(Dataset):
         self.is_pre_tokenized = False
         self.cache_tokenized = cache_tokenized
         self.cache_remove_text = cache_remove_text
-        self.inputs = [] if self.cache_tokenized else None
+        self.inputs = []
+        self.is_txt_list = isinstance(self.texts, list)
+        self.tokenize_in_background = tokenize_in_background
+        self.bg_next = []
+        self.bg_queue = None
+        self.batch_size = batch_size
+        self.last_idx = 0
+        if tokenize_in_background:
+            for i in range(self.batch_size):
+                self.bg_next.append(self.get_tokenized_text(i))
+            self.last_idx = self.batch_size - 1
+
 
     def __len__(self):
         return len(self.texts if not self.is_pre_tokenized else self.inputs)
 
-    def get_tokenized_text(self, idx: int):
+    def get_tokenized_text(self, idx: int, txt: str = None):
         if self.is_pre_tokenized:
             return self.inputs[idx]
+        elif self.tokenize_in_background:
+            if idx == self.last_idx - self.batch_size:
+                if self.bg_queue is not None:
+                    self.bg_next = self.bg_queue
+                    self.bg_queue = None
+                # TODO: schedule tokenizing a batch in background
+            elif idx == self.last_idx:
+                item = self.bg_next[idx]
+                self.bg_next = []
+                return item
+
+            if idx <= self.last_idx:
+                if self.bg_queue is not None:
+                    self.bg_next = self.bg_queue
+                    self.bg_queue = None
+
+                new_idx = idx - (self.last_idx - self.batch_size)
+                if new_idx in self.bg_next:
+                    return self.bg_next[new_idx]
+                else:
+                    if self.is_txt_list:
+                        text = self.texts[idx]
+                    else:
+                        text = self.texts[idx][self.hf_field]
+
+                    inputs = self.tokenizer(
+                        text,
+                        max_length=self.max_seq_len,
+                        truncation=True,
+                        padding='max_length',
+                        return_tensors='pt',
+                        return_attention_mask=True
+                    )
+                    if not (inputs['input_ids'][0] < self.tokenizer.vocab_size).all():
+                        inputs['input_ids'][0][
+                            (inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
+                    if not (inputs['input_ids'][0] >= 0).all():
+                        inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
+
+                    return inputs
         else:
-            if isinstance(self.texts, list):
+            if txt is not None:
+                text = txt
+            elif self.is_txt_list:
                 text = self.texts[idx]
             else:
                 text = self.texts[idx][self.hf_field]
@@ -74,15 +129,32 @@ class BaseDataset(Dataset):
             self.texts = self.texts[0:split_point] if not from_start else self.texts[split_point:-1]
         return self.__class__(subset, self.tokenizer, max_seq_len=self.max_seq_len, hf_field=self.hf_field, **kwargs)
 
-    def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000):
+    def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, map_hf_ds_to_list: bool = True):
+        """
+        Pre-tokenizes all the items in the dataset, for faster training. Training with pre-tokenized
+        dataset could be even 2x faster.
+
+        !! This method has extremely high memory usage, when used with HuggingFace datasets,
+        because of converting it to list. Additionally, for the most optimal performance,
+        pre-tokenized items are in reversed order - it shouldn't matter for training, as
+        items are shuffled then by DataLoader, but you should keep that in mind in case
+        of reproducibility.
+
+        :param(bool) verbose:
+        :param(int) log_interval: Interval of verbose logs
+        """
         if not self.is_pre_tokenized:
             num_texts = len(self.texts)
+            txts = self.texts if self.is_txt_list else self.texts.to_list()
+            del self.texts
+            self.texts = None
             for index in range(num_texts):
-                self.inputs.append(self.texts.pop())
+                item = txts.pop() if self.is_txt_list else txts.pop()[self.hf_field]
+                self.inputs.append(self.get_tokenized_text(index, txt=item))
                 if verbose and index % log_interval == 0:
                     print(f'Processed {index + 1}/{num_texts}')
             self.is_pre_tokenized = True
-            self.texts = None
+
 
     @classmethod
     def from_hf_hub(
