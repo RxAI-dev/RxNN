@@ -74,13 +74,15 @@ class BaseDataset(Dataset):
             self.texts = self.texts[0:split_point] if not from_start else self.texts[split_point:-1]
         return self.__class__(subset, self.tokenizer, max_seq_len=self.max_seq_len, hf_field=self.hf_field, **kwargs)
 
-    def pre_tokenize(self, remove_texts: bool = True):
+    def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000):
         if not self.is_pre_tokenized:
-            self.inputs = list(map(lambda idx: self.get_tokenized_text(idx), range(len(self.texts))))
+            num_texts = len(self.texts)
+            for index in range(num_texts):
+                self.inputs.append(self.texts.pop())
+                if verbose and index % log_interval == 0:
+                    print(f'Processed {index + 1}/{num_texts}')
             self.is_pre_tokenized = True
-            if remove_texts:
-                del self.texts
-                self.texts = None
+            self.texts = None
 
     @classmethod
     def from_hf_hub(
