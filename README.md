@@ -4,7 +4,7 @@
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
 
-RxNN is AI/DeepLearning development platform made for Reactive Neural Networks and Event-driven AI, introduced by Reactive AI.
+RxNN is AI/Deep Learning development platform made for Reactive Neural Networks and Event-driven AI, introduced by Reactive AI.
 
 ## Reactive Neural Networks and Event-driven AI
 Reactive neural networks (RxNN) are a new family of memory-augmented neural networks that combine classical deep learning
@@ -50,4 +50,48 @@ released with next versions of **RxNN** framework:
 - 1.x.x: Multimodal reactive models (could be released earlier, depending on progress)
 - 2.0.0: Real-Time Vision Reactor - Worker class models
 - x.x.x: ...and more!
+
+## Usage
+**RxNN** is made to train models based on reactive architectures, as well as transformer language models. Current version
+is based on PyTorch and HuggingFace libraries (Transformers/Datasets/Tokenizer/Hub), and is integrated with [HuggingFace Hub](https://hugginface.co)
+and [TensorBoard](https://github.com/tensorflow/tensorboard).
+
+> We are also planning a version for **TensorFlow**, more info soon
+
+### Install library and dependencies
+- RxNN and required deps: `pip install rxnn torch transformers tokenizers huggingface_hub`
+- Datasets are required only for training: `pip install datasets`
+- TensorBoard is optional: `pip install tensorboard`
+- [Flash Attention](https://github.com/Dao-AILab/flash-attention) is recommended for faster training/inference (required for models with explicit `use_flash_attention=True`) - check its separate [installation guide](#installing-flash-attention)
+- **NumPy** should be installed too: `pip install numpy`
+
+> ### Installing Flash Attention
+> Installing `flash-attn` could be very frustrating and may take hours (with standard method), only to result in some incompatibility
+> error. Fortunately, the prebuilt versions could be downloaded from GitHub and installed just in seconds. However, you should choose
+> the compatible version based on:
+> - Python version
+> - CUDA version
+> - PyTorch version (2.7 is currently not supported)
+> - ABI
+>
+> #### Steps
+> 1. Choose your version from [https://github.com/Dao-AILab/flash-attention/releases](https://github.com/Dao-AILab/flash-attention/releases)
+> 2. Download prebuilt release, in example: `wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl`
+> 3. Install it, in example: `pip install --no-dependencies --upgrade flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl`
+> 4. Verify: `flash_attn.__version__` (an incorrect version will cause the error when importing)
+> 
+> #### Note on `use_flash_attention` option in models/layers
+> Explicit `use_flash_attention` option is made to enable direct calls to `flash_attn_func` without using **PyTorch** `scaled_dot_product_attention`. Even
+> if it's set to `False`, when `flash-attn` library is installed, **PyTorch** will try to use it implicitly through _SDPA backend_. It's better to set it
+> to `False` and use automatically, because of better compatibility. Explicit options could be used for research
+
+### Modules
+Documentation in progress
+
+#### Transformers
+Documentation in progress
+#### Memory
+Documentation in progress
+#### Training
+Documentation in progress
 

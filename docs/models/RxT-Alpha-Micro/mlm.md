@@ -59,14 +59,17 @@ Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Decoder**](https://
 - dim: 128
 - layers: 6
 - heads: 8
-- self-attention: MQA
-- memory cross-attention: MQA
-- SwiGLU feed forward with 256 dim
+- self-attention: symmetric Sparse Query Attention
+  - query/key/value groups: 4
+- memory cross-attention: Sparse Query Attention
+  - query groups: 4
+  - key/value groups: 2
+- SwiGLU feed forward with 384 dim
 - RoPE
 - RMS Norm
 - vocab: 5k (english only)
 - message length: 256
 - STM size: 256 * 6 layers
-- size: ~1.9M (+ ~660k MLM Head = ~2.5M for pre-training)
+- size: ~1.88M (+ ~660k MLM Head = ~2.5M for pre-training)
 - Library: RxNN
 - Docs: More info soon
