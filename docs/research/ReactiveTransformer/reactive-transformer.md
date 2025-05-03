@@ -26,7 +26,7 @@ that's processing only single messages and moving conversation history into sepa
 by specialized attention layers.
 
 ## Architecture
-**Reactive Transformer** includes encoder and decoder, as in original transformer, but the execution is reversed. First,
+**Reactive Transformer** includes encoder and decoder, as in original transformer, but the execution order is reversed. First,
 a message should be processed by decoder with the previous STM state, generating full response streamed out to
 environment. Then, a concatenated message and response is passed to encoder, transforming it to latent memory spaces on
 each layer. Finally, memory attention network is using encoded data to update Short-Term Memory layers. Both encoder and
@@ -35,6 +35,12 @@ decoder have memory-cross attention layers, placed between self-attention and fe
 <img src="./reactive-transformer.png" />
 
 ## Attention-based Memory System
+According to the name, **Attention-based Memory System** is based on the idea of updating memory layers with attention
+mechanisms. Fetch and update parts are separated and handled with dedicated components:
+- Memory Cross-Attention is combining the processed sequence (query) with data from memory (key/values)
+- Memory-Attention is combining memory layer's state (query) with an encoded message and response (key/values)
+
+Each transformer's layer has its own connected memory layer, so encoder and decoder should have the same number of layers.
 
 <img src="./stm-abms.png">
 
