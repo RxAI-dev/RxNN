@@ -32,7 +32,7 @@ environment. Then, a concatenated message and response is passed to encoder, tra
 each layer. Finally, memory attention network is using encoded data to update Short-Term Memory layers. Both encoder and
 decoder have memory-cross attention layers, placed between self-attention and feed forward, used to access memory state.
 
-<img src="./reactive-transformer.png" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/reactive-transformer.png" />
 
 ## Attention-based Memory System
 According to the name, **Attention-based Memory System** is based on the idea of updating memory layers with attention
@@ -42,6 +42,6 @@ mechanisms. Fetch and update parts are separated and handled with dedicated comp
 
 Each transformer's layer has its own connected memory layer, so encoder and decoder should have the same number of layers.
 
-<img src="./stm-abms.png">
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/stm-abms.png">
 
 # WORK IN PROGRESS

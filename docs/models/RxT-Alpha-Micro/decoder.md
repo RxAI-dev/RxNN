@@ -26,12 +26,18 @@ architecture is a first step in transition from language models to awareness mod
 
 This model (decoder) is a generator decoder for Reactive Transformer system and is made for first stage of training - base model pre-training.
 
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/reactive-transformer.png" width="800" />
+
 During first stage, Memory Cross-Attention layers are frozen and STM is in default initial random state (normal distribution with 0 mean and almost 0 variance),
 to not disturb basic language modelling training. We are training decoder and encoder separately with shared embeddings. Then, in second stage - Memory Reinforcement
 Learning, they will be connected into bigger ensemble with additional Memory Norm and Memory Attention layers, and will learn how to keep and update memory.
 
 > RxT-Alpha models intentionally use very short sequence length and STM size (256 tokens for Micro), but that isn't their "full" context size - it's only for single
 > message. "Full" context is theoretically infinite, restricted by STM size and memory abilites. That sizes are good for research, final models will handle SOTA contexts.
+
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/stm-abms.png" width="800">
+
+Decoder is based on Mixture-of-Experts architecture with 12 experts and 2 active ones.
 
 ## RxT-Alpha Micro Training
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,
@@ -41,7 +47,7 @@ Decoder was trained on Autoregressive Language Modelling task with embedding fro
 with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~70.7% accuracy**.
 
 ## Next Stage: Memory Reinforcement Learning
-Model is able to generate meaningful short stories and should be ready for the memory training in the next stage. More info soon.
+The model is able to generate meaningful short stories, using grammatically correct sentences, and is ready for the memory training in the next stage. More info soon.
 
 ### Decoder architecture details:
 - dim: 128

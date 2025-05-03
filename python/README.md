@@ -1,5 +1,5 @@
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo_rxai.webp" width="300" />
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo_rxnn.webp" width="300" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxai.webp" width="300" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxnn.webp" width="300" />
 
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
