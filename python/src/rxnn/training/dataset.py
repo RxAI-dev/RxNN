@@ -14,6 +14,8 @@ class BaseDataset(Dataset):
             tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
             max_seq_len: int = 1024,
             hf_field: str = 'text',
+            cache_tokenized: bool = False,
+            cache_remove_text: bool = False,
             *args,
             **kwargs
     ):
@@ -22,27 +24,56 @@ class BaseDataset(Dataset):
         self.max_seq_len = max_seq_len
         self.texts = texts
         self.hf_field = hf_field
+        self.is_pre_tokenized = False
+        self.cache_tokenized = cache_tokenized
+        self.cache_remove_text = cache_remove_text
+        self.inputs = [] if self.cache_tokenized else None
 
     def get_tokenized_text(self, idx: int):
-        if isinstance(self.texts, list):
-            text = self.texts[idx]
+        if self.is_pre_tokenized:
+            return self.inputs[idx]
         else:
-            text = self.texts[idx][self.hf_field]
+            if isinstance(self.texts, list):
+                text = self.texts[idx]
+            else:
+                text = self.texts[idx][self.hf_field]
 
-        inputs = self.tokenizer(
-            text,
-            max_length=self.max_seq_len,
-            truncation=True,
-            padding='max_length',
-            return_tensors='pt',
-            return_attention_mask=True
-        )
-        if not (inputs['input_ids'][0] < self.tokenizer.vocab_size).all():
-            inputs['input_ids'][0][(inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
-        if not (inputs['input_ids'][0] >= 0).all():
-            inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
+            inputs = self.tokenizer(
+                text,
+                max_length=self.max_seq_len,
+                truncation=True,
+                padding='max_length',
+                return_tensors='pt',
+                return_attention_mask=True
+            )
+            if not (inputs['input_ids'][0] < self.tokenizer.vocab_size).all():
+                inputs['input_ids'][0][(inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
+            if not (inputs['input_ids'][0] >= 0).all():
+                inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
 
-        return inputs
+            if self.cache_tokenized:
+                self.inputs.append(inputs)
+                if len(self.inputs) == len(self.texts):
+                    self.is_pre_tokenized = True
+                    if self.cache_remove_text:
+                        del self.texts
+                        self.texts = None
+
+            return inputs
+
+    def get_subset(self, size: float, from_start: bool = False, use_hf_select: bool = False, **kwargs) -> "BaseDataset":
+        split_point = int(len(self.texts) * ((1 - size) if not from_start else size))
+        subset = self.texts.select(range(split_point, len(self.texts))) if use_hf_select and not isinstance(self.texts, list) else self.texts[:split_point]
+        self.texts = self.texts.select(range(split_point)) if use_hf_select and not isinstance(self.texts, list) else self.texts[split_point:]
+        return self.__class__(subset, self.tokenizer, self.max_seq_len, self.hf_field, **kwargs)
+
+    def pre_tokenize(self, remove_texts: bool = True):
+        if not self.is_pre_tokenized:
+            self.inputs = list(map(lambda idx: self.get_tokenized_text(idx), range(len(self.texts))))
+            self.is_pre_tokenized = True
+            if remove_texts:
+                del self.texts
+                self.texts = None
 
     @classmethod
     def from_hf_hub(
@@ -130,6 +161,7 @@ class BaseDataset(Dataset):
         hf_dataset = concatenate_datasets(hf_datasets)
 
         return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs)
+
 
 
 class JointLMDataset(BaseDataset):

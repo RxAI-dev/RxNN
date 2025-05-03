@@ -13,7 +13,7 @@ datasets:
 library_name: RxNN
 ---
 
-# RxT-Alpha Micro Decoder
+# RxT-Alpha Micro Decoder (Base)
 ## Reactive Transformer Architecture
 Experimental research model made to test our Reactive Transformer architecture and Attention-based Memory System.
 
@@ -38,7 +38,7 @@ Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Atten
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
 Decoder was trained on Autoregressive Language Modelling task with embedding from [encoder pre-training](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder),
-with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **10B total tokens** and reached **~65% accuracy**.
+with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~70.7% accuracy**.
 
 ## Next Stage: Memory Reinforcement Learning
 Model is able to generate meaningful short stories and should be ready for the memory training in the next stage. More info soon.

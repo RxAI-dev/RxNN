@@ -40,7 +40,7 @@ Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Atten
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
 Encoder was trained on Masked Language Modelling task with additional MLM head model [**RxT-Alpha-Micro-MLM**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-MLM),
-with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **10B total tokens** and reached **~78.3% accuracy** on
+with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~81.7% accuracy** on
 validation dataset.
 
 Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Decoder) training.
