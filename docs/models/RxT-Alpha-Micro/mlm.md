@@ -46,7 +46,7 @@ Learning, they will be connected into bigger ensemble with additional Memory Nor
 
 This model (MLM Head) is not used in final Reactive Transformer system. It's made only for first stage of training - base encoder model pre-training.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/reactive-transformer.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer.png" width="800" />
 
 ## RxT-Alpha Micro Encoder + MLM Head Training
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,

@@ -26,7 +26,7 @@ architecture is a first step in transition from language models to awareness mod
 
 This model (encoder) is a memory encoder for Reactive Transformer system and is made for first stage of training - base model pre-training.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/reactive-transformer.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer.png" width="800" />
 
 During first stage, Memory Cross-Attention layers are frozen and STM is in default initial random state (normal distribution with 0 mean and almost 0 variance),
 to not disturb basic language modelling training. We are training decoder and encoder separately with shared embeddings. Then, in second stage - Memory Reinforcement
@@ -35,7 +35,7 @@ Learning, they will be connected into bigger ensemble with additional Memory Nor
 > RxT-Alpha models intentionally use very short sequence length and STM size (256 tokens for Micro), but that isn't their "full" context size - it's only for single
 > message. "Full" context is theoretically infinite, restricted by STM size and memory abilites. That sizes are good for research, final models will handle SOTA contexts.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/research/stm-abms.png" width="800">
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/stm-abms.png" width="800">
 
 Compared to decoder, encoder is using dense model, while decoder is Mixture-of-Experts (~4.5x bigger)
 
