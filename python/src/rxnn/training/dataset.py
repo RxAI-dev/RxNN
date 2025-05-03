@@ -64,15 +64,15 @@ class BaseDataset(Dataset):
 
             return inputs
 
-    def get_subset(self, size: float, from_start: bool = False, use_hf_select: bool = False, **kwargs) -> "BaseDataset":
+    def get_subset(self, size: float, from_start: bool = False, **kwargs) -> "BaseDataset":
         split_point = int(len(self.texts) * ((1 - size) if not from_start else size))
-        if use_hf_select and not isinstance(self.texts, list):
+        if not isinstance(self.texts, list):
             subset = self.texts.select(range(split_point, len(self.texts)) if not from_start else range(split_point))
             self.texts = self.texts.select(range(split_point) if not from_start else range(split_point, len(self.texts)))
         else:
             subset = self.texts[split_point:-1] if not from_start else self.texts[0:split_point]
             self.texts = self.texts[0:split_point] if not from_start else self.texts[split_point:-1]
-        return self.__class__(subset, self.tokenizer, self.max_seq_len, self.hf_field, **kwargs)
+        return self.__class__(subset, self.tokenizer, max_seq_len=self.max_seq_len, hf_field=self.hf_field, **kwargs)
 
     def pre_tokenize(self, remove_texts: bool = True):
         if not self.is_pre_tokenized:
