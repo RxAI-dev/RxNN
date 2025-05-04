@@ -69,4 +69,4 @@ The model is able to generate meaningful short stories, using grammatically corr
 - STM size: 256 * 6 layers
 - size: ~8.77M
 - Library: RxNN
-- Docs: More info soon
+- Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)

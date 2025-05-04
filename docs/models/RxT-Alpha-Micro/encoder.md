@@ -66,4 +66,4 @@ Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Decoder**](https://
 - STM size: 256 * 6 layers
 - size: ~1.88M
 - Library: RxNN
-- Docs: More info soon
+- Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)

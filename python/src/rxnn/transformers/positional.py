@@ -40,13 +40,16 @@ class RotaryPositionalEmbedding(nn.Module):
         return q_embed
 
     def _prepare_freqs(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        if self.cache is None or self.cache.size(1) < seq_len:
+        cache_len = self.cache.size(1)
+        if self.cache is None or cache_len < seq_len:
             t = torch.arange(seq_len, device=device).type_as(self.inv_freq)
             freqs = torch.einsum('i,j->ij', t, self.inv_freq)
             self.cache = freqs
             return freqs[None, None, :, :]
-        else:
+        elif cache_len == seq_len:
             return self.cache[None, None, :, :]
+        else:
+            return self.cache[:seq_len][None, None, :, :]
 
     def _rotate(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         x1 = x[..., 0::2]
