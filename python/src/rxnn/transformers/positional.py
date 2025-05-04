@@ -12,14 +12,17 @@ class RotaryPositionalEmbedding(nn.Module):
         self.max_seq_len = max_seq_len
         self.base = base
         inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer('inv_freq', inv_freq)
-        self.register_buffer('cache', None, persistent=False)
+        self.register_buffer('inv_freq', inv_freq) # must stay for models compatibility
+        # Pre-cache freqs for max_len
+        t = torch.arange(max_seq_len).type_as(self.inv_freq)
+        freqs = torch.einsum('i,j->ij', t, self.inv_freq)
+        self.register_buffer('cache', freqs)
+
 
     def forward(self, q: torch.Tensor, k: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        device = q.device
         seq_len = q.size(-2)
         # Prepare RoPE Frequencies
-        freqs = self._prepare_freqs(seq_len, device)
+        freqs = self._prepare_freqs(seq_len)
 
         # Apply the rotation to the queries
         q_embed = self._rotate(q, freqs)
@@ -29,27 +32,17 @@ class RotaryPositionalEmbedding(nn.Module):
         return q_embed, k_embed
 
     def forward_one(self, q: torch.Tensor) -> torch.Tensor:
-        device = q.device
         seq_len = q.size(-2)
         # Prepare RoPE Frequencies
-        freqs = self._prepare_freqs(seq_len, device)
+        freqs = self._prepare_freqs(seq_len)
 
         # Apply the rotation to the queries
         q_embed = self._rotate(q, freqs)
 
         return q_embed
 
-    def _prepare_freqs(self, seq_len: int, device: torch.device) -> torch.Tensor:
-        cache_len = self.cache.size(1) if self.cache is not None else 0
-        if cache_len < seq_len:
-            t = torch.arange(seq_len, device=device).type_as(self.inv_freq)
-            freqs = torch.einsum('i,j->ij', t, self.inv_freq)
-            self.cache = freqs
-            return freqs[None, None, :, :]
-        elif cache_len == seq_len:
-            return self.cache[None, None, :, :]
-        else:
-            return self.cache[:seq_len][None, None, :, :]
+    def _prepare_freqs(self, seq_len: int) -> torch.Tensor:
+        return self.cache[:seq_len][None, None, :, :]
 
     def _rotate(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         x1 = x[..., 0::2]
