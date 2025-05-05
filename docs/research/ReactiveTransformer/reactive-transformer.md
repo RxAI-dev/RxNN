@@ -32,6 +32,18 @@ environment. Then, a concatenated message and response is passed to encoder, tra
 each layer. Finally, memory attention network is using encoded data to update Short-Term Memory layers. Both encoder and
 decoder have memory-cross attention layers, placed between self-attention and feed forward, used to access memory state.
 
+In base version, Generator Decoder is using Mixture-of-Experts (MoE) Feed Forward layers, while Memory Encoder is dense, to
+balance models sizes - decoder autoregressive generation will take a lot much more computation time, than single memory
+encoding, so decoder could use much bigger model. As number of layers, dimensions and embeddings should be the same for both
+encoder and decoder, MoE is great option to balance sizes.
+
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" />
+
+Alternative version could use regular dense decoder and could have similar sizes for both encoder and decoder. It has much
+less params, but also worse performance and the training time is only a little shorter than MoE (that's becoming industry
+standard), so it's less recommended. Mixture-of-Experts architecture seems to be a lot more natural - in biological neural
+networks, only some part of neuron connections are activated, same as in MoE.
+
 <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer.png" />
 
 ## Attention-based Memory System
