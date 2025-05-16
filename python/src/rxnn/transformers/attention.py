@@ -16,6 +16,7 @@ class MultiHeadAttention(nn.Module):
             dropout: float = 0.0,
             rope: RotaryPositionalEmbedding = None,
             rope_only_for_query: bool = False,
+            rope_only_for_keys: bool = False,
             use_relative_embeddings: bool = False,
             max_seq_len: int = 1024,
             use_flash_attention: bool = True,
@@ -37,10 +38,12 @@ class MultiHeadAttention(nn.Module):
             self.rel_embed = RelativePositionalEmbedding(max_seq_len, embed_dim // num_heads)
             self.rope = None
             self.rope_only_for_query = False
+            self.rope_only_for_keys = False
         else:
             self.rel_embed = None
             self.rope = rope
             self.rope_only_for_query = rope_only_for_query
+            self.rope_only_for_keys = rope_only_for_keys
         self.dropout = nn.Dropout(dropout)
         self._init_q(embed_dim)
         self._init_kv(embed_dim)
@@ -70,6 +73,8 @@ class MultiHeadAttention(nn.Module):
         if self.rope is not None:
             if self.rope_only_for_query:
                 q = self.rope.forward_one(q)
+            elif self.rope_only_for_keys:
+                k = self.rope.forward_one(k)
             else:
                 q, k = self.rope(q, k)
         return q, k
@@ -192,6 +197,7 @@ class GroupedQueryAttention(MultiHeadAttention):
             k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
             v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
         else:
+            # Relative embedding version is not working without this strange mapping - it will be removed in next versions
             group_heads = self.num_heads // self.num_groups
 
             # Process Q
@@ -289,6 +295,7 @@ def init_attention(
         dropout: float = 0.0,
         rope: RotaryPositionalEmbedding = None,
         rope_only_for_query: bool = False,
+        rope_only_for_keys: bool = False,
         use_relative_embeddings: bool = False,
         max_seq_len: int = 1024,
         use_flash_attention: bool = False,
@@ -308,6 +315,7 @@ def init_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
@@ -321,6 +329,7 @@ def init_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
@@ -334,6 +343,7 @@ def init_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
