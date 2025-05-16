@@ -499,3 +499,31 @@ class JointModelSaveCallback(TrainerCallback):
             if not self.mlm_mode:
                 self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
             self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
+
+class MrlTrainerCallback:
+    def on_epoch_start(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], epoch: int, stage_epochs: int) -> None:
+        pass
+
+    def on_epoch_end(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], epoch: int, stage_epochs: int) -> None:
+        pass
+
+    def on_episode_collected(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], batch_idx: int, episode_idx: int, episode_trajectories: list[dict]) -> None:
+        pass
+
+    def on_batch_collected(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], batch_idx: int, all_trajectories: list[list[dict]]) -> None:
+        pass
+
+    def on_reward(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], generated: str, reference: str, reward: float) -> None:
+        pass
+
+    def on_episode_updated(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], episode_idx: int, trajectories_len: int, policy_loss: float) -> None:
+        pass
+
+    def on_critic_updated(self, models: tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], critic: nn.Module, epoch: int, critic_loss: float) -> None:
+        pass
+
+    def on_training_end(self, model: torch.nn.Module) -> None:
+        pass
+
+    def on_eval_end(self, model: torch.nn.Module, epoch: int, eval_mean_reward: float, val_metrics: dict) -> None:
+        pass

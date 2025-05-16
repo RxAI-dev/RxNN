@@ -120,10 +120,10 @@ class SampleDecoder:
         self.tokenizer = tokenizer
         self.device = self.sampler.device
 
-    def tokenize_input(self, text: str):
+    def tokenize_input(self, text: str, max_seq_len: int = 256):
         tokenized = self.tokenizer(
             text,
-            max_length=256,
+            max_length=max_seq_len,
             truncation=True,
             padding=False,
             return_tensors='pt',
@@ -135,7 +135,7 @@ class SampleDecoder:
         return tokenized
 
     def ids_iter(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len=256):
-        tokenized = self.tokenize_input(text)
+        tokenized = self.tokenize_input(text, max_seq_len=max_seq_len)
         return self.sampler(
             tokenized['input_ids'],
             temperature=temperature,
@@ -167,3 +167,30 @@ class SampleDecoder:
             return self.print_stream(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len)
         else:
             return self.txt(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len)
+
+class InteractionSampler(SampleDecoder):
+    def __init__(self, sampler: Sampler, tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast]):
+        super(InteractionSampler, self).__init__(sampler, tokenizer)
+
+    def txt(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len: int = 256, special_token_spaces: bool = True):
+        txt = '[Q]' + text + '[A]'
+        start_txt = '[Q] ' + text + ' [A] ' if special_token_spaces else txt
+        return start_txt + ''.join(self.txt_iter(txt, temperature, top_p, max_seq_len))
+
+    def print_stream(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len: int = 256, special_token_spaces: bool = True):
+        txt = '[Q]' + text + '[A]'
+        start_txt = '[Q] ' + text + ' [A] ' if special_token_spaces else txt
+        print(start_txt, end='')
+        resp = start_txt
+        for txt_token in self.txt_iter(txt, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len):
+            print(txt_token, end='')
+            resp += txt_token
+        return resp
+
+    def __call__(self, text: str, print_stream: bool = False, temperature: float = 0.1, top_p: float = 0.9,
+                 max_seq_len: int = 256, special_token_spaces: bool = True):
+        if print_stream:
+            return self.print_stream(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len, special_token_spaces=special_token_spaces)
+        else:
+            return self.txt(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len, special_token_spaces=special_token_spaces)
+

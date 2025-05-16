@@ -4,7 +4,7 @@ from datasets import Dataset as HfDataset, load_dataset, concatenate_datasets
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from .tokenizer import load_tokenizer_from_hf_hub
 
-from typing import Union
+from typing import Union, Callable
 
 
 class BaseDataset(Dataset):
@@ -796,3 +796,128 @@ class EncoderSftDataset(BaseInteractionDataset):
             'attention_mask': attention_mask,
             'labels': labels
         }
+
+class MrlCurriculumDataset(Dataset):
+    def __init__(
+            self,
+            episodes: Union[list[dict], HfDataset],
+            query_field: str = 'query',
+            answer_field: str = 'answer',
+            interactions_field: str = 'interactions',
+            **kwargs,
+    ):
+        super(MrlCurriculumDataset, self).__init__(**kwargs)
+        self.episodes = episodes
+        self.query_field = query_field
+        self.answer_field = answer_field
+        self.interactions_field = interactions_field
+
+    def __getitem__(self, idx: int) -> dict[str, Union[str, list[dict[str, str]]]]:
+        item = self.episodes[idx]
+        query = item[self.query_field]
+        answer = item[self.answer_field]
+        interactions = item[self.interactions_field]
+
+        return {
+            'query': query,
+            'answer': answer,
+            'interactions': interactions,
+        }
+
+    def __len__(self) -> int:
+        return len(self.episodes)
+
+    def get_subset(self, size: float, from_start: bool = False, **kwargs) -> "MRlCurriculumDataset":
+        split_point = int(len(self.episodes) * ((1 - size) if not from_start else size))
+        if not isinstance(self.episodes, list):
+            subset = self.episodes.select(range(split_point, len(self.episodes)) if not from_start else range(split_point))
+            self.episodes = self.episodes.select(range(split_point) if not from_start else range(split_point, len(self.episodes)))
+        else:
+            subset = self.episodes[split_point:-1] if not from_start else self.episodes[0:split_point]
+            self.episodes = self.episodes[0:split_point] if not from_start else self.episodes[split_point:-1]
+        return self.__class__(subset, query_field=self.query_field, answer_field=self.answer_field, interactions_field=self.interactions_field, **kwargs)
+
+    @classmethod
+    def from_hf_hub(
+            cls,
+            dataset_id: str,
+            mrl_subset: str,
+            split: str = 'train',
+            query_field: str = 'query',
+            answer_field: str = 'answer',
+            interactions_field: str = 'interactions',
+            load_kwargs: dict = None,
+            **kwargs
+    ):
+        """
+        Load dataset from HuggingFace Hub and convert it to RxNN training dataset.
+
+        One of the `tokenizer` or `tokenizer_hub_id` args must be provided. If both are provided, `tokenizer` will be used.
+
+        Args:
+            dataset_id (str): Hub dataset repository name
+            mrl_subset (str): Dataset subset
+            split (str): Dataset split (default: "train")
+            query_field (str): Query field (default: "query")
+            answer_field (str): Answer field (default: "answer")
+            interactions_field (str): Interactions field (default: "interactions")
+            load_kwargs (dict): Additional args for HuggingFace API load_dataset function
+            **kwargs: Additional args for RxNN Dataset class
+        """
+        hf_dataset = load_dataset(dataset_id, mrl_subset, split=split, **load_kwargs)
+
+        return cls(hf_dataset, query_field, answer_field, interactions_field, **kwargs)
+
+
+
+class MrlDatasets:
+    def __init__(self, datasets: dict[int, MrlCurriculumDataset]):
+        self.datasets = datasets
+
+    def __call__(self, curriculum_steps: int) -> MrlCurriculumDataset:
+        return self.datasets[curriculum_steps]
+
+    @classmethod
+    def from_hf_hub(
+            cls,
+            dataset_id: str,
+            mrl_curriculum_steps: Union[list[int], tuple[int]] = (1, 2, 4, 6, 8, 12, 16),
+            get_subset_name: Callable[[int], str] = lambda step: f'step_{step}',
+            split: str = 'train',
+            query_field: str = 'query',
+            answer_field: str = 'answer',
+            interactions_field: str = 'interactions',
+            load_kwargs: dict = None,
+            mrl_ds_kwargs: dict = None,
+    ):
+        """
+        Load dataset from HuggingFace Hub and convert it to RxNN training dataset.
+
+        One of the `tokenizer` or `tokenizer_hub_id` args must be provided. If both are provided, `tokenizer` will be used.
+
+        Args:
+            dataset_id (str): Hub dataset repository name
+            mrl_curriculum_steps (list[int]): MRL Curriculum steps configuration
+            get_subset_name (Callable[[int], str]): Function to get subset name from curriculum step
+            split (str): Dataset split (default: "train")
+            query_field (str): Query field (default: "query")
+            answer_field (str): Answer field (default: "answer")
+            interactions_field (str): Interactions field (default: "interactions")
+            load_kwargs (dict): Additional args for HuggingFace API load_dataset function
+            mrl_ds_kwargs (dict): Additional args for RxNN MrlCurriculumDataset class
+        """
+        if load_kwargs is None:
+            load_kwargs = {}
+        if mrl_ds_kwargs is None:
+            mrl_ds_kwargs = {}
+        mrl_datasets = { steps: MrlCurriculumDataset.from_hf_hub(
+            dataset_id,
+            get_subset_name(steps),
+            query_field=query_field,
+            answer_field=answer_field,
+            interactions_field=interactions_field,
+            split=split,
+            load_kwargs=load_kwargs,
+            **mrl_ds_kwargs,
+        ) for steps in mrl_curriculum_steps }
+        return cls(mrl_datasets)

@@ -13,21 +13,25 @@ class ShortTermMemory(nn.Module):
         self.is_trainable = is_trainable
         assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
             'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
-        if init_type == 'normal':
-            stm = torch.normal(0, 0.02, (num_layers, stm_size, embed_dim))
-        elif init_type == 'standard':
-            stm = torch.normal(0, 1, (num_layers, stm_size, embed_dim))
-        elif init_type == 'uniform':
-            stm = torch.rand(num_layers, stm_size, embed_dim) * 0.02
-        elif init_type == 'ones':
-            stm = torch.ones(num_layers, stm_size, embed_dim)
-        else:
-            stm = torch.zeros(num_layers, stm_size, embed_dim)
-
+        self.init_type = init_type
+        stm = self._init_tensor()
         if self.is_trainable:
             self.memory = nn.Parameter(stm)
         else:
             self.register_buffer('memory', stm)
+
+    def _init_tensor(self, init_type: str = None):
+        init_type = init_type or self.init_type
+        if init_type == 'normal':
+            return torch.normal(0, 0.02, (self.num_layers, self.stm_size, self.embed_dim))
+        elif init_type == 'standard':
+            return torch.normal(0, 1, (self.num_layers, self.stm_size, self.embed_dim))
+        elif init_type == 'uniform':
+            return torch.rand(self.num_layers, self.stm_size, self.embed_dim) * 0.02
+        elif init_type == 'ones':
+            return torch.ones(self.num_layers, self.stm_size, self.embed_dim)
+        else:
+            return torch.zeros(self.num_layers, self.stm_size, self.embed_dim)
 
     def forward(self, layer: int) -> torch.Tensor:
         return self.memory[layer].unsqueeze(0)
@@ -51,3 +55,10 @@ class ShortTermMemory(nn.Module):
             trained_stm = self.memory.clone()
             del self.memory
             self.register_buffer('memory', trained_stm)
+
+    def reset(self, init_type: str = None):
+        self.memory = self._init_tensor(init_type)
+
+    def resize(self, new_stm_size: int, init_type: str = None):
+        self.stm_size = new_stm_size
+        self.memory = self._init_tensor(init_type)

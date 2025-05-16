@@ -1,3 +1,6 @@
+# Reactive Transformer Training: Memory Reinforcement Learning & Reinforcement Learning From Human Feedback for Reactive Models
+by Adam Filipek/Reactive AI
+
 ### Memory Reinforcement Learning (MRL)
 **Memory Reinforcement Learning** is a crucial step for all the reactive models, as it finally training models for inter-sequence memory
 retention. It's based on _Curriculum Learning_ concept, starting from single step retention, up to long-term multistep retention. Short-Term
@@ -69,6 +72,11 @@ query and response parts, for easier processing in MRL.
 > and could be derived from those kinds of datasets. We just have to ensure, that the dialog content is corresponding with
 > MRL goals - concentrated on memory retention, and they have to be divided into single interaction
 
+##### Datasets format
+MRL Datasets should include separate subset for each curriculum step. Every example should have `query` and `answer` fields,
+for first interaction (and `think` for reasoning models), that will be passed only to encoder and memory attention. Additionally,
+it will have `interactions` field, that will be the list of follow-up interactions in the same format - `query`/`answer`/`think`.
+
 #### RL Environment Details
 MRL Environment is based on model's interactions:
 - saved data and input queries are the environment states - saved data could be just the first interaction (in Single/Long-Term
@@ -113,10 +121,10 @@ acts like the regular transformer)
 
 #### Implementation
 Our **RxNN** library (based on **PyTorch**) is already integrated with **HuggingFace** ecosystem - `transformers`, `tokenizers`,
-`datasets` and `huggingface-hub`, so the **Memory Reinforcement Learning** module is commonly using another **HuggingFace**
-library - `trl`. Our custom datasets (connected to specialized trainer) are extending **PyTorch Datasets** and some features
-from **HuggingFace Datasets**, especially for loading them from [Hub](https://huggingface.co). Trainers are specialized for
-training tasks, like autoregressive/masked language modeling - for MRL there's separate module `rxnn.training.mrl`.
+`datasets` and `huggingface-hub`, but MRL is rather not compatible with basic `trl`, because it expects classic transformer
+decoders. We provide our custom implementation. Our datasets (connected to specialized trainer) are extending **PyTorch Datasets**
+and some features from **HuggingFace Datasets**, especially for loading them from [Hub](https://huggingface.co).
+Trainers are specialized for training tasks, like autoregressive/masked language modeling - for MRL there's separate module `rxnn.training.mrl`.
 
 ### Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
 In the last training stage, after the model is able to correctly use its Short-Term Memory, it should be finally trained on
@@ -131,3 +139,4 @@ these stages, by adding the conversation quality reward to MRL. In this mode, ea
 retention and for response/answer quality. It should save a time and resources, but the training may be less stable. We have
 to check separate steps and if we achieve success, then we could check the combined approach
 
+### Research in progress
