@@ -314,6 +314,8 @@ class JointLMDataset(BaseDataset):
     def __getitem__(self, idx: int) -> dict[str, dict[str, torch.Tensor]]:
         inputs = self.get_tokenized_text(idx)
         encoder_input_ids = inputs['input_ids'][0]
+        if self.is_pre_tokenized:
+            encoder_input_ids = encoder_input_ids.clone()
         attention_mask = inputs['attention_mask'][0]
 
         decoder_input_ids = encoder_input_ids.clone()
@@ -361,6 +363,8 @@ class MaskedLMDataset(BaseDataset):
         inputs = self.get_tokenized_text(idx)
 
         input_ids = inputs['input_ids'][0]
+        if self.is_pre_tokenized:
+            input_ids = input_ids.clone()
         attention_mask = inputs['attention_mask'][0]
         labels = input_ids.clone()
 
@@ -512,7 +516,7 @@ class BaseInteractionDataset(Dataset):
 
             if self.cache_tokenized:
                 self.inputs.append(inputs)
-                if len(self.inputs) == len(self.texts):
+                if len(self.inputs) == len(self.interactions):
                     self.is_pre_tokenized = True
                     if self.cache_remove_text:
                         del self.interactions
@@ -779,6 +783,8 @@ class EncoderSftDataset(BaseInteractionDataset):
         inputs = self.get_tokenized_text(idx)
 
         input_ids = inputs['input_ids'][0]
+        if self.is_pre_tokenized:
+            input_ids = input_ids.clone()
         attention_mask = inputs['attention_mask'][0]
         labels = input_ids.clone()
 
