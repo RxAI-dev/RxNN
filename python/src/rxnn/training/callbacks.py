@@ -499,3 +499,24 @@ class JointModelSaveCallback(TrainerCallback):
             if not self.mlm_mode:
                 self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
             self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
+
+class EarlyStoppageCallback(TrainerCallback):
+  def __init__(self, num_plateau_epochs: int = 3) -> None:
+      super().__init__()
+      self.num_plateau_epochs = num_plateau_epochs
+      self.best_loss = 9999.0
+      self.best_loss_epoch = 0
+
+  def on_validation_end(
+        self,
+        model: torch.nn.Module,
+        epoch: int,
+        val_loss: float,
+        val_metrics: dict
+  ):
+    if val_loss < self.best_loss:
+      self.best_loss = val_loss
+      self.best_loss_epoch = epoch
+    elif epoch - self.best_loss_epoch > self.num_plateau_epochs:
+      return True
+    return None
