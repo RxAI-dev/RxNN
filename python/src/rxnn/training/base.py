@@ -39,6 +39,8 @@ class BaseTrainer(ABC):
         self.optimizer = optimizer
         self.dataset = dataset
         self.callbacks = callbacks or []
+        if log_dir and not os.path.exists(log_dir):
+            os.makedirs(log_dir)
         self.writer = SummaryWriter(log_dir) if log_dir else None
         self.use_ddp = use_ddp
         self.use_amp = use_amp

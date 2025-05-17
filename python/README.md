@@ -4,7 +4,7 @@
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
 
-RxNN is AI/DeepLearning development platform made for Reactive Neural Networks and Event-driven AI, introduced by Reactive AI.
+RxNN is AI/Deep Learning development platform made for Reactive Neural Networks and Event-driven AI, introduced by Reactive AI.
 
 ## Reactive Neural Networks and Event-driven AI
 Reactive neural networks (RxNN) are a new family of memory-augmented neural networks that combine classical deep learning
@@ -50,3 +50,168 @@ released with next versions of **RxNN** framework:
 - 1.x.x: Multimodal reactive models (could be released earlier, depending on progress)
 - 2.0.0: Real-Time Vision Reactor - Worker class models
 - x.x.x: ...and more!
+
+## Usage
+**RxNN** is made to train models based on reactive architectures, as well as transformer language models. Current version
+is based on PyTorch and HuggingFace libraries (Transformers/Datasets/Tokenizer/Hub), and is integrated with [HuggingFace Hub](https://hugginface.co)
+and [TensorBoard](https://github.com/tensorflow/tensorboard).
+
+> We are also planning a version for **TensorFlow**, more info soon
+
+### Install library and dependencies
+- RxNN and required deps: `pip install rxnn torch transformers tokenizers huggingface_hub`
+- Datasets are required only for training: `pip install datasets`
+- TensorBoard is optional: `pip install tensorboard`
+- [Flash Attention](https://github.com/Dao-AILab/flash-attention) is recommended for faster training/inference (required for models with explicit `use_flash_attention=True`) - check its separate [installation guide](#installing-flash-attention)
+- **NumPy** should be installed too: `pip install numpy`
+
+> ### Installing Flash Attention
+> Installing `flash-attn` could be very frustrating and may take hours (with standard method), only to result in some incompatibility
+> error. Fortunately, the prebuilt versions could be downloaded from GitHub and installed just in seconds. However, you should choose
+> the compatible version based on:
+> - Python version
+> - CUDA version
+> - PyTorch version (2.7 is currently not supported)
+> - ABI
+>
+> #### Steps
+> 1. Choose your version from [https://github.com/Dao-AILab/flash-attention/releases](https://github.com/Dao-AILab/flash-attention/releases)
+> 2. Download prebuilt release, in example: `wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl`
+> 3. Install it, in example: `pip install --no-dependencies --upgrade flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp312-cp312-linux_x86_64.whl`
+> 4. Verify: `flash_attn.__version__` (an incorrect version will cause the error when importing)
+> 
+> #### Note on `use_flash_attention` option in models/layers
+> Explicit `use_flash_attention` option is made to enable direct calls to `flash_attn_func` without using **PyTorch** `scaled_dot_product_attention`. Even
+> if it's set to `False`, when `flash-attn` library is installed, **PyTorch** will try to use it implicitly through _SDPA backend_. It's better to set it
+> to `False` and use automatically, because of better compatibility. Explicit options could be used for research
+
+### Modules
+**RxNN** framework has multiple modules with models, layers, training and inference tools, made for complete development
+of _reactive models_, and could be also used for regular **Transformers**.
+
+#### Transformers
+Transformers module includes classes for models and layers. It includes **Reactive Transformers** as well as **Classic Transformers**
+
+Submodules:
+- `rxnn.transformers.attention` - basic, most common attention layers - `MultiHeadAttention`, `GroupedQueryAttention` and `MultiQueryAttention`
+  - additional attention layers, especially `SparseQueryAttention` could be found in `rxnn.experimental.attention` module
+  - `SparseQueryAttention` will be moved to `rxnn.transformers.attention` in 0.2.x version
+- `rxnn.transformers.positional` - positional encoding layers - `RotaryPositionalEmbedding` and legacy ones - `AbsolutePositionalEmbedding`/`RelativePositionalEmbedding`
+- `rxnn.transformers.ff` - dense feed forward layers, including gated layers (_SwiGLU_, etc.) - `FeedForward` & `GatedFeedForward` (recommended)
+- `rxnn.transformers.moe` - Mixture-of-Experts feed forward layers - `MoeFeedForward` & `GatedMoeFeedForward` (recommended)
+- `rxnn.transformer.layers` - complete reactive/classic transformer layers - `ReactiveTransformerLayer` & `ClassicTransformerLayer`
+- `rxnn.transformer.models` - reactive/classic transformer models - `ReactiveTransformerEncoder`, `ReactiveTransformerDecoder` & `ClassicTransformerEncoder`, `ClassicTransformerDecoder`
+- `rxnn.transformer.sampler` - samplers for reactive models (Sampler is the integral part of reactive architectures) - `Sampler` & `SampleDecoder`
+
+In **RxNN** models are initialized in declarative style by class composition, but then they are wrapped in imperative classes,
+to be compatible with HuggingFace **JSON** config. In example:
+
+```python
+from typing import TypedDict
+import torch
+import torch.nn as nn
+from huggingface_hub import PyTorchModelHubMixin
+from rxnn.transformers.attention import GroupedQueryAttention
+from rxnn.transformers.positional import RotaryPositionalEmbedding
+from rxnn.transformers.layers import ReactiveTransformerLayer
+from rxnn.transformers.models import ReactiveTransformerDecoder
+from rxnn.memory.stm import ShortTermMemory
+
+class YourReactiveTransformerConfig(TypedDict):
+    num_layers: int
+    vocab_size: int
+    embed_dim: int
+    ff_dim: int
+    att_heads: int
+    seq_len: int
+    stm_size: int
+    att_groups: int
+    cross_att_groups: int
+
+
+class YourReactiveTransformerDecoder(nn.Module, PyTorchModelHubMixin):
+    def __init__(
+            self,
+            config: YourReactiveTransformerConfig,
+            **kwargs
+    ):
+        super(YourReactiveTransformerDecoder, self).__init__(**kwargs)
+
+        embedding = nn.Embedding(config['vocab_size'], config['embed_dim'])
+        rope = RotaryPositionalEmbedding(config['embed_dim'] // config['att_heads'], config['seq_len'])
+        stm = ShortTermMemory(config['num_layers'], config['embed_dim'], config['stm_size'])
+
+        self.model = ReactiveTransformerDecoder(
+            stm=stm,
+            embedding=embedding,
+            own_layers=nn.ModuleList([
+                ReactiveTransformerLayer(
+                    config['embed_dim'],
+                    config['ff_dim'],
+                    use_gated=True,
+                    use_moe=False,
+                    ff_activation=nn.GELU(),
+                    ff_dropout=0.1,
+                    use_rms_norm=True,
+                    self_attention=GroupedQueryAttention(
+                        config['embed_dim'],
+                        config['att_heads'],
+                        config['att_groups'],
+                        rope=rope,
+                        dropout=0.1,
+                        max_seq_len=config['seq_len'],
+                        is_causal=True,
+                    ),
+                    memory_cross_attention=GroupedQueryAttention(
+                        config['embed_dim'],
+                        config['att_heads'],
+                        config['att_groups'],
+                        rope=rope,
+                        dropout=0.1,
+                        max_seq_len=config['seq_len'],
+                        is_causal=True,
+                        rope_only_for_query=True
+                    ),
+                ) for _ in range(config['num_layers'])
+            ])
+        )
+    
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None):
+        return self.model(x, attention_mask=attention_mask)
+```
+
+#### Memory
+The _memory_ module includes **Short-Term Memory** and layers responsible for its update. In future versions it will also
+include **Long-Term Memory**.
+
+The main `ShortTermMemory` class is located in `rxnn.memory.stm` module - the usage example is in Transformers module description.
+
+Other submodules are connected to **Memory Attention** and will be described in 0.2.x version, after MRL
+
+#### Training
+Training module includes **Trainers** for different training stages of reactive models and shared training utils.
+
+Submodules:
+- `rxnn.training.tokenizer` - custom Trainer for **HuggingFace** `tokenizers` and utils to load tokenizer from Hub
+  - Tokenizer could be loaded from Hub with `load_tokenizer_from_hf_hub(repo_id)`
+- `rxnn.training.dataset` - datasets for different training stages:
+  - `MaskedLMDataset` & `AutoregressiveLMDataset` are made for base models pre-training
+  - `EncoderSftDataset` & `DecoderSftDataset` are made for Interaction Supervised Fine-Tuning for reactive models
+  - `MrlCurriculumDataset` is the dataset for single MRL Curriculum step
+  - `MrlDatasets` is wrapping MRL datasets for all curriculum steps
+  - each dataset has `from_hf_hub` class method to load dataset from Hub
+  - they have also `concat_from_hf_hub` class method to load multiple Hub datasets into single training dataset
+  - if dataset has no validation/test split, each dataset has `get_subset(subset_size, from_start=False)` method - it
+    returns new subset and modifying existing one - i.e. `valid_dataset = train_dataset.get_subset(0.1)`
+  - for concatenated datasets, validation/test split could be created with `concat_from_hf_hub_with_subset` - it cuts the
+    same percentage of each loaded dataset
+- `rxnn.training.callbacks` contain Trainer callbacks, for different kind of utils (more info below)
+- `rxnn.training.scheduler` includes learning rate scheduler for training
+- `rxnn.training.bml` - Base Model Learning module with Trainers for pre-training and fine-tuning
+- `rxnn.training.mrl` - Memory Reinforcement Learning module with Trainers for MRL (from 0.2.x)
+- `rxnn.training.rxrlhf` - Reinforcement Learning from Human Feedback for Reactive Models module (from 0.3.x)
+- `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x
+
+##### Base Model Learning
+Docs in progress
+
