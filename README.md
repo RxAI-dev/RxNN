@@ -1,5 +1,7 @@
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxai.webp" width="300" />
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxnn.webp" width="300" />
+<span>
+  <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxai_v2.png" width="400" />
+  <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxnn_v2.png" width="400" />
+</span>
 
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
@@ -210,7 +212,7 @@ Submodules:
 - `rxnn.training.bml` - Base Model Learning module with Trainers for pre-training and fine-tuning
 - `rxnn.training.mrl` - Memory Reinforcement Learning module with Trainers for MRL (from 0.2.x)
 - `rxnn.training.rxrlhf` - Reinforcement Learning from Human Feedback for Reactive Models module (from 0.3.x)
-- `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x
+- `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x)
 
 ##### Base Model Learning
 Docs in progress
