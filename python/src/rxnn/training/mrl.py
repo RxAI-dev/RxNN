@@ -395,7 +395,7 @@ class MRLTrainer:
         values = self.critic(
             input_ids=inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
-        ).logits.squeeze()
+        ).squeeze()
         # 4. Calculate critic loss, run backpropagation and optimizer step
         loss = nn.MSELoss()(values, rewards)
         return loss
@@ -460,7 +460,7 @@ class MRLTrainer:
     def _critic_advantages(self, critic_state: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             values = self.critic(critic_state['input_ids'],
-                                 attention_mask=critic_state['attention_mask']).logits.squeeze()
+                                 attention_mask=critic_state['attention_mask']).squeeze()
             return rewards - values
 
     def ppo_step(self, trajectories: list[MrlTrajectoryEpisode]):
