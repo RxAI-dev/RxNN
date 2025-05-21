@@ -5,11 +5,12 @@ class ShortTermMemory(nn.Module):
     """Short-term memory module for the Attention-based Memory System"""
 
     def __init__(self, num_layers: int, embed_dim: int, stm_size: int, init_type: str = 'normal',
-                 is_trainable: bool = False, *args, **kwargs):
+                 is_trainable: bool = False, legacy_init: bool = True, *args, **kwargs):
         super(ShortTermMemory, self).__init__(*args, **kwargs)
         self.num_layers = num_layers
         self.embed_dim = embed_dim
         self.stm_size = stm_size
+        self.batch_size = 1 # setting 1 as initial batch size (it will be normally used in inference/pre-training. Bigger batches are for RL stages)
         self.is_trainable = is_trainable
         assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
             'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
@@ -19,22 +20,30 @@ class ShortTermMemory(nn.Module):
             self.memory = nn.Parameter(stm)
         else:
             self.register_buffer('memory', stm)
+        # Legacy init - temporary option to load old models with not-batched STM (they will be loaded, updated and then the option will be removed)
+        self.legacy_init = legacy_init
 
     def _init_tensor(self, init_type: str = None):
         init_type = init_type or self.init_type
+        stm_shape = (self.num_layers, self.stm_size, self.embed_dim) \
+            if self.legacy_init else (self.num_layers, self.batch_size, self.stm_size, self.embed_dim)
         if init_type == 'normal':
-            return torch.normal(0, 0.02, (self.num_layers, self.stm_size, self.embed_dim))
+            return torch.normal(0, 0.02, stm_shape)
         elif init_type == 'standard':
-            return torch.normal(0, 1, (self.num_layers, self.stm_size, self.embed_dim))
+            return torch.normal(0, 1, stm_shape)
         elif init_type == 'uniform':
-            return torch.rand(self.num_layers, self.stm_size, self.embed_dim) * 0.02
+            return torch.rand(*stm_shape) * 0.02
         elif init_type == 'ones':
-            return torch.ones(self.num_layers, self.stm_size, self.embed_dim)
+            return torch.ones(*stm_shape)
         else:
-            return torch.zeros(self.num_layers, self.stm_size, self.embed_dim)
+            return torch.zeros(*stm_shape)
+
+    def reset_legacy_(self):
+        self.legacy_init = False
+        self.memory = self._init_tensor()
 
     def forward(self, layer: int) -> torch.Tensor:
-        return self.memory[layer].unsqueeze(0)
+        return self.memory[layer].unsqueeze(0) if self.legacy_init else self.memory[layer]
 
     def update_layer(self, layer: int, new_stm: torch.Tensor):
         self.memory[layer] = new_stm
@@ -62,3 +71,24 @@ class ShortTermMemory(nn.Module):
     def resize(self, new_stm_size: int, init_type: str = None):
         self.stm_size = new_stm_size
         self.memory = self._init_tensor(init_type)
+
+    def batched_memory(self, batch_size: int, init_type: str = None):
+        if init_type is not None:
+            assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
+                'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
+            self.init_type = init_type
+        self.batch_size = batch_size
+        self.memory = self._init_tensor()
+
+    def single_memory(self, init_type: str = None, use_mean_from_batch: bool = False):
+        if init_type is not None:
+            assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
+                'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
+            self.init_type = init_type
+        self.batch_size = 1
+        if use_mean_from_batch:
+            batch_mean = self.memory.mean(dim=(1, 2, 3), keepdim=True)
+            self.memory = self._init_tensor()
+            self.memory.copy_(batch_mean)
+        else:
+            self.memory = self._init_tensor()

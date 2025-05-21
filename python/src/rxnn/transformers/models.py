@@ -72,11 +72,17 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                layer_stm = self.stm(i).expand(x.size(0), -1, -1)
+                layer_stm = self.stm(i)
+                # expand layer STM to batch size, if it's not in batch mode
+                if layer_stm.size(0) == 1:
+                    layer_stm = layer_stm.expand(x.size(0), -1, -1)
                 x = self.shared_layers[i](x, layer_stm, mask=mask)
         # Process own layers
         for i in range(self.num_own_layers):
-            layer_stm = self.stm(i).expand(x.size(0), -1, -1)
+            layer_stm = self.stm(i)
+            # expand layer STM to batch size, if it's not in batch mode
+            if layer_stm.size(0) == 1:
+                layer_stm = layer_stm.expand(x.size(0), -1, -1)
             x = self.layers[i](x, layer_stm, mask=mask)
         return self.head(x)
 
@@ -93,12 +99,18 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                layer_stm = self.stm(i).expand(x.size(0), -1, -1)
+                layer_stm = self.stm(i)
+                # expand layer STM to batch size, if it's not in batch mode
+                if layer_stm.size(0) == 1:
+                    layer_stm = layer_stm.expand(x.size(0), -1, -1)
                 x = self.shared_layers[i](x, layer_stm, mask=attention_mask)
                 hidden_states.append(x)
         # Process own layers
         for i in range(self.num_own_layers):
-            layer_stm = self.stm(i).expand(x.size(0), -1, -1)
+            layer_stm = self.stm(i)
+            # expand layer STM to batch size, if it's not in batch mode
+            if layer_stm.size(0) == 1:
+                layer_stm = layer_stm.expand(x.size(0), -1, -1)
             x = self.layers[i](x, layer_stm, mask=attention_mask)
             hidden_states.append(x)
         return x, torch.stack(hidden_states)

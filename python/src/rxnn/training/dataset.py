@@ -803,32 +803,87 @@ class EncoderSftDataset(BaseInteractionDataset):
             'labels': labels
         }
 
+type MrlDataItem = dict[str, Union[dict[str, torch.Tensor], list[dict[str, dict[str, torch.Tensor]]]]]
+
 class MrlCurriculumDataset(Dataset):
     def __init__(
             self,
             episodes: Union[list[dict], HfDataset],
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+            max_seq_len: int = 1024,
             query_field: str = 'query',
             answer_field: str = 'answer',
             interactions_field: str = 'interactions',
+            query_token: str = '[Q]',
+            answer_token: str = '[A]',
             **kwargs,
     ):
         super(MrlCurriculumDataset, self).__init__(**kwargs)
         self.episodes = episodes
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
         self.query_field = query_field
         self.answer_field = answer_field
         self.interactions_field = interactions_field
+        self.query_token = query_token
+        self.answer_token = answer_token
+        self.is_pre_tokenized = False
+        self.is_list = isinstance(self.episodes, list)
+        self.inputs = []
 
-    def __getitem__(self, idx: int) -> dict[str, Union[str, list[dict[str, str]]]]:
-        item = self.episodes[idx]
-        query = item[self.query_field]
-        answer = item[self.answer_field]
-        interactions = item[self.interactions_field]
+    def _tokenize_manual_interaction(self, query: str, answer: str) -> dict[str, dict[str, torch.Tensor]]:
+        # Manually construct query: [BOS][Q]query
+        query_text = f"{self.tokenizer.bos_token}{self.query_token}{query}"
+        query_enc = self.tokenizer(
+            query_text,
+            max_length=self.max_seq_len,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt',
+            add_special_tokens=False  # Critical: We control all tokens
+        )
+
+        # Manually construct answer: [A]answer[EOS]
+        answer_text = f"{self.answer_token}{answer}{self.tokenizer.eos_token}"
+        answer_enc = self.tokenizer(
+            answer_text,
+            max_length=self.max_seq_len,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt',
+            add_special_tokens=False  # Critical: We control all tokens
+        )
 
         return {
-            'query': query,
-            'answer': answer,
-            'interactions': interactions,
+            'query': {
+                'input_ids': query_enc['input_ids'][0],
+                'attention_mask': query_enc['attention_mask'][0],
+            },
+            'answer': {
+                'input_ids': answer_enc['input_ids'][0],
+                'attention_mask': answer_enc['attention_mask'][0],
+            }
         }
+
+    def get_tokenized_item(self, idx: int, episode: dict = None) -> MrlDataItem:
+        if self.is_pre_tokenized:
+            return self.inputs[idx]
+        else:
+            item = self.episodes[idx] if episode is None else episode
+            query = item[self.query_field]
+            answer = item[self.answer_field]
+            interactions = item[self.interactions_field]
+
+            initial = self._tokenize_manual_interaction(query, answer)
+            follow_ups = [self._tokenize_manual_interaction(inter['query'], inter['answer']) for inter in interactions]
+
+            return {
+                **initial,
+                'interactions': follow_ups,
+            }
+
+    def __getitem__(self, idx: int) -> MrlDataItem:
+        return self.get_tokenized_item(idx)
 
     def __len__(self) -> int:
         return len(self.episodes)
@@ -843,11 +898,40 @@ class MrlCurriculumDataset(Dataset):
             self.episodes = self.episodes[0:split_point] if not from_start else self.episodes[split_point:-1]
         return self.__class__(subset, query_field=self.query_field, answer_field=self.answer_field, interactions_field=self.interactions_field, **kwargs)
 
+    def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, keep_order: bool = False):
+        """
+        Pre-tokenizes all the items in the dataset, for faster training. Training with pre-tokenized
+        dataset could be even 2x faster.
+
+        !! This method has extremely high memory usage, when used with HuggingFace datasets,
+        because of converting it to list. Additionally, for the most optimal performance,
+        pre-tokenized items are in reversed order - it shouldn't matter for training, as
+        items are shuffled then by DataLoader, but you should keep that in mind in case
+        of reproducibility.
+
+        Args:
+            verbose (bool): Should display logs (default: False)
+            log_interval (int): Display logs every log_interval iterations (default: 10_000)
+            keep_order (bool): Keep tokenized items in the same order - by default they are reversed for faster processing (default: False)
+        """
+        if not self.is_pre_tokenized:
+            num_episodes = len(self.episodes)
+            eps = self.episodes if self.is_list else self.episodes.to_list()
+            del self.episodes
+            self.episodes = None
+            for index in range(num_episodes):
+                self.inputs.append(self.get_tokenized_item(index, episode=eps.pop() if not keep_order else eps[index]))
+                if verbose and index % log_interval == 0:
+                    print(f'Processed {index + 1}/{num_episodes}')
+            del eps
+            self.is_pre_tokenized = True
+
     @classmethod
     def from_hf_hub(
             cls,
             dataset_id: str,
             mrl_subset: str,
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
             split: str = 'train',
             query_field: str = 'query',
             answer_field: str = 'answer',
@@ -863,6 +947,7 @@ class MrlCurriculumDataset(Dataset):
         Args:
             dataset_id (str): Hub dataset repository name
             mrl_subset (str): Dataset subset
+            tokenizer (Union[PreTrainedTokenizer, PreTrainedTokenizerFast]): Tokenizer
             split (str): Dataset split (default: "train")
             query_field (str): Query field (default: "query")
             answer_field (str): Answer field (default: "answer")
@@ -872,8 +957,32 @@ class MrlCurriculumDataset(Dataset):
         """
         hf_dataset = load_dataset(dataset_id, mrl_subset, split=split, **load_kwargs)
 
-        return cls(hf_dataset, query_field, answer_field, interactions_field, **kwargs)
+        return cls(hf_dataset, tokenizer, query_field=query_field, answer_field=answer_field, interactions_field=interactions_field, **kwargs)
 
+    @staticmethod
+    def collate_mrl_batch(batch: list[MrlDataItem]) -> MrlDataItem:
+        """Collate function for MRL curriculum dataset with nested interactions"""
+        def collate_interaction_batch(interaction_batch: list[dict[str, dict[str, torch.Tensor]]]) -> dict[str, dict[str, torch.Tensor]]:
+            """Helper to collate a batch of interactions"""
+            return {
+                'query': {
+                    'input_ids': torch.stack([x['query']['input_ids'] for x in interaction_batch]),
+                    'attention_mask': torch.stack([x['query']['attention_mask'] for x in interaction_batch]),
+                },
+                'answer': {
+                    'input_ids': torch.stack([x['answer']['input_ids'] for x in interaction_batch]),
+                    'attention_mask': torch.stack([x['answer']['attention_mask'] for x in interaction_batch]),
+                }
+            }
+
+        batch_interactions = [x['interactions'] for x in batch]
+
+        return {
+            **collate_interaction_batch(batch), # Collate initial query and answer
+            'interactions': [
+                collate_interaction_batch(step_batch) for step_batch in batch_interactions
+            ]
+        }
 
 
 class MrlDatasets:
@@ -883,10 +992,40 @@ class MrlDatasets:
     def __call__(self, curriculum_steps: int) -> MrlCurriculumDataset:
         return self.datasets[curriculum_steps]
 
+    def __iter__(self):
+        return iter(self.datasets)
+
+    def __len__(self):
+        return len(self.datasets)
+
+    @property
+    def is_pre_tokenized(self) -> bool:
+        return all(dataset.is_pre_tokenized for _, dataset in self.datasets.items())
+
+    def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, keep_order: bool = False):
+        """
+        Pre-tokenizes all the inner datasets
+
+        !! This method has extremely high memory usage, when used with HuggingFace datasets,
+        because of converting it to list. Additionally, for the most optimal performance,
+        pre-tokenized items are in reversed order - it shouldn't matter for training, as
+        items are shuffled then by DataLoader, but you should keep that in mind in case
+        of reproducibility.
+
+        Args:
+            verbose (bool): Should display logs (default: False)
+            log_interval (int): Display logs every log_interval iterations (default: 10_000)
+            keep_order (bool): Keep tokenized items in the same order - by default they are reversed for faster processing (default: False)
+        """
+        if not self.is_pre_tokenized:
+            for _, dataset in self.datasets.items():
+                dataset.pre_tokenize(verbose, log_interval, keep_order)
+
     @classmethod
     def from_hf_hub(
             cls,
             dataset_id: str,
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
             mrl_curriculum_steps: Union[list[int], tuple[int]] = (1, 2, 4, 6, 8, 12, 16),
             get_subset_name: Callable[[int], str] = lambda step: f'step_{step}',
             split: str = 'train',
@@ -903,6 +1042,7 @@ class MrlDatasets:
 
         Args:
             dataset_id (str): Hub dataset repository name
+            tokenizer (Union[PreTrainedTokenizer, PreTrainedTokenizerFast]): Tokenizer
             mrl_curriculum_steps (list[int]): MRL Curriculum steps configuration
             get_subset_name (Callable[[int], str]): Function to get subset name from curriculum step
             split (str): Dataset split (default: "train")
@@ -919,6 +1059,7 @@ class MrlDatasets:
         mrl_datasets = { steps: MrlCurriculumDataset.from_hf_hub(
             dataset_id,
             get_subset_name(steps),
+            tokenizer=tokenizer,
             query_field=query_field,
             answer_field=answer_field,
             interactions_field=interactions_field,
