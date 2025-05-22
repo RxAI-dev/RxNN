@@ -534,7 +534,7 @@ class MrlTrainerCallback:
     def on_reward(self, actor: torch.nn.Module, reward: float, generated: str, reference: str, saved_data: str) -> None:
         pass
 
-    def on_episode_updated(self, actor: torch.nn.Module, episode_idx: int, trajectories_len: int, policy_loss: float) -> None:
+    def on_batch_updated(self, actor: torch.nn.Module, episode_idx: int, trajectories_len: int, policy_loss: float) -> None:
         pass
 
     def on_critic_updated(self, actor: torch.nn.Module, critic: nn.Module, epoch: int, critic_loss: float) -> None:
