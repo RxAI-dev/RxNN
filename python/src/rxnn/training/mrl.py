@@ -12,6 +12,7 @@ from ..transformers.sampler import BatchSampler
 from .callbacks import MrlTrainerCallback
 from .dataset import MrlCurriculumDataset
 from .utils import smart_concat, smart_concat_critic_states, SpecialTokenIds, TokenizedDict
+from .rl import RlAlgorithm
 
 class MrlConfig(TypedDict):
     lr: float
@@ -20,11 +21,6 @@ class MrlConfig(TypedDict):
     critic_max_len: int
     weight_decay: float
     critic_weight_decay: float
-
-class PPOConfig(TypedDict):
-    gae_gamma: float
-    gae_lambda: float
-    clip_eps: float
 
 class MrlStrategy(Enum):
     SINGLE_STEP_STRATEGY = 1
@@ -107,6 +103,7 @@ class MrlRewardModel:
         gen_and_ref = F.cosine_similarity(generated_emb, self._sequence_embedding(reference))
 
         return self.cos_saved_factor * gen_and_saved + self.cos_ref_factor * gen_and_ref
+
     def __call__(
             self,
             generated: TokenizedDict,
@@ -200,7 +197,7 @@ class MRLTrainer:
             reward: MrlRewardModel,
             device: torch.device,
             config: MrlConfig,
-            ppo_config: PPOConfig,
+            rl_algorithm: RlAlgorithm,
             sampler_config: SamplerConfig,
             log_dir: str = None,
             pad_token_id: int = 0,
@@ -271,10 +268,7 @@ class MRLTrainer:
         self.epoch_step = self._init_steps()
         self.stage_step = self._init_steps()
 
-        # PPO Config
-        self.gae_gamma = ppo_config.get('gae_gamma', 0.99)
-        self.gae_lambda = ppo_config.get('gae_lambda', 0.95)
-        self.clip_eps = ppo_config.get('clip_eps', 0.2)
+        self.rl_algorithm = rl_algorithm
 
         # Dynamic fields, updated for each curriculum step
         self.curriculum_steps = 0
@@ -478,7 +472,7 @@ class MRLTrainer:
             attention_mask=inputs['attention_mask'],
         ).squeeze()
         # 4. Calculate critic loss, run backpropagation and optimizer step
-        loss = nn.MSELoss()(values, rewards)
+        loss = self.rl_algorithm.critic_loss(values, rewards)
         return loss
 
     def _critic_writer(self, critic_loss: float, epoch: int):
@@ -547,22 +541,11 @@ class MRLTrainer:
 
         return critic_mean_loss
 
-    def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor, next_value: torch.Tensor) -> torch.Tensor:
-        advantages = torch.zeros_like(rewards, device=self.device)
-        last_advantage = 0
-        for t in reversed(range(rewards.size(0))):
-            delta = rewards[t] + self.gae_gamma * next_value - values[t]
-            advantages[t] = delta + self.gae_gamma * self.gae_lambda * last_advantage
-            last_advantage = advantages[t]
-        return advantages
-
     def _critic_advantages(self, critic_state: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
         with torch.no_grad():
             values = self.critic(critic_state['input_ids'],
                                  attention_mask=critic_state['attention_mask'])
-        advantages = self._compute_gae(rewards, values[:-1], values[-1])
-        normalized_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return normalized_advantages
+        return self.rl_algorithm.calculate_advantages(rewards, values)
 
     def _ppo_writer(self, policy_loss: float, epoch: int):
         if self.writer is not None:
@@ -615,22 +598,8 @@ class MRLTrainer:
                     inputs = smart_concat(next_query, action, max_length=self.max_seq_len, pad_token_id=self.special_token_ids['pad'])
                     logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.DECODE)
 
-                # 7. Calculate PPO loss
-                # a) Get new log probs
-                new_probs = F.log_softmax(logits, dim=-1)
-                new_log_probs = new_probs.gather(-1, action['attention_mask'])
-
-                # b) Calculate ratio
-                ratio = (new_log_probs - log_probs).exp()
-
-                # c) Clipped surrogate loss
-                surr1 = ratio * advantages
-                surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages
-                policy_loss = -torch.min(surr1, surr2).mean()
-
-                # d) Entropy bonus
-                entropy = -torch.sum(new_probs * new_probs.exp(), dim=-1).mean()
-                policy_loss -= 0.01 * entropy
+                # 7. Calculate RL Algorithm (PPO etc.) loss
+                policy_loss = self.rl_algorithm.policy_loss(action['input_ids'], logits, log_probs, advantages)
 
                 # 8. Reset gradients
                 self.optimizer.zero_grad()
