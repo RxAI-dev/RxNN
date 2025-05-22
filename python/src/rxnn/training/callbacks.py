@@ -520,3 +520,28 @@ class EarlyStoppageCallback(TrainerCallback):
     elif epoch - self.best_loss_epoch > self.num_plateau_epochs:
       return True
     return None
+
+class MrlTrainerCallback:
+    def on_epoch_start(self, actor: torch.nn.Module, epoch: int, stage_epochs: int) -> None:
+        pass
+
+    def on_epoch_end(self, actor: torch.nn.Module, epoch: int, stage_epochs: int, policy_loss: float, critic_loss: float) -> None:
+        pass
+
+    def on_episode_collected(self, actor: torch.nn.Module, batch_idx: int, episode_trajectories: list[dict]) -> None:
+        pass
+
+    def on_reward(self, actor: torch.nn.Module, reward: float, generated: str, reference: str, saved_data: str) -> None:
+        pass
+
+    def on_batch_updated(self, actor: torch.nn.Module, episode_idx: int, trajectories_len: int, policy_loss: float) -> None:
+        pass
+
+    def on_critic_updated(self, actor: torch.nn.Module, critic: nn.Module, epoch: int, critic_loss: float) -> None:
+        pass
+
+    def on_training_end(self, actor: torch.nn.Module) -> None:
+        pass
+
+    def on_eval_end(self, model: torch.nn.Module, epoch: int, eval_mean_reward: float, val_metrics: dict) -> None:
+        pass

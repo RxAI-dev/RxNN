@@ -8,6 +8,8 @@ from ..transformers.layers import ReactiveTransformerLayer
 from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder
 from ..transformers.ff import get_activation_layer
 from ..memory.stm import ShortTermMemory
+from ..memory.norm import init_memory_norm
+from ..memory.attention import StmMemoryAttention
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
 
@@ -135,6 +137,22 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
     def load_shared_memory(self, stm: ShortTermMemory):
         self.model.stm = stm
 
+    def freeze_without_memory(self):
+        for param in self.model.parameters():
+            param.requires_grad_(False)
+        self.model.trainable_cross_attention_(True)
+
+    def freeze_memory(self):
+        self.model.trainable_cross_attention_(False)
+
+    def unfreeze_all(self):
+        for param in self.model.parameters():
+            param.requires_grad_(True)
+
+    def update_max_len(self, max_seq_len: int):
+        for layer in self.model.layers:
+            layer.update_max_len(max_seq_len)
+
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> Union[
         torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
         return self.model(x, attention_mask=attention_mask)
@@ -204,4 +222,57 @@ def build_rxt_alpha_for_pretraining(
     encoder.load_shared_embedding(decoder.model.embedding)
 
     return encoder, decoder
+
+class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+    """RxT-Alpha (Reactive Transformer) memory attention model"""
+    def __init__(
+            self,
+            num_layers: int = 12,
+            embed_dim: int = 512,
+            att_heads: int = 16,
+            seq_len: int = 1024,
+            stm_size: int = 1024,
+            use_flash_attention: bool = True,
+            att_dropout: float = 0.0,
+            norm_type: str = 'rms',
+            att_groups: int = 1,
+            att_type: str = 'sqa',
+            att_experts: int = None,
+            att_query_experts: int = None,
+            att_query_groups: int = None,
+            **kwargs,
+    ):
+        super(RxTAlphaMemoryAttention, self).__init__(**kwargs)
+
+        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+
+        rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
+        stm = ShortTermMemory(num_layers, embed_dim, stm_size)
+
+        if att_type in ['mha', 'gqa', 'mqa']:
+            att_init = lambda: init_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
+                                              use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                              max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True)
+        else:
+            att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
+                                                           use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                           max_seq_len=seq_len, is_causal=False, num_experts=att_experts,
+                                                           num_query_experts=att_query_experts,
+                                                           num_query_groups=att_query_groups, rope_only_for_keys=True)
+
+        memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size) for _ in range(num_layers)])
+        attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
+        self.model = StmMemoryAttention(stm, attention_layers, memory_norm_layers)
+
+    def load_shared_memory(self, stm: ShortTermMemory):
+        self.model.stm = stm
+
+    def update_max_len(self, max_seq_len: int):
+        self.model.update_max_len(max_seq_len)
+
+    def reset_memory(self, init_type: str = None):
+        self.model.stm.reset_memory(init_type)
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        return self.model(x, attention_mask=attention_mask)
 
