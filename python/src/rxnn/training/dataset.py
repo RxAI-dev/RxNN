@@ -1002,8 +1002,17 @@ class MrlDatasets:
     def __iter__(self):
         return iter(self.datasets)
 
+    def __getitem__(self, idx: int) -> MrlDatasetItem:
+        return self.datasets[idx]
+
     def __len__(self):
         return len(self.datasets)
+
+    def __call__(self, steps: int, is_long_range: bool = False):
+        for dataset in self.datasets:
+            if dataset['steps'] == steps and dataset['is_long_range'] == is_long_range:
+                return dataset
+        return None
 
     @property
     def is_pre_tokenized(self) -> bool:
