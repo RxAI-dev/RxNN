@@ -4,7 +4,7 @@ from datasets import Dataset as HfDataset, load_dataset, concatenate_datasets
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from .tokenizer import load_tokenizer_from_hf_hub
 
-from typing import Union, Callable
+from typing import Union, Callable, TypedDict, Optional
 
 
 class BaseDataset(Dataset):
@@ -984,13 +984,20 @@ class MrlCurriculumDataset(Dataset):
             ]
         }
 
+class MrlDatasetItem(TypedDict):
+    steps: int
+    is_long_range: bool
+    dataset: MrlCurriculumDataset
+    eval_dataset: Optional[MrlCurriculumDataset]
+
+class MrlDatasetLoadItem(TypedDict):
+    subset_name: str
+    steps: int
+    is_long_range: bool
 
 class MrlDatasets:
-    def __init__(self, datasets: dict[int, MrlCurriculumDataset]):
+    def __init__(self, datasets: list[MrlDatasetItem]):
         self.datasets = datasets
-
-    def __call__(self, curriculum_steps: int) -> MrlCurriculumDataset:
-        return self.datasets[curriculum_steps]
 
     def __iter__(self):
         return iter(self.datasets)
@@ -1000,7 +1007,9 @@ class MrlDatasets:
 
     @property
     def is_pre_tokenized(self) -> bool:
-        return all(dataset.is_pre_tokenized for _, dataset in self.datasets.items())
+        train_tokenized = all(item['dataset'].is_pre_tokenized for item in self.datasets)
+        eval_tokenized = all(item['eval_dataset'].is_pre_tokenized for item in self.datasets if item['eval_dataset'] is not None)
+        return train_tokenized and eval_tokenized
 
     def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, keep_order: bool = False):
         """
@@ -1018,22 +1027,24 @@ class MrlDatasets:
             keep_order (bool): Keep tokenized items in the same order - by default they are reversed for faster processing (default: False)
         """
         if not self.is_pre_tokenized:
-            for _, dataset in self.datasets.items():
-                dataset.pre_tokenize(verbose, log_interval, keep_order)
+            for item in self.datasets:
+                item['dataset'].pre_tokenize(verbose, log_interval, keep_order)
+                if item['eval_dataset'] is not None:
+                    item['eval_dataset'].pre_tokenize(verbose, log_interval, keep_order)
 
     @classmethod
     def from_hf_hub(
             cls,
             dataset_id: str,
             tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
-            mrl_curriculum_steps: Union[list[int], tuple[int]] = (1, 2, 4, 6, 8, 12, 16),
-            get_subset_name: Callable[[int], str] = lambda step: f'step_{step}',
+            mrl_curriculum_steps: Union[list[MrlDatasetLoadItem], tuple[MrlDatasetLoadItem]],
             split: str = 'train',
             query_field: str = 'query',
             answer_field: str = 'answer',
             interactions_field: str = 'interactions',
             load_kwargs: dict = None,
             mrl_ds_kwargs: dict = None,
+            eval_split: str = None,
     ):
         """
         Load dataset from HuggingFace Hub and convert it to RxNN training dataset.
@@ -1043,28 +1054,41 @@ class MrlDatasets:
         Args:
             dataset_id (str): Hub dataset repository name
             tokenizer (Union[PreTrainedTokenizer, PreTrainedTokenizerFast]): Tokenizer
-            mrl_curriculum_steps (list[int]): MRL Curriculum steps configuration
-            get_subset_name (Callable[[int], str]): Function to get subset name from curriculum step
+            mrl_curriculum_steps (list[MrlDatasetLoadItem]): MRL Curriculum steps configuration
             split (str): Dataset split (default: "train")
             query_field (str): Query field (default: "query")
             answer_field (str): Answer field (default: "answer")
             interactions_field (str): Interactions field (default: "interactions")
             load_kwargs (dict): Additional args for HuggingFace API load_dataset function
             mrl_ds_kwargs (dict): Additional args for RxNN MrlCurriculumDataset class
+            eval_split (str): Load also evaluation/validation split (default: None)
         """
         if load_kwargs is None:
             load_kwargs = {}
         if mrl_ds_kwargs is None:
             mrl_ds_kwargs = {}
-        mrl_datasets = { steps: MrlCurriculumDataset.from_hf_hub(
-            dataset_id,
-            get_subset_name(steps),
-            tokenizer=tokenizer,
-            query_field=query_field,
-            answer_field=answer_field,
-            interactions_field=interactions_field,
-            split=split,
-            load_kwargs=load_kwargs,
-            **mrl_ds_kwargs,
-        ) for steps in mrl_curriculum_steps }
+
+        def load_subset(subset_name: str, load_split: str):
+            return MrlCurriculumDataset.from_hf_hub(
+                dataset_id,
+                subset_name,
+                tokenizer=tokenizer,
+                query_field=query_field,
+                answer_field=answer_field,
+                interactions_field=interactions_field,
+                split=load_split,
+                load_kwargs=load_kwargs,
+                **mrl_ds_kwargs,
+            )
+
+        def dataset_item(item: MrlDatasetLoadItem) -> MrlDatasetItem:
+            return {
+                'steps': item['steps'],
+                'is_long_range': item['is_long_range'],
+                'dataset': load_subset(item['subset_name'], split),
+                'eval_dataset': load_subset(item['subset_name'], eval_split) if eval_split is not None else None,
+            }
+
+        mrl_datasets = [dataset_item(item) for item in mrl_curriculum_steps]
+
         return cls(mrl_datasets)

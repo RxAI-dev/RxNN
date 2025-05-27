@@ -466,12 +466,12 @@ class MRLTrainer:
         return trajectories
 
     def _critic_loss(self, inputs: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
-        # 3. Calculate values with critic encoder
+        # 1. Calculate values with critic encoder
         values = self.critic(
             input_ids=inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
         ).squeeze()
-        # 4. Calculate critic loss, run backpropagation and optimizer step
+        # 2. Calculate critic loss
         loss = self.rl_algorithm.critic_loss(values, rewards)
         return loss
 
