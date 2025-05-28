@@ -287,6 +287,7 @@ class SparseQueryAttention(MultiHeadAttention):
             k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
             v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
         else:
+            # Relative embedding version is not working without this strange mapping - it will be removed in next versions
             group_heads = self.num_heads // self.num_groups
             query_heads = self.num_heads // self.num_query_groups
             # Process Q
@@ -457,6 +458,7 @@ def init_experimental_attention(
         dropout: float = 0.0,
         rope: RotaryPositionalEmbedding = None,
         rope_only_for_query: bool = False,
+        rope_only_for_keys: bool = False,
         use_relative_embeddings: bool = False,
         max_seq_len: int = 1024,
         use_flash_attention: bool = False,
@@ -478,6 +480,7 @@ def init_experimental_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
@@ -493,6 +496,7 @@ def init_experimental_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,
@@ -511,6 +515,7 @@ def init_experimental_attention(
             use_relative_embeddings=use_relative_embeddings,
             max_seq_len=max_seq_len,
             rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
             use_flash_attention=use_flash_attention,
             is_causal=is_causal,
             use_bias=use_bias,

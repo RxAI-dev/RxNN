@@ -1,15 +1,15 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Iterator, Union
+from typing import Iterator, Union, Optional
 from transformers import PreTrainedTokenizerFast, PreTrainedTokenizer
 
 
 def sample(
         logits: torch.Tensor,
         temperature: float = 1.0,
-        top_k: int = None,
-        top_p: float = None,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
 ) -> torch.Tensor:
     if temperature <= 0:
         raise ValueError("Temperature must be > 0")
@@ -88,8 +88,8 @@ class Sampler:
             self,
             initial_tokens: torch.Tensor,
             temperature: float = 1.0,
-            top_k: int = None,
-            top_p: float = None,
+            top_k: Optional[int] = None,
+            top_p: Optional[float] = None,
             max_seq_len: int = 50,
             attention_mask: torch.Tensor = None,
             no_grad: bool = True,
@@ -120,10 +120,10 @@ class SampleDecoder:
         self.tokenizer = tokenizer
         self.device = self.sampler.device
 
-    def tokenize_input(self, text: str):
+    def tokenize_input(self, text: str, max_seq_len: int = 256):
         tokenized = self.tokenizer(
             text,
-            max_length=256,
+            max_length=max_seq_len,
             truncation=True,
             padding=False,
             return_tensors='pt',
@@ -135,7 +135,7 @@ class SampleDecoder:
         return tokenized
 
     def ids_iter(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len=256):
-        tokenized = self.tokenize_input(text)
+        tokenized = self.tokenize_input(text, max_seq_len=max_seq_len)
         return self.sampler(
             tokenized['input_ids'],
             temperature=temperature,
@@ -167,3 +167,277 @@ class SampleDecoder:
             return self.print_stream(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len)
         else:
             return self.txt(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len)
+
+class InteractionSampler(SampleDecoder):
+    def __init__(self, sampler: Sampler, tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast]):
+        super(InteractionSampler, self).__init__(sampler, tokenizer)
+
+    def txt(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len: int = 256, special_token_spaces: bool = True):
+        txt = '[Q]' + text + '[A]'
+        start_txt = '[Q] ' + text + ' [A] ' if special_token_spaces else txt
+        return start_txt + ''.join(self.txt_iter(txt, temperature, top_p, max_seq_len))
+
+    def print_stream(self, text: str, temperature: float = 0.1, top_p: float = 0.9, max_seq_len: int = 256, special_token_spaces: bool = True):
+        txt = '[Q]' + text + '[A]'
+        start_txt = '[Q] ' + text + ' [A] ' if special_token_spaces else txt
+        print(start_txt, end='')
+        resp = start_txt
+        for txt_token in self.txt_iter(txt, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len):
+            print(txt_token, end='')
+            resp += txt_token
+        return resp
+
+    def __call__(self, text: str, print_stream: bool = False, temperature: float = 0.1, top_p: float = 0.9,
+                 max_seq_len: int = 256, special_token_spaces: bool = True):
+        if print_stream:
+            return self.print_stream(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len, special_token_spaces=special_token_spaces)
+        else:
+            return self.txt(text, temperature=temperature, top_p=top_p, max_seq_len=max_seq_len, special_token_spaces=special_token_spaces)
+
+
+def sample_batch(
+        logits: torch.Tensor,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Returns (sampled_tokens, log_probs)"""
+    if temperature <= 0:
+        raise ValueError("Temperature must be > 0")
+
+    # Store original dtype and device
+    original_dtype = logits.dtype
+    device = logits.device
+
+    # Convert to float32 for numerical stability
+    logits = logits.float()
+
+    # Apply temperature
+    logits = logits / temperature
+
+    # Apply top-k filtering
+    if top_k is not None and top_k > 0:
+        topk_values, _ = torch.topk(logits, top_k, dim=-1)
+        min_topk = topk_values[:, -1].unsqueeze(-1)
+        logits = torch.where(logits < min_topk, torch.tensor(-float('inf'), device=device), logits)
+
+    # Apply top-p filtering
+    if top_p is not None and 0 < top_p <= 1.0:
+        # Sort logits in descending order
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+
+        # Calculate cumulative probabilities
+        sorted_probs = F.softmax(sorted_logits, dim=-1)
+        cumulative_probs = torch.cumsum(sorted_probs, dim=-1)
+
+        # Create mask to filter tokens
+        sorted_mask = cumulative_probs <= top_p
+        sorted_mask[..., 0] = True  # Ensure at least one token is kept
+
+        # Create mask for original indices
+        mask = torch.zeros_like(logits, dtype=torch.bool)
+        mask.scatter_(dim=-1, index=sorted_indices, src=sorted_mask)
+
+        # Apply mask
+        logits = torch.where(mask, logits, torch.tensor(-float('inf'), device=device))
+
+    # At this point ensure at least one token is available per batch element
+    alive = torch.isfinite(logits).any(dim=-1)
+    if not alive.all():
+        # Force keep the most probable token for dead rows
+        max_indices = logits.argmax(dim=-1)
+        logits[~alive] = -float('inf')
+        logits.scatter_(dim=-1, index=max_indices.unsqueeze(-1), value=0)
+
+    # Calculate log probabilities
+    log_probs = F.log_softmax(logits, dim=-1)
+
+    # Convert to probabilities
+    probs = torch.exp(log_probs)
+
+    # Ensure numerical stability for sampling
+    probs = probs.clamp(min=1e-12)
+
+    # Sample tokens
+    next_tokens = torch.multinomial(probs, num_samples=1).squeeze(-1)
+
+    # Gather log probabilities
+    selected_log_probs = log_probs.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)
+
+    # Convert back to original dtype
+    return next_tokens.to(original_dtype), selected_log_probs.to(torch.float32)
+
+
+class BatchSampler:
+    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int):
+        self.model = model.to(device)
+        self.device = device
+        self.end_token_id = end_token_id
+
+    def __call__(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+        max_gen_len: int = 256,
+        no_grad: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        batch_size, max_seq_len = input_ids.shape
+        initial_lens = attention_mask.sum(dim=1)
+        current_lens = initial_lens.clone()
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
+        log_probs = torch.zeros((batch_size, max_gen_len), dtype=torch.float32, device=self.device)
+        working_ids = input_ids.clone()
+        working_mask = attention_mask.clone()
+
+        for step in range(max_gen_len):
+            active = (~finished) & (current_lens < max_seq_len)
+            if not active.any():
+                break
+
+            active_indices = active.nonzero(as_tuple=True)[0]
+            active_current_lens = current_lens[active]
+            max_len = active_current_lens.max().item()
+
+            with torch.set_grad_enabled(not no_grad):
+                # Slice input and mask up to the current max length among active sequences
+                inputs = working_ids[active, :max_len]
+                masks = working_mask[active, :max_len]
+                logits = self.model(inputs, attention_mask=masks)
+
+            # Get the last valid token index for each active sequence
+            indices = (active_current_lens - 1).to(self.device)
+            last_logits = logits[torch.arange(len(active_indices), device=self.device), indices]
+
+            # Sample next tokens and log probs
+            next_tokens, step_log_probs = sample_batch(
+                last_logits, temperature=temperature, top_k=top_k, top_p=top_p
+            )
+
+            # Update working tensors
+            for i, idx in enumerate(active_indices):
+                if current_lens[idx] >= max_seq_len:
+                    continue
+                pos = current_lens[idx].item()
+                working_ids[idx, pos] = next_tokens[i]
+                working_mask[idx, pos] = 1
+                log_probs[idx, step] = step_log_probs[i]
+                current_lens[idx] += 1
+                if next_tokens[i] == self.end_token_id:
+                    finished[idx] = True
+
+        # Extract generated tokens
+        generated_ids = torch.zeros((batch_size, max_gen_len), dtype=torch.long, device=self.device)
+        generated_mask = torch.zeros((batch_size, max_gen_len), dtype=torch.bool, device=self.device)
+        for i in range(batch_size):
+            start = initial_lens[i].item()
+            end = current_lens[i].item()
+            gen_len = min(end - start, max_gen_len)
+            if gen_len > 0:
+                generated_ids[i, :gen_len] = working_ids[i, start:end]
+                generated_mask[i, :gen_len] = working_mask[i, start:end]
+
+        return generated_ids, generated_mask, log_probs
+
+
+class BatchSampleDecoder:
+    def __init__(
+            self,
+            sampler: BatchSampler,
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+            bos_token: str = '[BOS]',
+            query_token: str = '[Q]',
+    ):
+        self.sampler = sampler
+        self.tokenizer = tokenizer
+        self.device = self.sampler.device
+        self.bos_token = bos_token
+        self.query_token = query_token
+
+    def tokenize_batch(self, texts: list[str], max_seq_len: int = 256):
+        tokenized = self.tokenizer(
+            [f'{self.bos_token}{self.query_token}{txt}' for txt in texts],
+            max_length=max_seq_len,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt',
+            return_attention_mask=True,
+            add_special_tokens=False
+        )
+        return {
+            'input_ids': tokenized['input_ids'].to(self.device),
+            'attention_mask': tokenized['attention_mask'].to(self.device)
+        }
+
+    def generate(
+            self,
+            texts: list[str],
+            temperature: float = 1.0,
+            top_p: Optional[float] = None,
+            top_k: Optional[int] = None,
+            max_seq_len: int = 256,
+            no_grad: bool = True,
+    ) -> list[str]:
+        tokenized = self.tokenize_batch(texts, max_seq_len)
+        generated_ids, _, _ = self.sampler(
+            input_ids=tokenized['input_ids'],
+            attention_mask=tokenized['attention_mask'],
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_gen_len=max_seq_len,
+            no_grad=no_grad,
+        )
+
+        decoded = []
+        for seq in generated_ids:
+            # Trim after end token
+            end_pos = (seq == self.sampler.end_token_id).nonzero()
+            if end_pos.size(0) > 0:
+                seq = seq[:end_pos[0] + 1]
+            decoded.append(self.tokenizer.decode(seq).replace('Ċ', '\n').replace('Ġ', ' '))
+
+        return decoded
+
+    def generate_with_log_probs(
+            self,
+            texts: list[str],
+            temperature: float = 1.0,
+            top_p: Optional[float] = None,
+            top_k: Optional[int] = None,
+            max_seq_len: int = 256,
+            no_grad: bool = True,
+    ) -> tuple[list[str], torch.Tensor]:
+        tokenized = self.tokenize_batch(texts, max_seq_len)
+        generated_ids, _, log_probs = self.sampler(
+            input_ids=tokenized['input_ids'],
+            attention_mask=tokenized['attention_mask'],
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_gen_len=max_seq_len,
+            no_grad=no_grad,
+        )
+
+        decoded = []
+        for i, seq in enumerate(generated_ids):
+            # Trim after end token
+            end_pos = (seq == self.sampler.end_token_id).nonzero()
+            if end_pos.size(0) > 0:
+                seq = seq[:end_pos[0] + 1]
+            decoded.append(self.tokenizer.decode(seq).replace('Ċ', '\n').replace('Ġ', ' '))
+
+        return decoded, log_probs
+
+    def __call__(
+            self,
+            texts: list[str],
+            temperature: float = 1.0,
+            top_p: Optional[float] = None,
+            top_k: Optional[int] = None,
+            max_seq_len: int = 256,
+            no_grad: bool = True,
+    ) -> list[str]:
+        return self.generate(texts, temperature, top_p, top_k, max_seq_len, no_grad)
