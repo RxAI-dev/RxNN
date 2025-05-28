@@ -1,46 +1,12 @@
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 import math
-from huggingface_hub import PyTorchModelHubMixin
 from typing import Union
 import torch.distributed as dist
-from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
+from ..transformers.models import ReactiveTransformerDecoder
 from ..training.base import BaseTrainer
-
-class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
-    def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
-        super(MLMHead, self).__init__(*args, **kwargs)
-        self.dense = nn.Linear(embed_dim, embed_dim)
-        self.act = nn.GELU()
-        self.layer_norm = nn.LayerNorm(embed_dim)
-        self.decoder = nn.Linear(embed_dim, vocab_size)
-
-    def forward(self, hidden_states):
-        x = self.dense(hidden_states)
-        x = self.act(x)
-        x = self.layer_norm(x)
-        return self.decoder(x)
-
-
-class MLMTrainingModel(nn.Module):
-    def __init__(
-            self,
-            encoder: ReactiveTransformerEncoder,
-            mlm_head: MLMHead,
-            *args,
-            **kwargs
-    ):
-        super(MLMTrainingModel, self).__init__(*args, **kwargs)
-        self.encoder = encoder
-        self.mlm_head = mlm_head
-
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
-        h, _ = self.encoder(x, attention_mask=attention_mask)
-        y = self.mlm_head(h)
-        return y
-
+from .models import MLMTrainingModel, JointTrainingModel
 
 class MLMTrainer(BaseTrainer):
     def __init__(
@@ -241,29 +207,6 @@ class AutoregressiveTrainer(BaseTrainer):
         }
         self.model.train()
         return avg_loss, metrics
-
-
-class JointTrainingModel(nn.Module):
-    def __init__(
-            self,
-            encoder: ReactiveTransformerEncoder,
-            decoder: ReactiveTransformerDecoder,
-            mlm_head: MLMHead,
-            *args,
-            **kwargs
-    ):
-        super(JointTrainingModel, self).__init__(*args, **kwargs)
-        self.encoder = encoder
-        self.mlm_head = mlm_head
-        self.decoder = decoder
-
-    def forward(self, x_e: torch.Tensor, x_d: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[
-        torch.Tensor, torch.Tensor]:
-        encoder_result, _ = self.encoder(x_e, attention_mask=attention_mask)
-        y_e = self.mlm_head(encoder_result)
-        y_d = self.decoder(x_d, attention_mask=attention_mask)
-        return y_e, y_d
-
 
 class JointLMTrainer(BaseTrainer):
     """"
