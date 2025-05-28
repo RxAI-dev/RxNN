@@ -1,5 +1,7 @@
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxai.webp" width="300" />
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxnn.webp" width="300" />
+<span>
+  <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxai_v2.png" width="400" />
+  <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/logo/logo_rxnn_v2.png" width="400" />
+</span>
 
 # Reactive AI - RxNN
 ## Reactive Neural Networks Platform
@@ -36,8 +38,8 @@ We are working on three new reactive architectures, that progressively advance f
 
 Each new architecture is based on the previous one and adding new features/abilities. They will be progressively
 released with next versions of **RxNN** framework:
-- 0.1.x: Reactive Transformer base models, Base Model Learning (pre-training/fine-tuning) & Transformers extensions (MoE Attention, Short-Term Memory, etc.)
-- 0.2.x: Memory Reinforcement Learning (MRL) for Short-Term Memory & Reactive Transformer, Attention-based Memory System details
+- 0.1.x (Released): Reactive Transformer base models, Base Model Learning (pre-training/fine-tuning) & Transformers extensions (MoE Attention, Short-Term Memory, etc.)
+- 0.2.x (Released): Memory Reinforcement Learning (MRL) for Short-Term Memory & Reactive Transformer, Attention-based Memory System details
 - 0.3.x: Reinforcement Learning from Human Feedback for Reactive models (RxRLHF), basic Tensor Reactive
   Extensions (TRX/Rust) for full Reactive Transformer, RxT-Alpha release (+following models - RxT-Beta, etc.)
 - 0.4.x: Preactor base models, Tensor Database (TDB/Rust) for Long-Term Memory, mxRAG/revRAG subsystems
@@ -101,7 +103,7 @@ Submodules:
 - `rxnn.transformers.moe` - Mixture-of-Experts feed forward layers - `MoeFeedForward` & `GatedMoeFeedForward` (recommended)
 - `rxnn.transformer.layers` - complete reactive/classic transformer layers - `ReactiveTransformerLayer` & `ClassicTransformerLayer`
 - `rxnn.transformer.models` - reactive/classic transformer models - `ReactiveTransformerEncoder`, `ReactiveTransformerDecoder` & `ClassicTransformerEncoder`, `ClassicTransformerDecoder`
-- `rxnn.transformer.sampler` - samplers for reactive models (Sampler is the integral part of reactive architectures) - `Sampler` & `SampleDecoder`
+- `rxnn.transformer.sampler` - samplers for reactive models (Sampler is the integral part of reactive architectures) - `Sampler`, `SampleDecoder`, `BatchSampler` & `BatchSampleDecoder`
 
 In **RxNN** models are initialized in declarative style by class composition, but then they are wrapped in imperative classes,
 to be compatible with HuggingFace **JSON** config. In example:
@@ -186,7 +188,7 @@ include **Long-Term Memory**.
 
 The main `ShortTermMemory` class is located in `rxnn.memory.stm` module - the usage example is in Transformers module description.
 
-Other submodules are connected to **Memory Attention** and will be described in 0.2.x version, after MRL
+> 0.2.x Memory modules docs in progress - will be released soon
 
 #### Training
 Training module includes **Trainers** for different training stages of reactive models and shared training utils.
@@ -208,9 +210,9 @@ Submodules:
 - `rxnn.training.callbacks` contain Trainer callbacks, for different kind of utils (more info below)
 - `rxnn.training.scheduler` includes learning rate scheduler for training
 - `rxnn.training.bml` - Base Model Learning module with Trainers for pre-training and fine-tuning
-- `rxnn.training.mrl` - Memory Reinforcement Learning module with Trainers for MRL (from 0.2.x)
+- `rxnn.training.mrl` - Memory Reinforcement Learning module with Trainers for MRL
 - `rxnn.training.rxrlhf` - Reinforcement Learning from Human Feedback for Reactive Models module (from 0.3.x)
-- `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x
+- `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x)
 
 ##### Base Model Learning
 Docs in progress
