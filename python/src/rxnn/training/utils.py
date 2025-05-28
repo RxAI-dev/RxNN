@@ -15,7 +15,7 @@ def smart_concat_critic_states(
         prev_answer: TokenizedDict,
         next_query: TokenizedDict,
         max_length: int,
-        special_token_ids: SpecialTokenIds
+        pad_token_id: int
 ) -> TokenizedDict:
     """
     Smart vectorized concatenation of MRL critic states - previous interaction (query and answer) and next query.
@@ -31,79 +31,66 @@ def smart_concat_critic_states(
         prev_answer (TokenizedDict): Batch of tokenized answers with attention masks from previous interaction
         next_query (TokenizedDict): Batch of tokenized queries with attention masks from next interaction
         max_length (int): Max length of result sequence.
-        special_token_ids (SpecialTokenIds): Indexes of required special tokens: BOS, EOS, PAD
+        pad_token_id (int): Index of padding token
     """
     device = prev_query['input_ids'].device
     batch_size = prev_query['input_ids'].size(0)
 
-    # Get special token ids
-    eos_token = special_token_ids['eos']
-    bos_token = special_token_ids['bos']
-    pad_token = special_token_ids['pad']
+    # Get input dimensions
+    query_max_len = prev_query['input_ids'].size(1)
+    answer_max_len = prev_answer['input_ids'].size(1)
+    next_q_max_len = next_query['input_ids'].size(1)
 
-    # Get actual lengths
+    # Get actual lengths using attention masks
     query_lens = prev_query['attention_mask'].sum(dim=1)
     answer_lens = prev_answer['attention_mask'].sum(dim=1)
     next_query_lens = next_query['attention_mask'].sum(dim=1)
 
-    # Create position grid [batch_size, max_length]
+    # Calculate positions and boundaries
     positions = torch.arange(max_length, device=device).expand(batch_size, -1)
-
-    # Calculate section boundaries
     section1_end = query_lens.unsqueeze(1)
     section2_end = section1_end + answer_lens.unsqueeze(1)
-    section3_end = section2_end + 2  # For EOS+BOS
-    section4_end = section3_end + next_query_lens.unsqueeze(1)
+    section3_end = section2_end + next_query_lens.unsqueeze(1)
 
     # Create masks for each section
-    mask_prev_query = positions < section1_end
-    mask_prev_answer = (positions >= section1_end) & (positions < section2_end)
-    mask_eos = positions == section2_end
-    mask_bos = positions == section2_end + 1
-    mask_next_query = (positions >= section3_end) & (positions < section4_end)
+    mask_prev = positions < section1_end
+    mask_answer = (positions >= section1_end) & (positions < section2_end)
+    mask_next = (positions >= section2_end) & (positions < section3_end)
 
-    # Build combined_ids
-    combined_ids = torch.full((batch_size, max_length), pad_token, device=device)
+    # Build combined tensor
+    combined_ids = torch.full((batch_size, max_length), pad_token_id, device=device)
 
-    # Fill sections using vectorized operations
+    # 1. Fill previous query section (with input length clamping)
+    query_indices = positions.clamp(max=query_max_len - 1)
     combined_ids = torch.where(
-        mask_prev_query,
-        prev_query['input_ids'].gather(1, positions.clamp(max=section1_end - 1)),
+        mask_prev,
+        prev_query['input_ids'].gather(1, query_indices),
         combined_ids
     )
 
+    # 2. Fill answer section (with answer length clamping)
+    answer_pos = (positions - section1_end).clamp(min=0, max=answer_max_len - 1)
     combined_ids = torch.where(
-        mask_prev_answer,
-        prev_answer['input_ids'].gather(1, (positions - section1_end).clamp(min=0)),
+        mask_answer,
+        prev_answer['input_ids'].gather(1, answer_pos),
         combined_ids
     )
 
+    # 3. Fill next query section (with next query length clamping)
+    next_q_pos = (positions - section2_end).clamp(min=0, max=next_q_max_len - 1)
     combined_ids = torch.where(
-        mask_eos,
-        eos_token,
+        mask_next,
+        next_query['input_ids'].gather(1, next_q_pos),
         combined_ids
     )
 
-    combined_ids = torch.where(
-        mask_bos,
-        bos_token,
-        combined_ids
-    )
-
-    combined_ids = torch.where(
-        mask_next_query,
-        next_query['input_ids'].gather(1, (positions - section3_end).clamp(min=0)),
-        combined_ids
-    )
-
-    # Build attention mask
-    combined_mask = (positions < section4_end).long()
+    # Create attention mask
+    combined_mask = (positions < section3_end).long()
 
     return {
         'input_ids': combined_ids,
         'attention_mask': combined_mask
     }
-
 
 def smart_concat(query: TokenizedDict, answer: TokenizedDict, max_length: int, pad_token_id: int) -> TokenizedDict:
     """

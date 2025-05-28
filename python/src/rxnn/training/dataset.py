@@ -4,7 +4,7 @@ from datasets import Dataset as HfDataset, load_dataset, concatenate_datasets
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from .tokenizer import load_tokenizer_from_hf_hub
 
-from typing import Union, Callable, TypedDict, Optional
+from typing import Union, TypedDict, Optional, TypeAlias, Any
 
 
 class BaseDataset(Dataset):
@@ -189,6 +189,12 @@ class BaseDataset(Dataset):
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
 
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
+
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
@@ -230,6 +236,12 @@ class BaseDataset(Dataset):
             **kwargs: Additional args for RxNN Dataset class
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
 
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
@@ -279,6 +291,12 @@ class BaseDataset(Dataset):
             **kwargs: Additional args for RxNN Dataset class
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
 
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
@@ -593,6 +611,12 @@ class BaseInteractionDataset(Dataset):
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
 
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
+
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
@@ -636,6 +660,12 @@ class BaseInteractionDataset(Dataset):
             **kwargs: Additional args for RxNN Dataset class
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
 
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
@@ -687,6 +717,12 @@ class BaseInteractionDataset(Dataset):
             **kwargs: Additional args for RxNN Dataset class
         """
         assert tokenizer is not None or tokenizer_hub_id is not None, "One of the `tokenizer` or `tokenizer_hub_id` args must be provided."
+
+        if load_kwargs is None:
+            load_kwargs = {}
+
+        if load_tokenizer_kwargs is None:
+            load_tokenizer_kwargs = {}
 
         if tokenizer is None:
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
@@ -803,7 +839,7 @@ class EncoderSftDataset(BaseInteractionDataset):
             'labels': labels
         }
 
-type MrlDataItem = dict[str, Union[dict[str, torch.Tensor], list[dict[str, dict[str, torch.Tensor]]]]]
+MrlDataItem: TypeAlias = dict[str, Union[dict[str, torch.Tensor], list[dict[str, dict[str, torch.Tensor]]]]]
 
 class MrlCurriculumDataset(Dataset):
     def __init__(
@@ -816,6 +852,8 @@ class MrlCurriculumDataset(Dataset):
             interactions_field: str = 'interactions',
             query_token: str = '[Q]',
             answer_token: str = '[A]',
+            bos_token: str = '[BOS]',
+            eos_token: str = '[EOS]',
             **kwargs,
     ):
         super(MrlCurriculumDataset, self).__init__(**kwargs)
@@ -827,13 +865,15 @@ class MrlCurriculumDataset(Dataset):
         self.interactions_field = interactions_field
         self.query_token = query_token
         self.answer_token = answer_token
+        self.bos_token = bos_token
+        self.eos_token = eos_token
         self.is_pre_tokenized = False
         self.is_list = isinstance(self.episodes, list)
         self.inputs = []
 
     def _tokenize_manual_interaction(self, query: str, answer: str) -> dict[str, dict[str, torch.Tensor]]:
         # Manually construct query: [BOS][Q]query
-        query_text = f"{self.tokenizer.bos_token}{self.query_token}{query}"
+        query_text = f"{self.bos_token}{self.query_token}{query}"
         query_enc = self.tokenizer(
             query_text,
             max_length=self.max_seq_len,
@@ -844,7 +884,7 @@ class MrlCurriculumDataset(Dataset):
         )
 
         # Manually construct answer: [A]answer[EOS]
-        answer_text = f"{self.answer_token}{answer}{self.tokenizer.eos_token}"
+        answer_text = f"{self.answer_token}{answer}{self.eos_token}"
         answer_enc = self.tokenizer(
             answer_text,
             max_length=self.max_seq_len,
@@ -955,6 +995,9 @@ class MrlCurriculumDataset(Dataset):
             load_kwargs (dict): Additional args for HuggingFace API load_dataset function
             **kwargs: Additional args for RxNN Dataset class
         """
+        if load_kwargs is None:
+          load_kwargs = {}
+
         hf_dataset = load_dataset(dataset_id, mrl_subset, split=split, **load_kwargs)
 
         return cls(hf_dataset, tokenizer, query_field=query_field, answer_field=answer_field, interactions_field=interactions_field, **kwargs)
@@ -962,7 +1005,7 @@ class MrlCurriculumDataset(Dataset):
     @staticmethod
     def collate_mrl_batch(batch: list[MrlDataItem]) -> MrlDataItem:
         """Collate function for MRL curriculum dataset with nested interactions"""
-        def collate_interaction_batch(interaction_batch: list[dict[str, dict[str, torch.Tensor]]]) -> dict[str, dict[str, torch.Tensor]]:
+        def collate_interaction_batch(interaction_batch: Union[list[dict[str, dict[str, torch.Tensor]]], tuple[Any]]) -> dict[str, dict[str, torch.Tensor]]:
             """Helper to collate a batch of interactions"""
             return {
                 'query': {
@@ -976,11 +1019,12 @@ class MrlCurriculumDataset(Dataset):
             }
 
         batch_interactions = [x['interactions'] for x in batch]
+        transposed_interactions = list(zip(*batch_interactions))
 
         return {
             **collate_interaction_batch(batch), # Collate initial query and answer
             'interactions': [
-                collate_interaction_batch(step_batch) for step_batch in batch_interactions
+                collate_interaction_batch(step_batch) for step_batch in transposed_interactions
             ]
         }
 

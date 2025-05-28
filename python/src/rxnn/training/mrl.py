@@ -187,6 +187,13 @@ class MrlCriticModel(nn.Module):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x, _ = self.encoder(x, attention_mask=attention_mask)
+
+        if attention_mask is not None:
+            x = x * attention_mask.unsqueeze(-1)
+            x = x.sum(dim=1) / attention_mask.sum(dim=1, keepdim=True)
+        else:
+            x = x.mean(dim=1)
+
         return self.value_head(x)
 
 class MRLTrainer:
