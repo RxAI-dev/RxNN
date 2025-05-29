@@ -5,7 +5,7 @@ class ShortTermMemory(nn.Module):
     """Short-term memory module for the Attention-based Memory System"""
 
     def __init__(self, num_layers: int, embed_dim: int, stm_size: int, init_type: str = 'normal',
-                 is_trainable: bool = False, legacy_init: bool = True, *args, **kwargs):
+                 is_trainable: bool = False, *args, **kwargs):
         super(ShortTermMemory, self).__init__(*args, **kwargs)
         self.num_layers = num_layers
         self.embed_dim = embed_dim
@@ -20,13 +20,10 @@ class ShortTermMemory(nn.Module):
             self.memory = nn.Parameter(stm)
         else:
             self.register_buffer('memory', stm)
-        # Legacy init - temporary option to load old models with not-batched STM (they will be loaded, updated and then the option will be removed)
-        self.legacy_init = legacy_init
 
     def _init_tensor(self, init_type: str = None):
         init_type = init_type or self.init_type
-        stm_shape = (self.num_layers, self.stm_size, self.embed_dim) \
-            if self.legacy_init else (self.num_layers, self.batch_size, self.stm_size, self.embed_dim)
+        stm_shape = (self.num_layers, self.batch_size, self.stm_size, self.embed_dim)
         if init_type == 'normal':
             return torch.normal(0, 0.02, stm_shape)
         elif init_type == 'standard':
@@ -38,12 +35,8 @@ class ShortTermMemory(nn.Module):
         else:
             return torch.zeros(*stm_shape)
 
-    def reset_legacy_(self):
-        self.legacy_init = False
-        self.memory = self._init_tensor()
-
     def forward(self, layer: int) -> torch.Tensor:
-        return self.memory[layer].unsqueeze(0) if self.legacy_init else self.memory[layer]
+        return self.memory[layer]
 
     def update_layer(self, layer: int, new_stm: torch.Tensor):
         self.memory[layer] = new_stm
