@@ -41,7 +41,6 @@ class BaseDataset(Dataset):
                 self.bg_next.append(self.get_tokenized_text(i))
             self.last_idx = self.batch_size - 1
 
-
     def __len__(self):
         return len(self.texts if not self.is_pre_tokenized else self.inputs)
 
@@ -105,7 +104,8 @@ class BaseDataset(Dataset):
                 return_attention_mask=True
             )
             if not (inputs['input_ids'][0] < self.tokenizer.vocab_size).all():
-                inputs['input_ids'][0][(inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
+                inputs['input_ids'][0][
+                    (inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
             if not (inputs['input_ids'][0] >= 0).all():
                 inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
 
@@ -123,7 +123,8 @@ class BaseDataset(Dataset):
         split_point = int(len(self.texts) * ((1 - size) if not from_start else size))
         if not isinstance(self.texts, list):
             subset = self.texts.select(range(split_point, len(self.texts)) if not from_start else range(split_point))
-            self.texts = self.texts.select(range(split_point) if not from_start else range(split_point, len(self.texts)))
+            self.texts = self.texts.select(
+                range(split_point) if not from_start else range(split_point, len(self.texts)))
         else:
             subset = self.texts[split_point:-1] if not from_start else self.texts[0:split_point]
             self.texts = self.texts[0:split_point] if not from_start else self.texts[split_point:-1]
@@ -154,7 +155,6 @@ class BaseDataset(Dataset):
                 if verbose and index % log_interval == 0:
                     print(f'Processed {index + 1}/{num_texts}')
             self.is_pre_tokenized = True
-
 
     @classmethod
     def from_hf_hub(
@@ -247,7 +247,8 @@ class BaseDataset(Dataset):
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
         hf_datasets = [
-            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in zip(dataset_ids, subsets)
+            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in
+            zip(dataset_ids, subsets)
         ] if subsets is not None else [
             load_dataset(dataset_id, split=split, **load_kwargs) for dataset_id in dataset_ids
         ]
@@ -302,7 +303,8 @@ class BaseDataset(Dataset):
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
         hf_datasets = [
-            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in zip(dataset_ids, subsets)
+            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in
+            zip(dataset_ids, subsets)
         ] if subsets is not None else [
             load_dataset(dataset_id, split=split, **load_kwargs) for dataset_id in dataset_ids
         ]
@@ -312,7 +314,8 @@ class BaseDataset(Dataset):
         hf_dataset = concatenate_datasets([ds_dict['train'] for ds_dict in hf_ds_dicts])
         hf_valid_dataset = concatenate_datasets([ds_dict['test'] for ds_dict in hf_ds_dicts])
 
-        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs), cls(hf_valid_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs)
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs), cls(
+            hf_valid_dataset, tokenizer, max_seq_len=max_seq_len, hf_field=target_field, **kwargs)
 
 
 class JointLMDataset(BaseDataset):
@@ -427,6 +430,7 @@ class AutoregressiveLMDataset(BaseDataset):
             'targets': targets
         }
 
+
 class BaseInteractionDataset(Dataset):
     def __init__(
             self,
@@ -462,7 +466,6 @@ class BaseInteractionDataset(Dataset):
             for i in range(self.batch_size):
                 self.bg_next.append(self.get_tokenized_text(i))
             self.last_idx = self.batch_size - 1
-
 
     def __len__(self):
         return len(self.interactions if not self.is_pre_tokenized else self.inputs)
@@ -528,7 +531,8 @@ class BaseInteractionDataset(Dataset):
                 return_attention_mask=True
             )
             if not (inputs['input_ids'][0] < self.tokenizer.vocab_size).all():
-                inputs['input_ids'][0][(inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
+                inputs['input_ids'][0][
+                    (inputs['input_ids'][0] >= self.tokenizer.vocab_size)] = self.tokenizer.unk_token_id
             if not (inputs['input_ids'][0] >= 0).all():
                 inputs['input_ids'][0][inputs['input_ids'][0] < 0] = self.tokenizer.unk_token_id
 
@@ -545,12 +549,16 @@ class BaseInteractionDataset(Dataset):
     def get_subset(self, size: float, from_start: bool = False, **kwargs) -> "BaseInteractionDataset":
         split_point = int(len(self.interactions) * ((1 - size) if not from_start else size))
         if not isinstance(self.interactions, list):
-            subset = self.interactions.select(range(split_point, len(self.interactions)) if not from_start else range(split_point))
-            self.interactions = self.interactions.select(range(split_point) if not from_start else range(split_point, len(self.interactions)))
+            subset = self.interactions.select(
+                range(split_point, len(self.interactions)) if not from_start else range(split_point))
+            self.interactions = self.interactions.select(
+                range(split_point) if not from_start else range(split_point, len(self.interactions)))
         else:
             subset = self.interactions[split_point:-1] if not from_start else self.interactions[0:split_point]
-            self.interactions = self.interactions[0:split_point] if not from_start else self.interactions[split_point:-1]
-        return self.__class__(subset, self.tokenizer, max_seq_len=self.max_seq_len, query_field=self.query_field, answer_field=self.answer_field, **kwargs)
+            self.interactions = self.interactions[0:split_point] if not from_start else self.interactions[
+                                                                                        split_point:-1]
+        return self.__class__(subset, self.tokenizer, max_seq_len=self.max_seq_len, query_field=self.query_field,
+                              answer_field=self.answer_field, **kwargs)
 
     def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000):
         """
@@ -576,7 +584,6 @@ class BaseInteractionDataset(Dataset):
                 if verbose and index % log_interval == 0:
                     print(f'Processed {index + 1}/{num_texts}')
             self.is_pre_tokenized = True
-
 
     @classmethod
     def from_hf_hub(
@@ -624,7 +631,8 @@ class BaseInteractionDataset(Dataset):
 
         query_field, answer_field = target_fields
 
-        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field, **kwargs)
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field,
+                   **kwargs)
 
     @classmethod
     def concat_from_hf_hub(
@@ -671,7 +679,8 @@ class BaseInteractionDataset(Dataset):
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
         hf_datasets = [
-            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in zip(dataset_ids, subsets)
+            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in
+            zip(dataset_ids, subsets)
         ] if subsets is not None else [
             load_dataset(dataset_id, split=split, **load_kwargs) for dataset_id in dataset_ids
         ]
@@ -679,7 +688,8 @@ class BaseInteractionDataset(Dataset):
 
         query_field, answer_field = target_fields
 
-        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field, **kwargs)
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field,
+                   **kwargs)
 
     @classmethod
     def concat_from_hf_hub_with_subset(
@@ -728,7 +738,8 @@ class BaseInteractionDataset(Dataset):
             tokenizer = load_tokenizer_from_hf_hub(tokenizer_hub_id, **load_tokenizer_kwargs)
 
         hf_datasets = [
-            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in zip(dataset_ids, subsets)
+            load_dataset(dataset_id, subset, split=split, **load_kwargs) for dataset_id, subset in
+            zip(dataset_ids, subsets)
         ] if subsets is not None else [
             load_dataset(dataset_id, split=split, **load_kwargs) for dataset_id in dataset_ids
         ]
@@ -740,22 +751,25 @@ class BaseInteractionDataset(Dataset):
 
         query_field, answer_field = target_fields
 
-        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field, **kwargs), cls(hf_valid_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field, **kwargs)
+        return cls(hf_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field, answer_field=answer_field,
+                   **kwargs), cls(hf_valid_dataset, tokenizer, max_seq_len=max_seq_len, query_field=query_field,
+                                  answer_field=answer_field, **kwargs)
+
 
 class DecoderSftDataset(BaseInteractionDataset):
     def __init__(
-        self,
-        interactions: Union[list[dict], HfDataset],
-        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
-        max_seq_len: int = 1024,
-        query_field: str = 'query',
-        answer_field: str = 'answer',
-        cache_tokenized: bool = False,
-        cache_remove_text: bool = True,
-        tokenize_in_background: bool = False,
-        batch_size: int = 1,
-        *args,
-        **kwargs
+            self,
+            interactions: Union[list[dict], HfDataset],
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+            max_seq_len: int = 1024,
+            query_field: str = 'query',
+            answer_field: str = 'answer',
+            cache_tokenized: bool = False,
+            cache_remove_text: bool = True,
+            tokenize_in_background: bool = False,
+            batch_size: int = 1,
+            *args,
+            **kwargs
     ):
         super(DecoderSftDataset, self).__init__(
             interactions,
@@ -784,21 +798,22 @@ class DecoderSftDataset(BaseInteractionDataset):
             'targets': targets
         }
 
+
 class EncoderSftDataset(BaseInteractionDataset):
     def __init__(
-        self,
-        interactions: Union[list[dict], HfDataset],
-        tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
-        max_seq_len: int = 1024,
-        query_field: str = 'query',
-        answer_field: str = 'answer',
-        cache_tokenized: bool = False,
-        cache_remove_text: bool = True,
-        tokenize_in_background: bool = False,
-        batch_size: int = 1,
-        mask_prob: float = 0.15,
-        *args,
-        **kwargs
+            self,
+            interactions: Union[list[dict], HfDataset],
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast],
+            max_seq_len: int = 1024,
+            query_field: str = 'query',
+            answer_field: str = 'answer',
+            cache_tokenized: bool = False,
+            cache_remove_text: bool = True,
+            tokenize_in_background: bool = False,
+            batch_size: int = 1,
+            mask_prob: float = 0.15,
+            *args,
+            **kwargs
     ):
         super(EncoderSftDataset, self).__init__(
             interactions,
@@ -839,7 +854,9 @@ class EncoderSftDataset(BaseInteractionDataset):
             'labels': labels
         }
 
+
 MrlDataItem: TypeAlias = dict[str, Union[dict[str, torch.Tensor], list[dict[str, dict[str, torch.Tensor]]]]]
+
 
 class MrlCurriculumDataset(Dataset):
     def __init__(
@@ -931,12 +948,16 @@ class MrlCurriculumDataset(Dataset):
     def get_subset(self, size: float, from_start: bool = False, **kwargs) -> "MRlCurriculumDataset":
         split_point = int(len(self.episodes) * ((1 - size) if not from_start else size))
         if not isinstance(self.episodes, list):
-            subset = self.episodes.select(range(split_point, len(self.episodes)) if not from_start else range(split_point))
-            self.episodes = self.episodes.select(range(split_point) if not from_start else range(split_point, len(self.episodes)))
+            subset = self.episodes.select(
+                range(split_point, len(self.episodes)) if not from_start else range(split_point))
+            self.episodes = self.episodes.select(
+                range(split_point) if not from_start else range(split_point, len(self.episodes)))
         else:
             subset = self.episodes[split_point:-1] if not from_start else self.episodes[0:split_point]
             self.episodes = self.episodes[0:split_point] if not from_start else self.episodes[split_point:-1]
-        return self.__class__(subset, query_field=self.query_field, answer_field=self.answer_field, interactions_field=self.interactions_field, **kwargs)
+        return self.__class__(subset, tokenizer=self.tokenizer, query_field=self.query_field,
+                              answer_field=self.answer_field, interactions_field=self.interactions_field,
+                              max_seq_len=self.max_seq_len, **kwargs)
 
     def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, keep_order: bool = False):
         """
@@ -977,6 +998,7 @@ class MrlCurriculumDataset(Dataset):
             answer_field: str = 'answer',
             interactions_field: str = 'interactions',
             load_kwargs: dict = None,
+            max_seq_len: int = 1024,
             **kwargs
     ):
         """
@@ -993,19 +1015,23 @@ class MrlCurriculumDataset(Dataset):
             answer_field (str): Answer field (default: "answer")
             interactions_field (str): Interactions field (default: "interactions")
             load_kwargs (dict): Additional args for HuggingFace API load_dataset function
+            max_seq_len (int): Maximum sequence length (default: 1024)
             **kwargs: Additional args for RxNN Dataset class
         """
         if load_kwargs is None:
-          load_kwargs = {}
+            load_kwargs = {}
 
         hf_dataset = load_dataset(dataset_id, mrl_subset, split=split, **load_kwargs)
 
-        return cls(hf_dataset, tokenizer, query_field=query_field, answer_field=answer_field, interactions_field=interactions_field, **kwargs)
+        return cls(hf_dataset, tokenizer, query_field=query_field, answer_field=answer_field,
+                   interactions_field=interactions_field, max_seq_len=max_seq_len, **kwargs)
 
     @staticmethod
     def collate_mrl_batch(batch: list[MrlDataItem]) -> MrlDataItem:
         """Collate function for MRL curriculum dataset with nested interactions"""
-        def collate_interaction_batch(interaction_batch: Union[list[dict[str, dict[str, torch.Tensor]]], tuple[Any]]) -> dict[str, dict[str, torch.Tensor]]:
+
+        def collate_interaction_batch(interaction_batch: Union[list[dict[str, dict[str, torch.Tensor]]], tuple[Any]]) -> \
+        dict[str, dict[str, torch.Tensor]]:
             """Helper to collate a batch of interactions"""
             return {
                 'query': {
@@ -1022,11 +1048,12 @@ class MrlCurriculumDataset(Dataset):
         transposed_interactions = list(zip(*batch_interactions))
 
         return {
-            **collate_interaction_batch(batch), # Collate initial query and answer
+            **collate_interaction_batch(batch),  # Collate initial query and answer
             'interactions': [
                 collate_interaction_batch(step_batch) for step_batch in transposed_interactions
             ]
         }
+
 
 class MrlDatasetItem(TypedDict):
     steps: int
@@ -1034,10 +1061,12 @@ class MrlDatasetItem(TypedDict):
     dataset: MrlCurriculumDataset
     eval_dataset: Optional[MrlCurriculumDataset]
 
+
 class MrlDatasetLoadItem(TypedDict):
     subset_name: str
     steps: int
     is_long_range: bool
+
 
 class MrlDatasets:
     def __init__(self, datasets: list[MrlDatasetItem]):
@@ -1061,7 +1090,8 @@ class MrlDatasets:
     @property
     def is_pre_tokenized(self) -> bool:
         train_tokenized = all(item['dataset'].is_pre_tokenized for item in self.datasets)
-        eval_tokenized = all(item['eval_dataset'].is_pre_tokenized for item in self.datasets if item['eval_dataset'] is not None)
+        eval_tokenized = all(
+            item['eval_dataset'].is_pre_tokenized for item in self.datasets if item['eval_dataset'] is not None)
         return train_tokenized and eval_tokenized
 
     def pre_tokenize(self, verbose: bool = False, log_interval: int = 10_000, keep_order: bool = False):
@@ -1098,6 +1128,7 @@ class MrlDatasets:
             load_kwargs: dict = None,
             mrl_ds_kwargs: dict = None,
             eval_split: str = None,
+            max_seq_len: int = 256,
     ):
         """
         Load dataset from HuggingFace Hub and convert it to RxNN training dataset.
@@ -1115,6 +1146,7 @@ class MrlDatasets:
             load_kwargs (dict): Additional args for HuggingFace API load_dataset function
             mrl_ds_kwargs (dict): Additional args for RxNN MrlCurriculumDataset class
             eval_split (str): Load also evaluation/validation split (default: None)
+            max_seq_len (int): Maximum sequence length (default: 256)
         """
         if load_kwargs is None:
             load_kwargs = {}
@@ -1131,6 +1163,7 @@ class MrlDatasets:
                 interactions_field=interactions_field,
                 split=load_split,
                 load_kwargs=load_kwargs,
+                max_seq_len=max_seq_len,
                 **mrl_ds_kwargs,
             )
 

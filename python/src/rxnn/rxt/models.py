@@ -53,7 +53,7 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
             att_heads: int = 16,
             seq_len: int = 1024,
             stm_size: int = 1024,
-            use_flash_attention: bool = True,
+            use_flash_attention: bool = False,
             use_gated: bool = True,
             ff_activation: str = "swish",
             ff_dropout: float = 0.0,
@@ -232,7 +232,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             att_heads: int = 16,
             seq_len: int = 1024,
             stm_size: int = 1024,
-            use_flash_attention: bool = True,
+            use_flash_attention: bool = False,
             att_dropout: float = 0.0,
             norm_type: str = 'rms',
             att_groups: int = 1,
@@ -271,7 +271,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         self.model.update_max_len(max_seq_len)
 
     def reset_memory(self, init_type: str = None):
-        self.model.stm.reset_memory(init_type)
+        self.model.stm.reset(init_type)
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)

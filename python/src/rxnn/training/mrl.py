@@ -9,7 +9,7 @@ import random, os
 from ..transformers.sampler import BatchSampler
 from .callbacks import MrlTrainerCallback
 from .dataset import MrlCurriculumDataset
-from .utils import smart_concat, smart_concat_critic_states, SpecialTokenIds, TokenizedDict
+from .utils import smart_concat, smart_concat_critic_states, TokenizedDict
 from .rl import RlAlgorithm
 from .reward import MrlRewardMode, MrlRewardModel
 from .models import MrlActorAction, MrlActorModel, MrlCriticModel
@@ -74,7 +74,6 @@ class MRLTrainer:
             sampler_config: Optional[SamplerConfig] = None,
             log_dir: str = None,
             pad_token_id: int = 0,
-            start_token_id: int = 2,
             end_token_id: int = 3,
             use_ddp: bool = False,
             use_amp: bool = False,
@@ -93,8 +92,8 @@ class MRLTrainer:
         self.critic = critic
         self.reward = reward
         self.device = device
-        self.max_seq_len = config.get('max_seq_len', 1024)
-        self.critic_max_len = config.get('critic_max_len', 2048)
+        self.max_seq_len = config.get('max_seq_len', 256)
+        self.critic_max_len = config.get('critic_max_len', 512)
 
         # Move models to device
         if use_amp:
@@ -112,11 +111,7 @@ class MRLTrainer:
             top_p=None,
         ) if sampler_config is None else sampler_config
 
-        self.special_token_ids: SpecialTokenIds = {
-            'pad': pad_token_id,
-            'bos': start_token_id,
-            'eos': end_token_id,
-        }
+        self.pad_token_id = pad_token_id
 
         self.use_ddp = use_ddp
         self.use_amp = use_amp
@@ -191,12 +186,12 @@ class MRLTrainer:
         if self.use_amp:
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                 # 2. Concatenate batch of queries and answers (they are already on training device)
-                inputs = smart_concat(query, answer, self.max_seq_len, self.special_token_ids['pad'])
+                inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
                 # 3. Encode data and update STM
                 self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.UPDATE)
         else:
             # 2. Concatenate batch of queries and answers (they are already on training device)
-            inputs = smart_concat(query, answer, self.max_seq_len, self.special_token_ids['pad'])
+            inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
             # 3. Encode data and update STM
             self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.UPDATE)
 
@@ -235,11 +230,11 @@ class MRLTrainer:
         if self.use_amp:
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                 saved_interaction = smart_concat(saved_query, saved_answer, max_length=self.max_seq_len,
-                                                 pad_token_id=self.special_token_ids['pad'])
+                                                 pad_token_id=self.pad_token_id)
                 reward = self.reward(generated, reference, saved_interaction, mode=mode)
         else:
             saved_interaction = smart_concat(saved_query, saved_answer, max_length=self.max_seq_len,
-                                             pad_token_id=self.special_token_ids['pad'])
+                                             pad_token_id=self.pad_token_id)
             reward = self.reward(generated, reference, saved_interaction, mode=mode)
 
         # 2. Run 'on reward' callbacks
@@ -280,7 +275,7 @@ class MRLTrainer:
             self.writer.add_scalar(f'Collect/episode reward (steps: {self.curriculum_steps})', avg_reward,
                                    self.stage_step['collect'])
 
-    def collect_trajectories(self, dataloader: DataLoader, epoch: int) -> list[MrlTrajectoryEpisode]:
+    def collect_trajectories(self, dataloader: DataLoader, epoch: int, batch_size: int) -> list[MrlTrajectoryEpisode]:
         """Collect trajectories for PPO for current curriculum step."""
         # 1. Init trajectories list
         trajectories = []
@@ -288,86 +283,89 @@ class MRLTrainer:
         with torch.no_grad():
             # 2. Collect episode trajectories for all batches in dataset
             for batch_idx, batch in enumerate(dataloader):
-                self._increment_steps('collect')
-                # 3. Reset Short-Term Memory state (with random reset ratio - sometimes it will be good to build memory
-                # state from existing one, instead of new random one)
-                reset_done = self.reset_stm()
+                if batch['query']['input_ids'].size(0) == batch_size:
+                    self._increment_steps('collect')
+                    # 3. Reset Short-Term Memory state (with random reset ratio - sometimes it will be good to build memory
+                    # state from existing one, instead of new random one)
+                    reset_done = self.reset_stm()
 
-                # 4. Get first batch of interactions (data to save) and follow-up interactions for current episode, based on curriculum step
-                first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
-                interactions = interactions[:self.curriculum_steps]
-                interactions_len = len(interactions)
-                # 5. Encode and update STM with data to save from first interaction
-                self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
+                    # 4. Get first batch of interactions (data to save) and follow-up interactions for current episode, based on curriculum step
+                    first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
+                    interactions = interactions[:self.curriculum_steps]
+                    interactions_len = len(interactions)
+                    # 5. Encode and update STM with data to save from first interaction
+                    self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
 
-                # 6. Save first interaction as data to save (for trajectory state)
-                query, answer = first_query, first_answer
+                    # 6. Save first interaction as data to save (for trajectory state)
+                    query, answer = first_query, first_answer
 
-                # 7. Run training strategy for follow-up interactions
-                episode_steps = []
-                episode_rewards = []
-                for i, interaction in enumerate(interactions):
-                    # 8. Generate batch of answers based on batch of follow-up queries
-                    next_query = self._move_batch(interaction['query'])
-                    generated_answer, log_probs = self.generate_answer(next_query)
+                    # 7. Run training strategy for follow-up interactions
+                    episode_steps = []
+                    episode_rewards = []
 
-                    is_last_interaction = (i + 1) == interactions_len
+                    for i, interaction in enumerate(interactions):
+                        # 8. Generate batch of answers based on batch of follow-up queries
+                        next_query = self._move_batch(interaction['query'])
+                        generated_answer, log_probs = self.generate_answer(next_query)
 
-                    detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
+                        is_last_interaction = (i + 1) == interactions_len
 
-                    # 9. Depending on strategy compute reward
-                    if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
-                        # a) long-range - first interaction - change topic - negative reward (it shouldn't include saved data)
-                        reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                     mode=MrlRewardMode.NEGATIVE)
-                    elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
-                        # b) long-range - last interaction - first interaction topic - long-range reward (it should include content from first interaction)
-                        reward = self.compute_reward(detached_answer, interaction['answer'],
-                                                     (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE)
-                    else:
-                        # c) standard reward - generated answer should include some content from previous interaction (saved data), like reference answer
-                        reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                     mode=MrlRewardMode.STANDARD)
+                        detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
 
-                    # 10. Update STM with generated response (except last interaction, it's not needed)
-                    if not is_last_interaction:
-                        self.encode_and_update_stm(next_query, generated_answer)  # update with generated_answer on GPU
+                        # 9. Depending on strategy compute reward
+                        if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
+                            # a) long-range - first interaction - change topic - negative reward (it shouldn't include saved data)
+                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
+                                                         mode=MrlRewardMode.NEGATIVE)
+                        elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
+                            # b) long-range - last interaction - first interaction topic - long-range reward (it should include content from first interaction)
+                            reward = self.compute_reward(detached_answer, interaction['answer'],
+                                                         (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE)
+                        else:
+                            # c) standard reward - generated answer should include some content from previous interaction (saved data), like reference answer
+                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
+                                                         mode=MrlRewardMode.STANDARD)
 
-                    # 11. Store trajectory step
-                    trajectory: MrlTrajectoryStep = {
-                        'state': (query, answer, interaction['query']),
-                        'action': detached_answer,
-                        'log_probs': log_probs.detach().cpu(),
-                        'reward': reward,
-                        'reference': interaction['answer'],
+                        # 10. Update STM with generated response (except last interaction, it's not needed)
+                        if not is_last_interaction:
+                            self.encode_and_update_stm(next_query,
+                                                       generated_answer)  # update with generated_answer on GPU
+
+                        # 11. Store trajectory step
+                        trajectory: MrlTrajectoryStep = {
+                            'state': (query, answer, interaction['query']),
+                            'action': detached_answer,
+                            'log_probs': log_probs.detach().cpu(),
+                            'reward': reward,
+                            'reference': interaction['answer'],
+                        }
+                        episode_steps.append(trajectory)
+                        episode_rewards.append(reward)
+
+                        # 12. Set current interaction query and generated answer (batches), as saved data for next interaction
+                        query, answer = interaction['query'], detached_answer
+
+                    # 13. Append full batched episode (number of steps depends on curriculum stage) to trajectories
+                    episode_trajectory: MrlTrajectoryEpisode = {
+                        'reset_stm': reset_done,
+                        'steps': episode_steps,
                     }
-                    episode_steps.append(trajectory)
-                    episode_rewards.append(reward)
+                    trajectories.append(episode_trajectory)
 
-                    # 12. Set current interaction query and generated answer (batches), as saved data for next interaction
-                    query, answer = interaction['query'], detached_answer
+                    mean_episode_reward = torch.tensor(episode_rewards).mean().item()
 
-                # 13. Append full batched episode (number of steps depends on curriculum stage) to trajectories
-                episode_trajectory: MrlTrajectoryEpisode = {
-                    'reset_stm': reset_done,
-                    'steps': episode_steps,
-                }
-                trajectories.append(episode_trajectory)
+                    self._collect_writer(mean_episode_reward, epoch)
 
-                mean_episode_reward = torch.tensor(episode_rewards).mean().item()
-
-                self._collect_writer(mean_episode_reward, epoch)
-
-                # 14. Run "on episode collected" callbacks
-                for cb in self.callbacks:
-                    cb.on_episode_collected(self.actor, batch_idx, episode_trajectory, mean_episode_reward)
+                    # 14. Run "on episode collected" callbacks
+                    for cb in self.callbacks:
+                        cb.on_episode_collected(self.actor, batch_idx, episode_trajectory, mean_episode_reward)
 
         return trajectories
 
     def _critic_loss(self, inputs: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
         # 1. Calculate values with critic encoder
         values = self.critic(
-            input_ids=inputs['input_ids'],
+            inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
         ).squeeze()
         # 2. Calculate critic loss
@@ -404,7 +402,7 @@ class MRLTrainer:
                     inputs = smart_concat_critic_states(
                         prev_query, prev_answer, next_query,
                         max_length=self.critic_max_len,
-                        pad_token_id=self.special_token_ids['pad'],
+                        pad_token_id=self.pad_token_id,
                     )
                     loss = self._critic_loss(inputs, batch_rewards)
                 # Run backpropagation with scaler
@@ -420,7 +418,7 @@ class MRLTrainer:
                 inputs = smart_concat_critic_states(
                     prev_query, prev_answer, next_query,
                     max_length=self.critic_max_len,
-                    pad_token_id=self.special_token_ids['pad'],
+                    pad_token_id=self.pad_token_id,
                 )
                 # Calculate loss
                 loss = self._critic_loss(inputs, reward.to(self.device, dtype=self.dtype))
@@ -441,7 +439,7 @@ class MRLTrainer:
             critic_losses.append(critic_loss)
 
         # 7. Calculate mean loss for epoch callbacks
-        critic_mean_loss = torch.stack(critic_losses).mean().item()
+        critic_mean_loss = torch.tensor(critic_losses).mean().item()
 
         return critic_mean_loss
 
@@ -486,11 +484,11 @@ class MRLTrainer:
                     with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                         critic_state = smart_concat_critic_states(query, answer, next_query,
                                                                   max_length=self.critic_max_len,
-                                                                  pad_token_id=self.special_token_ids['pad'])
+                                                                  pad_token_id=self.pad_token_id)
                         advantages = self._critic_advantages(critic_state, rewards)
                 else:
                     critic_state = smart_concat_critic_states(query, answer, next_query, max_length=self.critic_max_len,
-                                                              pad_token_id=self.special_token_ids['pad'])
+                                                              pad_token_id=self.pad_token_id)
                     advantages = self._critic_advantages(critic_state, rewards)
 
                 # 5. Encode and update STM on each step, to include encoder and memory attention gradients in loss
@@ -499,31 +497,31 @@ class MRLTrainer:
                 if self.use_amp:
                     with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                         inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
-                                              pad_token_id=self.special_token_ids['pad'])
+                                              pad_token_id=self.pad_token_id)
                         logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                             action=MrlActorAction.DECODE)
                 else:
                     inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
-                                          pad_token_id=self.special_token_ids['pad'])
+                                          pad_token_id=self.pad_token_id)
                     logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                         action=MrlActorAction.DECODE)
 
                 # 7. Calculate RL Algorithm (PPO etc.) loss
-                policy_loss = self.rl_algorithm.policy_loss(action['input_ids'], logits, log_probs, advantages)
+                policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, log_probs, advantages)
 
                 # 8. Reset gradients
                 self.optimizer.zero_grad()
 
                 # 9. Update the model in AMP or regular mode
                 if self.use_amp:
-                    self.scaler.scale(policy_loss).backward()
+                    self.scaler.scale(policy_loss).backward(retain_graph=True)
                     self.scaler.unscale_(self.optimizer)
                     torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                                    error_if_nonfinite=False)
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    policy_loss.backward()
+                    policy_loss.backward(retain_graph=True)
                     torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                                    error_if_nonfinite=False)
                     self.optimizer.step()
@@ -544,10 +542,10 @@ class MRLTrainer:
         rewards = [torch.tensor(t['reward']) for t in flat_trajectories]
         return states, rewards
 
-    def train_epoch(self, dataloader: DataLoader, epoch: int):
+    def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int):
         """Train for one epoch."""
         # 1. Collect trajectories for current epoch
-        trajectories = self.collect_trajectories(dataloader, epoch)
+        trajectories = self.collect_trajectories(dataloader, epoch, batch_size)
 
         # 2. Flatten trajectories and collect state and rewards for critic update
         states, rewards = self._critic_states_and_rewards(trajectories)
@@ -596,63 +594,64 @@ class MRLTrainer:
         # 2. Run evaluation on all batch episodes
         for batch in dataloader:
             with torch.no_grad():
-                self._increment_steps('eval')
-                # 3. Reset STM with random resets ratio
-                self.reset_stm()
+                if batch['query']['input_ids'].size(0) == batch_size:
+                  self._increment_steps('eval')
+                  # 3. Reset STM with random resets ratio
+                  self.reset_stm()
 
-                # 4. Get batches for first queries, answers and all follow-up interactions
-                first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
-                # 5. Encode and update STM with initial interactions (batch)
-                self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
+                  # 4. Get batches for first queries, answers and all follow-up interactions
+                  first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
+                  # 5. Encode and update STM with initial interactions (batch)
+                  self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
 
-                # 6. Save follow-up interactions len and first query and answer as previous one for iteration
-                interactions_len = len(interactions)
-                query, answer = first_query, first_answer
-                episode_reward = torch.tensor(0.0).to(self.device)
-                episode_interactions = torch.tensor(0).to(self.device)
-                # 7. Run all follow-up interactions
-                for i, interaction in enumerate(interactions):
-                    # 8. Generate batch of answers
-                    next_query = self._move_batch(interaction['query'])
-                    generated_answer, _ = self.generate_answer(next_query)
+                  # 6. Save follow-up interactions len and first query and answer as previous one for iteration
+                  interactions_len = len(interactions)
+                  query, answer = first_query, first_answer
+                  episode_reward = torch.tensor(0.0).to(self.device)
+                  episode_interactions = torch.tensor(0).to(self.device)
+                  # 7. Run all follow-up interactions
+                  for i, interaction in enumerate(interactions):
+                      # 8. Generate batch of answers
+                      next_query = self._move_batch(interaction['query'])
+                      generated_answer, _ = self.generate_answer(next_query)
 
-                    is_last_interaction = (i + 1) == interactions_len
+                      is_last_interaction = (i + 1) == interactions_len
 
-                    detached_answer = self._cpu_detach(generated_answer)
+                      detached_answer = self._cpu_detach(generated_answer)
 
-                    # 9. Depending on current strategy and step, compute reward
-                    if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
-                        reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                     mode=MrlRewardMode.NEGATIVE, eval_mode=True)
-                    elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
-                        reward = self.compute_reward(detached_answer, interaction['answer'],
-                                                     (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE,
-                                                     eval_mode=True)
-                    else:
-                        reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                     mode=MrlRewardMode.STANDARD, eval_mode=True)
+                      # 9. Depending on current strategy and step, compute reward
+                      if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
+                          reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
+                                                      mode=MrlRewardMode.NEGATIVE, eval_mode=True)
+                      elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
+                          reward = self.compute_reward(detached_answer, interaction['answer'],
+                                                      (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE,
+                                                      eval_mode=True)
+                      else:
+                          reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
+                                                      mode=MrlRewardMode.STANDARD, eval_mode=True)
 
-                    # 10. Encode and update memory for the next interaction
-                    if not is_last_interaction:
-                        self.encode_and_update_stm(next_query, generated_answer)
+                      # 10. Encode and update memory for the next interaction
+                      if not is_last_interaction:
+                          self.encode_and_update_stm(next_query, generated_answer)
 
-                    # 11. Accumulate rewards
-                    step_reward = torch.tensor(reward).mean().to(self.device)
-                    # total
-                    total_reward += step_reward
-                    count += 1
-                    # episode
-                    episode_reward += step_reward
-                    episode_interactions += 1
-                    # 12. Save previous interaction
-                    query, answer = interaction['query'], detached_answer
-                avg_episode_reward = (episode_reward / episode_interactions).item()
-                # 13. Run eval TensorBoard writer with average episode reward
-                self._eval_writer(avg_episode_reward, epoch)
+                      # 11. Accumulate rewards
+                      step_reward = torch.tensor(reward).mean().to(self.device)
+                      # total
+                      total_reward += step_reward
+                      count += 1
+                      # episode
+                      episode_reward += step_reward
+                      episode_interactions += 1
+                      # 12. Save previous interaction
+                      query, answer = interaction['query'], detached_answer
+                  avg_episode_reward = (episode_reward / episode_interactions).item()
+                  # 13. Run eval TensorBoard writer with average episode reward
+                  self._eval_writer(avg_episode_reward, epoch)
 
-                # 14. Run "on eval episode end" callbacks
-                for cb in self.callbacks:
-                    cb.on_eval_episode_end(self.actor, epoch, self.epoch_step['eval'], avg_episode_reward)
+                  # 14. Run "on eval episode end" callbacks
+                  for cb in self.callbacks:
+                      cb.on_eval_episode_end(self.actor, epoch, self.epoch_step['eval'], avg_episode_reward)
 
         # 15. Calculate average reward
         if self.use_ddp:
@@ -701,6 +700,7 @@ class MRLTrainer:
 
         # 0. Set global epoch count for all stages
         self.global_epochs_count = sum(stage['epochs'] for stage in curriculum_config)
+        self.global_epoch = 0
 
         # 1. Init DDP for distributed training mode
         if self.use_ddp:
@@ -717,7 +717,6 @@ class MRLTrainer:
             epochs, unfreeze_epoch = epochs_config
             random_resets, random_resets_from, random_resets_ratio = random_resets_config
             assert self.train_dataset is not None
-            print(f'Curriculum Steps Increased to {self.curriculum_steps}')
 
             # 4. Freeze all components except memory attention and memory cross-attention layers in decoder/encoder
             if unfreeze_epoch != 0:
@@ -770,7 +769,7 @@ class MRLTrainer:
                     train_sampler.set_epoch(epoch)
 
                 # 13. Run reinforcement learning algorithms for current epoch
-                policy_loss, critic_loss = self.train_epoch(dataloader, epoch)
+                policy_loss, critic_loss = self.train_epoch(dataloader, epoch, batch_size)
 
                 # 14. If evaluation dataset is provided, run evaluation steps
                 if self.eval_dataset:
@@ -806,3 +805,4 @@ class MRLTrainer:
         # 21. Close writer
         if self.writer:
             self.writer.close()
+

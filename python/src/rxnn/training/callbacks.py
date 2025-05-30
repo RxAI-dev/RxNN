@@ -557,7 +557,7 @@ class MrlPrintCallback(MrlTrainerCallback):
     def on_epoch_start(self, actor: nn.Module, epoch: int, stage_epochs: int, curriculum_config: dict,
                        global_epoch: int, global_epochs: int) -> None:
         print(
-            f'Starting epoch {epoch}/{stage_epochs} (stage) | {global_epoch}/{global_epochs} (global) for {curriculum_config['steps']} steps in {curriculum_config['strategy']} strategy.')
+            f'Starting epoch {epoch}/{stage_epochs} (stage) | {global_epoch}/{global_epochs} (global) for {curriculum_config["steps"]} steps in {curriculum_config["strategy"]} strategy.')
 
     def on_epoch_end(self, actor: nn.Module, epoch: int, stage_epochs: int, policy_loss: float,
                      critic_loss: float, global_epoch: int, global_epochs: int) -> None:
@@ -577,10 +577,10 @@ class MrlPrintCallback(MrlTrainerCallback):
 
     def on_critic_updated(self, actor: nn.Module, critic: nn.Module, epoch: int, step: int,
                           critic_loss: float) -> None:
-        print(f'Epoch {epoch} | Step {step} - updated policy loss {critic_loss}')
+        print(f'Epoch {epoch} | Step {step} - updated critic loss {critic_loss}')
 
     def on_training_end(self, actor: nn.Module, critic: nn.Module, curriculum_config: dict) -> None:
-        print(f'Finished training for {curriculum_config['steps']} steps in {curriculum_config['strategy']} strategy.')
+        print(f'Finished training for {curriculum_config["steps"]} steps in {curriculum_config["strategy"]} strategy.')
 
     def on_eval_end(self, actor: nn.Module, critic: nn.Module, epoch: int, eval_mean_reward: float) -> None:
         print(f'Eval epoch {epoch} - mean reward {eval_mean_reward}')

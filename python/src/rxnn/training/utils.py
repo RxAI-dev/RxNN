@@ -1,10 +1,6 @@
 import torch
 from typing import TypedDict
 
-class SpecialTokenIds(TypedDict):
-    bos: int
-    eos: int
-    pad: int
 
 class TokenizedDict(TypedDict):
     input_ids: torch.Tensor
@@ -131,7 +127,7 @@ def smart_concat(query: TokenizedDict, answer: TokenizedDict, max_length: int, p
     # Build combined_ids using vectorized where
     combined_ids = torch.where(
         query_mask,
-        query['input_ids'].gather(1, torch.minimum(positions, query_lens.unsqueeze(1) - 1)),
+        query['input_ids'].gather(1, torch.minimum(positions, query_lens.unsqueeze(1) - 1).to(torch.int64)),
         torch.where(
             answer_mask,
             answer['input_ids'].gather(1, answer_pos),

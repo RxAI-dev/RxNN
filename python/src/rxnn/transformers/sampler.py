@@ -297,19 +297,17 @@ class BatchSampler:
             if not active.any():
                 break
 
-            active_indices = active.nonzero(as_tuple=True)[0]
-            active_current_lens = current_lens[active]
-            max_len = active_current_lens.max().item()
+            max_len = current_lens.max().item()
 
             with torch.set_grad_enabled(not no_grad):
                 # Slice input and mask up to the current max length among active sequences
-                inputs = working_ids[active, :max_len]
-                masks = working_mask[active, :max_len]
+                inputs = working_ids[:, :max_len]
+                masks = working_mask[:, :max_len]
                 logits = self.model(inputs, attention_mask=masks)
 
             # Get the last valid token index for each active sequence
-            indices = (active_current_lens - 1).to(self.device)
-            last_logits = logits[torch.arange(len(active_indices), device=self.device), indices]
+            indices = (current_lens - 1).to(self.device)
+            last_logits = logits[torch.arange(batch_size, device=self.device), indices]
 
             # Sample next tokens and log probs
             next_tokens, step_log_probs = sample_batch(
@@ -317,15 +315,18 @@ class BatchSampler:
             )
 
             # Update working tensors
-            for i, idx in enumerate(active_indices):
-                if current_lens[idx] >= max_seq_len:
+            for idx in range(batch_size):
+                if finished[idx] or current_lens[idx] >= max_seq_len:
                     continue
+
                 pos = current_lens[idx].item()
-                working_ids[idx, pos] = next_tokens[i]
-                working_mask[idx, pos] = 1
-                log_probs[idx, step] = step_log_probs[i]
+                token = next_tokens[idx]  # Use original batch index
+                working_ids[idx, pos] = token
+                working_mask[idx, pos] = 1 if token != 0 else 0
+                log_probs[idx, step] = step_log_probs[idx]  # Use original batch index
                 current_lens[idx] += 1
-                if next_tokens[i] == self.end_token_id:
+
+                if token == self.end_token_id:
                     finished[idx] = True
 
         # Extract generated tokens

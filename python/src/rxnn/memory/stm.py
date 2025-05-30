@@ -39,31 +39,34 @@ class ShortTermMemory(nn.Module):
         return self.memory[layer]
 
     def update_layer(self, layer: int, new_stm: torch.Tensor):
+        self.memory = self.memory.clone()
         self.memory[layer] = new_stm
 
     def update_all(self, new_stm: torch.Tensor):
-        self.memory.copy_(new_stm)
+        self.memory = new_stm
+        # self.memory.copy_(new_stm)
 
     def make_trainable(self):
         if not self.is_trainable:
             self.is_trainable = True
             initial_stm = self.memory.clone()
-            del self.memory
+            delattr(self, 'memory')
             self.memory = nn.Parameter(initial_stm)
 
     def freeze(self):
         if self.is_trainable:
             self.requires_grad_(False)
             trained_stm = self.memory.clone()
-            del self.memory
+            delattr(self, 'memory')
             self.register_buffer('memory', trained_stm)
 
     def reset(self, init_type: str = None):
-        self.memory = self._init_tensor(init_type)
+        self.memory = self._init_tensor(init_type).to(self.memory.device)
 
     def resize(self, new_stm_size: int, init_type: str = None):
         self.stm_size = new_stm_size
-        self.memory = self._init_tensor(init_type)
+        delattr(self, 'memory')
+        self.register_buffer('memory', self._init_tensor(init_type))
 
     def batched_memory(self, batch_size: int, init_type: str = None):
         if init_type is not None:
@@ -71,7 +74,8 @@ class ShortTermMemory(nn.Module):
                 'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
             self.init_type = init_type
         self.batch_size = batch_size
-        self.memory = self._init_tensor()
+        delattr(self, 'memory')
+        self.register_buffer('memory', self._init_tensor())
 
     def single_memory(self, init_type: str = None, use_mean_from_batch: bool = False):
         if init_type is not None:
@@ -81,7 +85,8 @@ class ShortTermMemory(nn.Module):
         self.batch_size = 1
         if use_mean_from_batch:
             batch_mean = self.memory.mean(dim=(1, 2, 3), keepdim=True)
-            self.memory = self._init_tensor()
-            self.memory.copy_(batch_mean)
+            delattr(self, 'memory')
+            self.register_buffer('memory', batch_mean)
         else:
-            self.memory = self._init_tensor()
+            delattr(self, 'memory')
+            self.register_buffer('memory', self._init_tensor())

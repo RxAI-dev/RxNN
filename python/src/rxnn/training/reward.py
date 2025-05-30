@@ -33,13 +33,6 @@ class MrlRewardModel:
         self.device = device
         self.bleu_with_saved_data = bleu_with_saved_data
 
-        if not allow_not_summing_factors:
-            assert bleu_factor + cos_factor == 1.0
-            assert cos_ref_factor + cos_saved_factor == 1.0
-            assert neg_bleu_factor + neg_cos_factor == 1.0
-            assert neg_cos_ref_factor + neg_cos_saved_factor == 1.0
-            assert neg_bleu_ref_factor + neg_bleu_saved_factor == 1.0
-
         self.bleu_factor = bleu_factor
         self.cos_factor = cos_factor
         self.cos_ref_factor = cos_ref_factor
@@ -50,6 +43,13 @@ class MrlRewardModel:
         self.neg_cos_saved_factor = neg_cos_saved_factor if neg_cos_saved_factor is not None else cos_saved_factor
         self.neg_bleu_ref_factor = neg_bleu_ref_factor
         self.neg_bleu_saved_factor = neg_bleu_saved_factor
+
+        if not allow_not_summing_factors:
+            assert self.bleu_factor + self.cos_factor == 1.0
+            assert self.cos_ref_factor + self.cos_saved_factor == 1.0
+            assert self.neg_bleu_factor + self.neg_cos_factor == 1.0
+            assert self.neg_cos_ref_factor + self.neg_cos_saved_factor == 1.0
+            assert self.neg_bleu_ref_factor + self.neg_bleu_saved_factor == 1.0
 
     def _sentence_bleu(self, generated: torch.Tensor, reference: torch.Tensor, saved_data: torch.Tensor) -> float:
         from nltk.translate.bleu_score import sentence_bleu
@@ -103,9 +103,9 @@ class MrlRewardModel:
         if mode == MrlRewardMode.STANDARD or mode == MrlRewardMode.LONG_RANGE:
             bleu = self.batch_bleu(generated['input_ids'], reference['input_ids'], saved_data['input_ids'])
             cosine = self.batch_cosine(generated['input_ids'], reference['input_ids'], saved_data['input_ids'])
-            return (self.bleu_factor * torch.tensor(bleu) + self.cos_factor * cosine).tolist()
+            return (self.bleu_factor * torch.tensor(bleu, device=self.device) + self.cos_factor * cosine).tolist()
         else:
             bleu = self.batch_bleu(generated['input_ids'], reference['input_ids'], saved_data['input_ids'])
             cosine = self.negative_cosine(generated['input_ids'], reference['input_ids'], saved_data['input_ids'])
-            return (self.neg_bleu_factor * torch.tensor(bleu) + self.neg_cos_factor * cosine).tolist()
+            return (self.neg_bleu_factor * torch.tensor(bleu, device=self.device) + self.neg_cos_factor * cosine).tolist()
 
