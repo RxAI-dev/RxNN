@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, Union
 from enum import Enum
 import random, os
 from ..transformers.sampler import BatchSampler
@@ -37,11 +37,15 @@ class CurriculumConfig(TypedDict):
     eval_dataset: Optional[MrlCurriculumDataset]
     callbacks: Optional[list[MrlTrainerCallback]]
     strategy: MrlStrategy
-    unfreeze_epoch: Optional[int]
+    unfreeze_epoch: Optional[Union[int, tuple[int, int, int]]]
     random_resets: Optional[bool]
     random_resets_from: Optional[int]
     random_resets_ratio: Optional[float]
     reward_model: Optional[MrlRewardModel]
+    lr: Optional[float]
+    critic_lr: Optional[float]
+    weight_decay: Optional[float]
+    critic_weight_decay: Optional[float]
 
 
 class SamplerConfig(TypedDict):
@@ -119,17 +123,15 @@ class MRLTrainer:
         self.use_amp = use_amp
         self.dtype = dtype
 
+        self.base_optim_config = {
+            'lr': config.get('lr', 3e-4),
+            'critic_lr': config.get('critic_lr', 1e-4),
+            'weight_decay': config.get('weight_decay', 0.01),
+            'critic_weight_decay': config.get('critic_weight_decay', 0.01),
+        }
+
         # Optimizers
-        self.optimizer = torch.optim.AdamW(
-            self.actor.unique_parameters(),
-            lr=config.get("lr", 3e-4),
-            weight_decay=config.get("weight_decay", 0.01),
-        )
-        self.critic_optimizer = torch.optim.AdamW(
-            self.critic.parameters(),
-            lr=config.get("critic_lr", 1e-4),
-            weight_decay=config.get("critic_weight_decay", 0.01),
-        )
+        self.optimizer, self.critic_optimizer = self._init_optimizers(**self.base_optim_config)
 
         self.scaler = torch.amp.GradScaler() if self.use_amp else None
         self.critic_scaler = torch.amp.GradScaler() if self.use_amp else None
@@ -155,6 +157,21 @@ class MRLTrainer:
         self.callbacks = []
         self.global_epoch = 0
         self.global_epochs_count = 0
+
+    def _init_optimizers(self, lr: float, critic_lr: float, weight_decay: float, critic_weight_decay: float):
+        optimizer = torch.optim.AdamW(
+            self.actor.unique_parameters(),
+            lr=lr,
+            weight_decay=weight_decay,
+        )
+
+        critic_optimizer = torch.optim.AdamW(
+            self.critic.parameters(),
+            lr=critic_lr,
+            weight_decay=critic_weight_decay,
+        )
+        return optimizer, critic_optimizer
+
 
     def _init_steps(self):
         return {
@@ -705,6 +722,13 @@ class MRLTrainer:
         self.strategy = config.get('strategy',
                                    MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
+        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None:
+            self.optimizer, self.critic_optimizer = self._init_optimizers(
+                lr=config['lr'] or self.base_optim_config['lr'],
+                critic_lr=config['critic_lr'] or self.base_optim_config['critic_lr'],
+                weight_decay=config['weight_decay'] or self.base_optim_config['weight_decay'],
+                critic_weight_decay=config['critic_weight_decay'] or self.base_optim_config['critic_weight_decay']
+            )
 
         # 2. Get epochs and random resets configs
         epochs = config.get('epochs', 5)  # number of epochs for current stage
@@ -746,7 +770,11 @@ class MRLTrainer:
 
             # 4. Freeze all components except memory attention and memory cross-attention layers in decoder/encoder
             if unfreeze_epoch != 0:
-                self.actor.freeze_components()
+                is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
+                if is_staged_unfreeze:
+                    self.actor.freeze_components('update')
+                else:
+                    self.actor.freeze_components()
 
             # 5. Setup train DataLoader
             if self.use_ddp:
@@ -787,8 +815,18 @@ class MRLTrainer:
                     self.random_resets_ratio = 1.0
 
                 # 11. Unfreeze all components before selected epoch
-                if epoch == unfreeze_epoch:
-                    self.actor.unfreeze_components()
+                is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
+                if is_staged_unfreeze:
+                    fetch_epoch, both_epoch, all_epoch = unfreeze_epoch
+                    if epoch == fetch_epoch:
+                        self.actor.freeze_components('fetch')
+                    elif epoch == both_epoch:
+                        self.actor.freeze_components('both')
+                    elif epoch == all_epoch:
+                        self.actor.unfreeze_components()
+                else:
+                    if epoch == unfreeze_epoch:
+                        self.actor.unfreeze_components()
 
                 # 12. Set epoch for distributed sampler
                 if train_sampler is not None:

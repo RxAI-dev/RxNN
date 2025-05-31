@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from enum import Enum
+from typing import Literal
 from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
 
@@ -74,23 +75,27 @@ class MrlActorModel(nn.Module):
         self.decoder = decoder
         self.memory_attention = memory_attention
 
-    def freeze_components(self):
+    def freeze_components(self, stage: Literal['update', 'fetch', 'both'] = 'both'):
         """Freeze encoder/decoder except memory-related layers."""
         if self.encoder.freeze_without_memory is not None:
             self.encoder.freeze_without_memory()
+            if stage == 'update':
+                self.encoder.freeze_memory()
         else:
             for param in self.encoder.parameters():
                 param.requires_grad = False
-            self.encoder.model.trainable_cross_attention_(True)
+            self.encoder.model.trainable_cross_attention_(True if stage != 'update' else False)
         if self.decoder.freeze_without_memory is not None:
             self.decoder.freeze_without_memory()
+            if stage == 'update':
+                self.decoder.freeze_memory()
         else:
             for param in self.decoder.parameters():
                 param.requires_grad = False
-            self.decoder.model.trainable_cross_attention_(True)
+            self.decoder.model.trainable_cross_attention_(True if stage != 'update' else False)
         # Unfreeze memory attention
         for param in self.memory_attention.parameters():
-            param.requires_grad = True
+            param.requires_grad = True if stage != 'fetch' else False
 
     def unfreeze_components(self):
         """Unfreeze all components after initial training."""
