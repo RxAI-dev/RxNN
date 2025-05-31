@@ -24,8 +24,6 @@ class RlAlgorithm(ABC):
         return self.critic_loss(rewards, values)
 
 class PPOConfig(TypedDict):
-    gae_gamma: float
-    gae_lambda: float
     clip_eps: float
 
 class PPOAlgorithm(RlAlgorithm):
@@ -33,8 +31,6 @@ class PPOAlgorithm(RlAlgorithm):
         super(PPOAlgorithm, self).__init__()
 
         # PPO Config
-        self.gae_gamma = config.get('gae_gamma', 0.99)
-        self.gae_lambda = config.get('gae_lambda', 0.95)
         self.clip_eps = config.get('clip_eps', 0.2)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
@@ -85,15 +81,6 @@ class PPOAlgorithm(RlAlgorithm):
         policy_loss -= 0.01 * entropy
 
         return policy_loss
-
-    # def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor, next_value: torch.Tensor) -> torch.Tensor:
-    #     advantages = torch.zeros_like(rewards, device=values.device)
-    #     last_advantage = 0
-    #     for t in reversed(range(rewards.size(0))):
-    #         delta = rewards[t] + self.gae_gamma * next_value - values[t]
-    #         advantages[t] = delta + self.gae_gamma * self.gae_lambda * last_advantage
-    #         last_advantage = advantages[t]
-    #     return advantages
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
         advantages = rewards - values
