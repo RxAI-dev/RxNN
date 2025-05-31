@@ -94,7 +94,7 @@ Collected trajectories includes current environment state (input query), sequenc
 MRL awards are mainly based on the model's ability to generate interconnected answers to questions, based on information
 from previous interactions, in the form of a fluid dialogue, but the quality of the dialogue itself is not the main focus
 of the evaluation (this is the focus of the next stage - RxRLHF). Rewards are always calculated using saved data (interaction),
-input query/question and generated response/answer (combined, they are second interaction), but they can represent different parts
+reference answers and generated response/answer (combined, they are second interaction), but they can represent different parts
 of environment state, depending on curriculum step and strategy:
 - for single step retention, it's just a first interaction and first query/response
 - for long-term retention, it's the first interaction and last query/response
