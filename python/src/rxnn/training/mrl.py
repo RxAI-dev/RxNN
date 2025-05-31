@@ -724,10 +724,10 @@ class MRLTrainer:
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
         if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None:
             self.optimizer, self.critic_optimizer = self._init_optimizers(
-                lr=config['lr'] or self.base_optim_config['lr'],
-                critic_lr=config['critic_lr'] or self.base_optim_config['critic_lr'],
-                weight_decay=config['weight_decay'] or self.base_optim_config['weight_decay'],
-                critic_weight_decay=config['critic_weight_decay'] or self.base_optim_config['critic_weight_decay']
+                lr=config.get('lr', self.base_optim_config['lr']),
+                critic_lr=config.get('critic_lr', self.base_optim_config['critic_lr']),
+                weight_decay=config.get('weight_decay', self.base_optim_config['weight_decay']),
+                critic_weight_decay=config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay'])
             )
 
         # 2. Get epochs and random resets configs
