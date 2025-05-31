@@ -35,7 +35,6 @@ class StmMemoryAttention(nn.Module):
             encoded_layer_data = x[i]
             normalized_layer_stm = self.memory_norm_layers[i](layer_stm)
             new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=mask)
-            # self.stm.update_layer(i, new_layer_stm + layer_stm)
             new_stm[i] = new_layer_stm + layer_stm # residual
         self.stm.update_all(new_stm)
         return self.stm.memory

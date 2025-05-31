@@ -20,8 +20,8 @@ class AdaptivePositionalMemoryNorm(nn.Module):
         self.eps = 1e-6
 
         # Learnable parameters
-        self.scale = nn.Parameter(torch.ones(num_slots, 1, dim)) if use_scale else None
-        self.gate = nn.Parameter(torch.full((num_slots, 1, 1), init_gate)) if use_gate else None
+        self.scale = nn.Parameter(torch.ones(num_slots, dim)) if use_scale else None
+        self.gate = nn.Parameter(torch.full((num_slots, 1), init_gate)) if use_gate else None
 
         # EMA buffers
         self.register_buffer("ema_rms", torch.ones(num_slots, 1))
@@ -31,28 +31,26 @@ class AdaptivePositionalMemoryNorm(nn.Module):
             nn.init.normal_(self.scale, mean=1.0, std=0.01)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x shape: [batch_size, num_slots, dim]
-        batch_size = x.size(0)
-
         # Calculate current RMS per slot
-        current_rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt()  # [batch, slots, 1]
-        slot_rms = current_rms.mean(dim=0)  # [slots, 1] (average over batch)
+        # x: [batch_size, num_slots, dim]
+        current_rms = x.pow(2).mean(dim=-1, keepdim=True).sqrt()  # [batch, num_slots, 1]
+        slot_rms = current_rms.mean(dim=0)  # [num_slots, 1] (average over batch)
 
         # Update EMA during training
         if self.training:
-            self.ema_rms = self.decay * self.ema_rms + (1 - self.decay) * slot_rms.detach()
+            self.ema_rms = self.decay * self.ema_rms + (1 - self.decay) * slot_rms.detach() # [num_slots, 1]
 
         # Normalize using EMA statistics
-        x_norm = x * torch.rsqrt(self.ema_rms + self.eps)
+        x_norm = x * torch.rsqrt(self.ema_rms + self.eps) # [batch_size, num_slots, dim] * [num_slots, 1]
 
         # Apply learned scale per slot
         if self.scale is not None:
-            x_norm = x_norm * self.scale
+            x_norm = x_norm * self.scale # [batch_size, num_slots, dim] * [num_slots, dim]
 
         # Apply gating mechanism
         if self.use_gate:
-            gate = torch.sigmoid(self.gate)  # [slots, 1, 1]
-            return gate * x_norm + (1 - gate) * x
+            gate = torch.sigmoid(self.gate)  # [num_slots, 1]
+            return gate * x_norm + (1 - gate) * x # [batch_size, num_slots, dim] * [num_slots, 1]
 
         return x_norm
 
@@ -77,7 +75,7 @@ class AdaptiveRMSMemoryNorm(nn.Module):
         # x shape: [batch_size, num_slots, dim]
         if self.training and hasattr(self, 'ema_rms'):
             # Compute current RMS across all slots and batch (scalar)
-            current_rms = x.pow(2).mean(-1).mean().sqrt()
+            current_rms = x.pow(2).mean(dim=-1).mean().sqrt()
             self.ema_rms = self.ema_rms * self.decay + current_rms * (1 - self.decay)
             rms = self.ema_rms
         else:
