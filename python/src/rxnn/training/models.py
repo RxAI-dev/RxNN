@@ -129,7 +129,7 @@ class MrlActorModel(nn.Module):
             _, ed = self.encoder(x, attention_mask=attention_mask)
             return self.memory_attention(ed, attention_mask=attention_mask)
 
-class MrlCriticModel(nn.Module):
+class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipeline_tag="text-classification"):
     def __init__(self, encoder: nn.Module, embed_dim: int, **kwargs):
         super(MrlCriticModel, self).__init__(**kwargs)
         self.encoder = encoder
