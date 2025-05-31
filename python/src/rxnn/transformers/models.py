@@ -33,11 +33,11 @@ class ReactiveTransformerBase(nn.Module):
         self.num_shared_layers = len(shared_layers) if shared_layers else 0
         self.num_own_layers = len(own_layers) if own_layers else 0
 
-    def trainable_cross_attention_(self, is_trainable: bool):
+    def trainable_cross_attention_(self, is_trainable: bool, with_norms: bool = True):
         for i in range(self.num_shared_layers):
-            self.shared_layers[i].trainable_cross_attention_(is_trainable)
+            self.shared_layers[i].trainable_cross_attention_(is_trainable, with_norms)
         for i in range(self.num_own_layers):
-            self.layers[i].trainable_cross_attention_(is_trainable)
+            self.layers[i].trainable_cross_attention_(is_trainable, with_norms)
 
     def moe_router_loss(self):
         return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att] + [

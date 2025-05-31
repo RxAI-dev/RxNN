@@ -78,24 +78,30 @@ class MrlActorModel(nn.Module):
     def freeze_components(self, stage: Literal['update', 'fetch', 'both'] = 'both'):
         """Freeze encoder/decoder except memory-related layers."""
         if self.encoder.freeze_without_memory is not None:
-            self.encoder.freeze_without_memory()
+            self.encoder.freeze_without_memory(unfreeze_norms=True)
             if stage == 'update':
-                self.encoder.freeze_memory()
+                self.encoder.freeze_memory(with_norms=True)
         else:
             for param in self.encoder.parameters():
                 param.requires_grad = False
-            self.encoder.model.trainable_cross_attention_(True if stage != 'update' else False)
+            self.encoder.model.trainable_cross_attention_(True if stage != 'update' else False, with_norms=True)
         if self.decoder.freeze_without_memory is not None:
-            self.decoder.freeze_without_memory()
+            self.decoder.freeze_without_memory(unfreeze_norms=True)
             if stage == 'update':
-                self.decoder.freeze_memory()
+                self.decoder.freeze_memory(with_norms=True)
         else:
             for param in self.decoder.parameters():
                 param.requires_grad = False
-            self.decoder.model.trainable_cross_attention_(True if stage != 'update' else False)
+            self.decoder.model.trainable_cross_attention_(True if stage != 'update' else False, with_norms=True)
         # Unfreeze memory attention
-        for param in self.memory_attention.parameters():
-            param.requires_grad = True if stage != 'fetch' else False
+        if self.memory_attention.freeze is not None:
+            if stage == 'fetch':
+                self.memory_attention.freeze()
+            else:
+                self.memory_attention.unfreeze()
+        else:
+            for param in self.memory_attention.parameters():
+                param.requires_grad = True if stage != 'fetch' else False
 
     def unfreeze_components(self):
         """Unfreeze all components after initial training."""
@@ -109,8 +115,11 @@ class MrlActorModel(nn.Module):
         else:
             for param in self.decoder.parameters():
                 param.requires_grad = True
-        for param in self.memory_attention.parameters():
-            param.requires_grad = True
+        if self.memory_attention.unfreeze is not None:
+            self.memory_attention.unfreeze()
+        else:
+            for param in self.memory_attention.parameters():
+                param.requires_grad = True
 
     def reset_memory(self):
         self.memory_attention.reset_memory()

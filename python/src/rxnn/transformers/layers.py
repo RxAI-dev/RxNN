@@ -57,9 +57,12 @@ class ReactiveTransformerLayer(nn.Module):
         self.use_moe = use_moe
         self.use_moe_att = use_moe_att
 
-    def trainable_cross_attention_(self, is_trainable: bool):
+    def trainable_cross_attention_(self, is_trainable: bool, with_norms: bool = True):
         for param in self.memory_cross_attention.parameters():
             param.requires_grad_(is_trainable)
+        if with_norms:
+            for param in self.norm2.parameters():
+                param.requires_grad_(is_trainable)
 
     def update_max_len(self, max_seq_len: int):
         if self.attention.rope is not None:

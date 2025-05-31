@@ -37,7 +37,7 @@ class CurriculumConfig(TypedDict):
     eval_dataset: Optional[MrlCurriculumDataset]
     callbacks: Optional[list[MrlTrainerCallback]]
     strategy: MrlStrategy
-    unfreeze_epoch: Optional[Union[int, tuple[int, int, int]]]
+    unfreeze_epoch: Optional[Union[int, tuple[int, int, int, int]]]
     random_resets: Optional[bool]
     random_resets_from: Optional[int]
     random_resets_ratio: Optional[float]
@@ -770,11 +770,7 @@ class MRLTrainer:
 
             # 4. Freeze all components except memory attention and memory cross-attention layers in decoder/encoder
             if unfreeze_epoch != 0:
-                is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
-                if is_staged_unfreeze:
-                    self.actor.freeze_components('update')
-                else:
-                    self.actor.freeze_components()
+                self.actor.freeze_components('both')
 
             # 5. Setup train DataLoader
             if self.use_ddp:
@@ -817,8 +813,10 @@ class MRLTrainer:
                 # 11. Unfreeze all components before selected epoch
                 is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
                 if is_staged_unfreeze:
-                    fetch_epoch, both_epoch, all_epoch = unfreeze_epoch
-                    if epoch == fetch_epoch:
+                    update_epoch, fetch_epoch, both_epoch, all_epoch = unfreeze_epoch
+                    if epoch == update_epoch:
+                        self.actor.freeze_components('update')
+                    elif epoch == fetch_epoch:
                         self.actor.freeze_components('fetch')
                     elif epoch == both_epoch:
                         self.actor.freeze_components('both')

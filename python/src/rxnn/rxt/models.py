@@ -137,13 +137,13 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
     def load_shared_memory(self, stm: ShortTermMemory):
         self.model.stm = stm
 
-    def freeze_without_memory(self):
+    def freeze_without_memory(self, unfreeze_norms: bool = True):
         for param in self.model.parameters():
             param.requires_grad_(False)
-        self.model.trainable_cross_attention_(True)
+        self.model.trainable_cross_attention_(True, with_norms=unfreeze_norms)
 
-    def freeze_memory(self):
-        self.model.trainable_cross_attention_(False)
+    def freeze_memory(self, with_norms: bool = True):
+        self.model.trainable_cross_attention_(False, with_norms=with_norms)
 
     def unfreeze_all(self):
         for param in self.model.parameters():
@@ -263,6 +263,14 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size) for _ in range(num_layers)])
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
         self.model = StmMemoryAttention(stm, attention_layers, memory_norm_layers)
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def unfreeze(self):
+        for param in self.parameters():
+            param.requires_grad = True
 
     def load_shared_memory(self, stm: ShortTermMemory):
         self.model.stm = stm
