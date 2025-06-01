@@ -7,10 +7,11 @@ class AdaptivePositionalMemoryNorm(nn.Module):
         self,
         num_slots: int,
         dim: int,
-        decay: float = 0.99,
+        decay: float = 0.9,
         use_scale: bool = True,
         use_gate: bool = True,
-        init_gate: float = -4.0
+        init_gate: float = -2.0,
+        per_dim_scale: bool = False,
     ):
         super(AdaptivePositionalMemoryNorm, self).__init__()
         self.use_gate = use_gate
@@ -20,7 +21,8 @@ class AdaptivePositionalMemoryNorm(nn.Module):
         self.eps = 1e-6
 
         # Learnable parameters
-        self.scale = nn.Parameter(torch.ones(num_slots, dim)) if use_scale else None
+        scale_shape = (num_slots, 1) if not per_dim_scale else (dim,)
+        self.scale = nn.Parameter(torch.ones(*scale_shape)) if use_scale else None
         self.gate = nn.Parameter(torch.full((num_slots, 1), init_gate)) if use_gate else None
 
         # EMA buffers
@@ -28,7 +30,7 @@ class AdaptivePositionalMemoryNorm(nn.Module):
 
         # Initialize parameters
         if self.scale is not None:
-            nn.init.normal_(self.scale, mean=1.0, std=0.01)
+            nn.init.normal_(self.scale, mean=1.0, std=0.1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Calculate current RMS per slot
@@ -45,7 +47,7 @@ class AdaptivePositionalMemoryNorm(nn.Module):
 
         # Apply learned scale per slot
         if self.scale is not None:
-            x_norm = x_norm * self.scale # [batch_size, num_slots, dim] * [num_slots, dim]
+            x_norm = x_norm * self.scale # [batch_size, num_slots, dim] * [num_slots, 1] or [dim]
 
         # Apply gating mechanism
         if self.use_gate:
@@ -148,24 +150,26 @@ class MemoryNormConfig(TypedDict):
     use_gate: bool
     init_gate: float
     init_scale: float
+    per_dim_scale: bool
 
 def init_memory_norm(
     norm_type: str,
     dim: int,
     num_slots: int = None,
-    decay: float = 0.99,
+    decay: float = 0.9,
     use_scale: bool = True,
     use_gate: bool = True,
-    init_gate: float = -4.0,
+    init_gate: float = -2.0,
     init_scale: float = 1.0,
+    per_dim_scale: bool = False,
 ) -> nn.Module:
-    assert norm_type in ["layer", "rms", "adaptive", "positional"]
-    if norm_type == "layer":
+    assert norm_type in ['layer', 'rms', 'adaptive', 'positional']
+    if norm_type == 'layer':
         return MemoryLayerNorm(dim, use_gate, init_scale, init_gate)
-    elif norm_type == "rms":
+    elif norm_type == 'rms':
         return SimpleRMSMemoryNorm(dim, use_gate, init_scale, init_gate)
-    elif norm_type == "adaptive":
+    elif norm_type == 'adaptive':
         return AdaptiveRMSMemoryNorm(dim, use_gate, decay, init_scale, init_gate)
-    elif norm_type == "positional":
-        return AdaptivePositionalMemoryNorm(num_slots, dim, decay, use_scale, use_gate, init_gate)
+    elif norm_type == 'positional':
+        return AdaptivePositionalMemoryNorm(num_slots, dim, decay, use_scale, use_gate, init_gate, per_dim_scale)
     return MemoryLayerNorm(dim, use_gate, init_scale, init_gate)

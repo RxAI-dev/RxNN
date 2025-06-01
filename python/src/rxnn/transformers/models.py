@@ -39,6 +39,16 @@ class ReactiveTransformerBase(nn.Module):
         for i in range(self.num_own_layers):
             self.layers[i].trainable_cross_attention_(is_trainable, with_norms)
 
+    def memory_parameters(self) -> list[nn.Parameter]:
+        own = [param for layer in self.layers for param in layer.memory_parameters()]
+        shared = [param for layer in self.shared_layers for param in layer.memory_parameters()] if self.shared_layers else []
+        return own + shared
+
+    def not_memory_parameters(self) -> list[nn.Parameter]:
+        own = [param for layer in self.layers for param in layer.not_memory_parameters()]
+        shared = [param for layer in self.shared_layers for param in layer.not_memory_parameters()] if self.shared_layers else []
+        return own + shared
+
     def moe_router_loss(self):
         return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att] + [
             self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe or self.shared_layers[i].use_moe_att]).mean()

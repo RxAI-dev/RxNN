@@ -17,6 +17,8 @@ from .models import MrlActorAction, MrlActorModel, MrlCriticModel
 
 class MrlConfig(TypedDict):
     lr: float
+    separate_memory_lr: Optional[bool]
+    memory_lr: Optional[float]
     critic_lr: float
     max_seq_len: int
     critic_max_len: int
@@ -42,7 +44,9 @@ class CurriculumConfig(TypedDict):
     random_resets_from: Optional[int]
     random_resets_ratio: Optional[float]
     reward_model: Optional[MrlRewardModel]
+    separate_memory_lr: Optional[bool]
     lr: Optional[float]
+    memory_lr: Optional[float]
     critic_lr: Optional[float]
     weight_decay: Optional[float]
     critic_weight_decay: Optional[float]
@@ -84,6 +88,7 @@ class MRLTrainer:
             use_amp: bool = False,
             dtype: torch.dtype = torch.float32,
             callbacks: list[MrlTrainerCallback] = None,
+
     ):
         """
         Trainer for Memory Reinforcement Learning (MRL) in Reactive Transformer.
@@ -123,15 +128,25 @@ class MRLTrainer:
         self.use_amp = use_amp
         self.dtype = dtype
 
-        self.base_optim_config = {
-            'lr': config.get('lr', 3e-4),
-            'critic_lr': config.get('critic_lr', 1e-4),
-            'weight_decay': config.get('weight_decay', 0.01),
-            'critic_weight_decay': config.get('critic_weight_decay', 0.01),
-        }
+        self.separate_memory_lr = config.get('separate_memory_lr', False)
+
+        if self.separate_memory_lr:
+            self.base_optim_config = {
+                'lr': (config.get('lr', 3e-4), config.get('memory_lr', 5e-4)),
+                'critic_lr': config.get('critic_lr', 1e-4),
+                'weight_decay': config.get('weight_decay', 0.01),
+                'critic_weight_decay': config.get('critic_weight_decay', 0.01),
+            }
+        else:
+            self.base_optim_config = {
+                'lr': config.get('lr', 3e-4),
+                'critic_lr': config.get('critic_lr', 1e-4),
+                'weight_decay': config.get('weight_decay', 0.01),
+                'critic_weight_decay': config.get('critic_weight_decay', 0.01),
+            }
 
         # Optimizers
-        self.optimizer, self.critic_optimizer = self._init_optimizers(**self.base_optim_config)
+        self.optimizer, self.critic_optimizer = self._init_optimizers(**self.base_optim_config, separate_memory_lr=self.separate_memory_lr)
 
         self.scaler = torch.amp.GradScaler() if self.use_amp else None
         self.critic_scaler = torch.amp.GradScaler() if self.use_amp else None
@@ -158,18 +173,28 @@ class MRLTrainer:
         self.global_epoch = 0
         self.global_epochs_count = 0
 
-    def _init_optimizers(self, lr: float, critic_lr: float, weight_decay: float, critic_weight_decay: float):
-        optimizer = torch.optim.AdamW(
-            self.actor.unique_parameters(),
-            lr=lr,
-            weight_decay=weight_decay,
-        )
+    def _init_optimizers(self, lr: Union[float, tuple[float, float]], critic_lr: float, weight_decay: float, critic_weight_decay: float, separate_memory_lr: bool = False) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
+        if separate_memory_lr:
+            rest_lr, memory_lr = lr
+            optimizer = torch.optim.AdamW([
+                { 'params': self.actor.not_memory_parameters(), 'lr': rest_lr },
+                { 'params': self.actor.memory_parameters(), 'lr': memory_lr },
+            ],
+                weight_decay=weight_decay,
+            )
+        else:
+            optimizer = torch.optim.AdamW(
+                self.actor.unique_parameters(),
+                lr=lr,
+                weight_decay=weight_decay,
+            )
 
         critic_optimizer = torch.optim.AdamW(
             self.critic.parameters(),
             lr=critic_lr,
             weight_decay=critic_weight_decay,
         )
+
         return optimizer, critic_optimizer
 
 
@@ -722,12 +747,13 @@ class MRLTrainer:
         self.strategy = config.get('strategy',
                                    MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
-        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None:
+        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
             self.optimizer, self.critic_optimizer = self._init_optimizers(
-                lr=config.get('lr', self.base_optim_config['lr']),
+                lr=(config.get('lr', self.base_optim_config['lr'][0]), config.get('memory_lr', self.base_optim_config['lr'][1])) if config.get('separate_memory_lr', False) else config.get('lr', self.base_optim_config['lr']),
                 critic_lr=config.get('critic_lr', self.base_optim_config['critic_lr']),
                 weight_decay=config.get('weight_decay', self.base_optim_config['weight_decay']),
-                critic_weight_decay=config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay'])
+                critic_weight_decay=config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
+                separate_memory_lr=config.get('separate_memory_lr', False),
             )
 
         # 2. Get epochs and random resets configs

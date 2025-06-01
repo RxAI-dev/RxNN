@@ -13,6 +13,7 @@ from ..memory.attention import StmMemoryAttention
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
 
+
 class RxTAlphaComponentConfig(TypedDict):
     num_layers: int
     vocab_size: int
@@ -76,8 +77,10 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
-        assert self_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
-        assert cross_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Memory cross-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+        assert self_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
+                                 'sqa'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+        assert cross_att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
+                                  'sqa'], 'Memory cross-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
 
         embedding = nn.Embedding(vocab_size, embed_dim)
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
@@ -92,20 +95,25 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                           max_seq_len=seq_len, is_causal=is_causal, num_experts=att_experts,
+                                                           max_seq_len=seq_len, is_causal=is_causal,
+                                                           num_experts=att_experts,
                                                            num_query_experts=att_query_experts,
                                                            num_query_groups=att_query_groups)
 
         if cross_att_type in ['mha', 'gqa', 'mqa']:
             cross_att_init = lambda: init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
-                                              use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=is_causal, rope_only_for_query=True)
+                                                    use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                    max_seq_len=seq_len, is_causal=is_causal, rope_only_for_query=True)
         else:
-            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type, cross_att_groups or att_groups, rope=rope,
-                                                           use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                           max_seq_len=seq_len, is_causal=is_causal, num_experts=att_experts,
-                                                           num_query_experts=att_query_experts,
-                                                           num_query_groups=cross_att_query_groups or att_query_groups, rope_only_for_query=True)
+            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type,
+                                                                 cross_att_groups or att_groups, rope=rope,
+                                                                 use_flash_attention=use_flash_attention,
+                                                                 dropout=att_dropout,
+                                                                 max_seq_len=seq_len, is_causal=is_causal,
+                                                                 num_experts=att_experts,
+                                                                 num_query_experts=att_query_experts,
+                                                                 num_query_groups=cross_att_query_groups or att_query_groups,
+                                                                 rope_only_for_query=True)
 
         layers = nn.ModuleList([
             ReactiveTransformerLayer(
@@ -136,6 +144,12 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
 
     def load_shared_memory(self, stm: ShortTermMemory):
         self.model.stm = stm
+
+    def memory_parameters(self) -> list[nn.Parameter]:
+        return self.model.memory_parameters()
+
+    def not_memory_parameters(self) -> list[nn.Parameter]:
+        return self.model.not_memory_parameters()
 
     def freeze_without_memory(self, unfreeze_norms: bool = True):
         for param in self.model.parameters():
@@ -211,20 +225,9 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
         return self.model(x, attention_mask=attention_mask)
 
 
-def build_rxt_alpha_for_pretraining(
-        encoder_config: RxTAlphaComponentConfig,
-        decoder_config: RxTAlphaComponentConfig,
-) -> tuple[RxTAlphaEncoder, RxTAlphaDecoder]:
-    encoder = RxTAlphaEncoder(**encoder_config)
-    decoder = RxTAlphaDecoder(**decoder_config)
-
-    encoder.load_shared_memory(decoder.model.stm)
-    encoder.load_shared_embedding(decoder.model.embedding)
-
-    return encoder, decoder
-
 class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) memory attention model"""
+
     def __init__(
             self,
             num_layers: int = 12,
@@ -234,17 +237,21 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             stm_size: int = 1024,
             use_flash_attention: bool = False,
             att_dropout: float = 0.0,
-            norm_type: str = 'rms',
             att_groups: int = 1,
             att_type: str = 'sqa',
             att_experts: int = None,
             att_query_experts: int = None,
             att_query_groups: int = None,
+            norm_type: str = 'rms',
+            norm_init_gate: float = -2.0,
+            norm_per_dim_scale: bool = False,
+            norm_decay: float = 0.9,
             **kwargs,
     ):
         super(RxTAlphaMemoryAttention, self).__init__(**kwargs)
 
-        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
+                            'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
 
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
@@ -256,11 +263,14 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                           max_seq_len=seq_len, is_causal=False, num_experts=att_experts,
+                                                           max_seq_len=seq_len, is_causal=False,
+                                                           num_experts=att_experts,
                                                            num_query_experts=att_query_experts,
                                                            num_query_groups=att_query_groups, rope_only_for_keys=True)
 
-        memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size) for _ in range(num_layers)])
+        memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size, decay=norm_decay,
+                                                             init_gate=norm_init_gate, per_dim_scale=norm_per_dim_scale)
+                                            for _ in range(num_layers)])
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
         self.model = StmMemoryAttention(stm, attention_layers, memory_norm_layers)
 
@@ -283,4 +293,3 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
-
