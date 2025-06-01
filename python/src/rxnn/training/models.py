@@ -128,7 +128,7 @@ class MrlActorModel(nn.Module):
         return list(set(
             self.encoder.memory_parameters() +
             self.decoder.memory_parameters() +
-            self.memory_attention.parameters()
+            list(self.memory_attention.parameters())
         ))
 
     def memory_cross_attention_parameters(self) -> list[nn.Parameter]:
@@ -139,7 +139,6 @@ class MrlActorModel(nn.Module):
 
     def memory_attention_parameters(self) -> Iterator[nn.Parameter]:
         return self.memory_attention.parameters()
-
 
     def not_memory_parameters(self) -> list[nn.Parameter]:
         return list(set(
