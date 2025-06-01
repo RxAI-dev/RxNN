@@ -68,8 +68,8 @@ class ReactiveTransformerLayer(nn.Module):
         return list(self.memory_cross_attention.parameters()) + list(self.norm2.parameters())
 
     def not_memory_parameters(self) -> list[nn.Parameter]:
-        memory_params = self.memory_parameters()
-        return [param for param in self.parameters() if param not in memory_params]
+        return (list(self.attention.parameters()) + list(self.norm1.parameters()) +
+                list(self.norm3.parameters()) + list(self.ff.parameters()))
 
     def update_max_len(self, max_seq_len: int):
         if self.attention.rope is not None:
