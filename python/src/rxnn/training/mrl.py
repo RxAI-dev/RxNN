@@ -3,7 +3,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from typing import Optional, TypedDict, Union
+from typing import Optional, TypedDict, Union, TypeAlias, Literal
 from enum import Enum
 import random, os
 from ..transformers.sampler import BatchSampler
@@ -31,6 +31,8 @@ class MrlStrategy(Enum):
     MULTI_STEP_STRATEGY = 2
     LONG_RANGE_STRATEGY = 3
 
+UnfreezeItem = Union[int, tuple[int, float]]
+UnfreezeEpochsStrategy: TypeAlias = Union[int, tuple[UnfreezeItem, UnfreezeItem, UnfreezeItem, int]]
 
 class CurriculumConfig(TypedDict):
     steps: int
@@ -39,7 +41,7 @@ class CurriculumConfig(TypedDict):
     eval_dataset: Optional[MrlCurriculumDataset]
     callbacks: Optional[list[MrlTrainerCallback]]
     strategy: MrlStrategy
-    unfreeze_epoch: Optional[Union[int, tuple[int, int, int, int]]]
+    unfreeze_epoch: Optional[UnfreezeEpochsStrategy]
     random_resets: Optional[bool]
     random_resets_from: Optional[int]
     random_resets_ratio: Optional[float]
@@ -132,7 +134,8 @@ class MRLTrainer:
 
         if self.separate_memory_lr:
             self.base_optim_config = {
-                'lr': (config.get('lr', 3e-4), config.get('memory_lr', 5e-4)),
+                'lr': config.get('lr', 3e-4),
+                'memory_lr': config.get('memory_lr', 5e-4),
                 'critic_lr': config.get('critic_lr', 1e-4),
                 'weight_decay': config.get('weight_decay', 0.01),
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
@@ -145,8 +148,9 @@ class MRLTrainer:
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
             }
 
-        # Optimizers
-        self.optimizer, self.critic_optimizer = self._init_optimizers(**self.base_optim_config, separate_memory_lr=self.separate_memory_lr)
+        self.optim_config = self.base_optim_config
+
+        self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
 
         self.scaler = torch.amp.GradScaler() if self.use_amp else None
         self.critic_scaler = torch.amp.GradScaler() if self.use_amp else None
@@ -173,11 +177,17 @@ class MRLTrainer:
         self.global_epoch = 0
         self.global_epochs_count = 0
 
-    def _init_optimizers(self, lr: Union[float, tuple[float, float]], critic_lr: float, weight_decay: float, critic_weight_decay: float, separate_memory_lr: bool = False) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
-        if separate_memory_lr:
-            rest_lr, memory_lr = lr
+    def _init_optimizers(
+            self,
+            lr: float,
+            critic_lr: float,
+            weight_decay: float,
+            critic_weight_decay: float,
+            memory_lr: Optional[float] = None,
+    ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
+        if memory_lr is not None:
             optimizer = torch.optim.AdamW([
-                { 'params': self.actor.not_memory_parameters(), 'lr': rest_lr },
+                { 'params': self.actor.not_memory_parameters(), 'lr': lr },
                 { 'params': self.actor.memory_parameters(), 'lr': memory_lr },
             ],
                 weight_decay=weight_decay,
@@ -737,7 +747,7 @@ class MRLTrainer:
 
         return should_stop_stage
 
-    def _setup_curriculum_step(self, config: CurriculumConfig) -> tuple[tuple[int, int], tuple[bool, int, float]]:
+    def _setup_curriculum_step(self, config: CurriculumConfig) -> tuple[tuple[int, UnfreezeEpochsStrategy], tuple[bool, int, float]]:
         # 1. Set common fields based on config
         self.curriculum_steps = config.get('steps', 1)  # number of steps to run in episode
         self.train_dataset = config.get('dataset', None)  # training dataset for current curriculum stage
@@ -748,13 +758,28 @@ class MRLTrainer:
                                    MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
         if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
-            self.optimizer, self.critic_optimizer = self._init_optimizers(
-                lr=(config.get('lr', self.base_optim_config['lr'][0]), config.get('memory_lr', self.base_optim_config['lr'][1])) if config.get('separate_memory_lr', False) else config.get('lr', self.base_optim_config['lr']),
-                critic_lr=config.get('critic_lr', self.base_optim_config['critic_lr']),
-                weight_decay=config.get('weight_decay', self.base_optim_config['weight_decay']),
-                critic_weight_decay=config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
-                separate_memory_lr=config.get('separate_memory_lr', False),
-            )
+            if config.get('separate_memory_lr', False):
+                self.optim_config = {
+                    'lr': config.get('lr', self.base_optim_config['lr']),
+                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
+                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
+                    'critic_weight_decay': config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
+                    'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
+                }
+            else:
+                self.optim_config = {
+                    'lr': config.get('lr', self.base_optim_config['lr']),
+                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
+                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
+                    'critic_weight_decay': config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
+                }
+            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
+        elif self.optim_config != self.base_optim_config:
+            self.optim_config = self.base_optim_config
+            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
+
+
+
 
         # 2. Get epochs and random resets configs
         epochs = config.get('epochs', 5)  # number of epochs for current stage
@@ -770,6 +795,82 @@ class MRLTrainer:
         self.stage_step = self._init_steps()
 
         return (epochs, unfreeze_epoch), (random_resets, random_resets_from, random_resets_ratio)
+
+    def _apply_unfreeze_strategy(self, epoch: int, unfreeze_epoch: UnfreezeEpochsStrategy):
+        is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
+        if is_staged_unfreeze:
+            update_epoch, fetch_epoch, joint_epoch, all_epoch = unfreeze_epoch
+
+            if isinstance(update_epoch, tuple):
+                switch_epoch, cross_att_lr = update_epoch
+                if epoch == switch_epoch:
+                    self.actor.freeze_components('joint')
+                    self.optimizer = self._init_unfreeze_optimizer('update', cross_att_lr)
+                    print(f"Activating 'update' unfreeze strategy with custom cross_att_lr: {cross_att_lr}")
+            elif epoch == update_epoch:
+                 self.actor.freeze_components('update')
+                 print(f"Activating 'update' unfreeze strategy - mem-att trainable / cross-att frozen / rest model frozen")
+
+            if isinstance(fetch_epoch, tuple):
+                switch_epoch, mem_att_lr = fetch_epoch
+                if epoch == fetch_epoch:
+                    self.actor.freeze_components('joint')
+                    self.optimizer = self._init_unfreeze_optimizer('fetch', mem_att_lr)
+                    print(f"Activating 'fetch' unfreeze strategy with custom mem_att_lr: {mem_att_lr}")
+            elif epoch == fetch_epoch:
+                self.actor.freeze_components('fetch')
+                print(f"Activating 'fetch' unfreeze strategy - mem-att frozen / cross-att trainable / rest model frozen")
+
+            if isinstance(joint_epoch, tuple):
+                switch_epoch, model_lr = joint_epoch
+                if epoch == joint_epoch:
+                    self.actor.unfreeze_components()
+                    self.optimizer = self._init_unfreeze_optimizer('joint', model_lr)
+                    print(f"Activating 'joint' unfreeze strategy with custom model_lr: {model_lr}")
+            elif epoch == joint_epoch:
+                    self.actor.freeze_components('joint')
+                    print(f"Activating 'joint' unfreeze strategy - mem-att/cross-att trainable / rest model frozen")
+            if epoch == all_epoch:
+                self.actor.unfreeze_components()
+                self.optimizer = self._init_unfreeze_optimizer('all', 0.)
+                print(f"Switching to train 'all' strategy - unfreeze all components")
+        elif epoch == unfreeze_epoch:
+            self.actor.unfreeze_components()
+            print(f"Switching to train 'all' strategy - unfreeze all components")
+
+    def _init_unfreeze_optimizer(
+            self,
+            mode: Literal['update', 'fetch', 'joint', 'all'],
+            unfreeze_lr: float,
+    ) -> torch.optim.Optimizer:
+        memory_lr = self.optim_config['memory_lr'] if 'memory_lr' in self.optim_config else self.optim_config['lr']
+        model_lr = self.optim_config['lr']
+
+        if mode == 'update':
+            params = [
+                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.memory_cross_attention_parameters(), 'lr': unfreeze_lr},
+            ]
+        elif mode == 'fetch':
+            params = [
+                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.memory_cross_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': unfreeze_lr},
+            ]
+        elif mode == 'joint':
+            params = [
+                {'params': self.actor.not_memory_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
+            ]
+        else:
+            params = [
+                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
+            ]
+
+        return torch.optim.AdamW(params, weight_decay=self.optim_config['weight_decay'])
+
 
     def __call__(self, curriculum_config: list[CurriculumConfig], batch_size: int):
         """Start Memory Reinforcement Learning Curriculum."""
@@ -796,7 +897,11 @@ class MRLTrainer:
 
             # 4. Freeze all components except memory attention and memory cross-attention layers in decoder/encoder
             if unfreeze_epoch != 0:
-                self.actor.freeze_components('both')
+                self.actor.freeze_components('joint')
+                if isinstance(unfreeze_epoch, tuple):
+                    print(f"Starting training with unfreeze strategies - 'warmup' - mem-att/cross-att trainable / rest model frozen")
+                else:
+                    print(f"Starting training with simple unfreeze - 'joint' - mem-att/cross-att trainable / rest model frozen")
 
             # 5. Setup train DataLoader
             if self.use_ddp:
@@ -836,21 +941,8 @@ class MRLTrainer:
                 else:
                     self.random_resets_ratio = 1.0
 
-                # 11. Unfreeze all components before selected epoch
-                is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
-                if is_staged_unfreeze:
-                    update_epoch, fetch_epoch, both_epoch, all_epoch = unfreeze_epoch
-                    if epoch == update_epoch:
-                        self.actor.freeze_components('update')
-                    elif epoch == fetch_epoch:
-                        self.actor.freeze_components('fetch')
-                    elif epoch == both_epoch:
-                        self.actor.freeze_components('both')
-                    elif epoch == all_epoch:
-                        self.actor.unfreeze_components()
-                else:
-                    if epoch == unfreeze_epoch:
-                        self.actor.unfreeze_components()
+                # 11. Apply the unfreeze strategy
+                self._apply_unfreeze_strategy(epoch, unfreeze_epoch)
 
                 # 12. Set epoch for distributed sampler
                 if train_sampler is not None:

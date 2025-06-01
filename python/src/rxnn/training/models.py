@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from enum import Enum
-from typing import Literal
+from typing import Literal, Iterator
 from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
 
@@ -75,7 +75,7 @@ class MrlActorModel(nn.Module):
         self.decoder = decoder
         self.memory_attention = memory_attention
 
-    def freeze_components(self, stage: Literal['update', 'fetch', 'both'] = 'both'):
+    def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint'):
         """Freeze encoder/decoder except memory-related layers."""
         if self.encoder.freeze_without_memory is not None:
             self.encoder.freeze_without_memory(unfreeze_norms=True)
@@ -130,6 +130,16 @@ class MrlActorModel(nn.Module):
             self.decoder.memory_parameters() +
             self.memory_attention.parameters()
         ))
+
+    def memory_cross_attention_parameters(self) -> list[nn.Parameter]:
+        return list(set(
+            self.encoder.memory_parameters() +
+            self.decoder.memory_parameters()
+        ))
+
+    def memory_attention_parameters(self) -> Iterator[nn.Parameter]:
+        return self.memory_attention.parameters()
+
 
     def not_memory_parameters(self) -> list[nn.Parameter]:
         return list(set(
