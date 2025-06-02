@@ -5,7 +5,7 @@ from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.positional import RotaryPositionalEmbedding
 from ..transformers.attention import init_attention
 from ..transformers.layers import ReactiveTransformerLayer
-from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder
+from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder, ReactiveTransformerEncoderDetachStm
 from ..transformers.ff import get_activation_layer
 from ..memory.stm import ShortTermMemory
 from ..memory.norm import init_memory_norm
@@ -293,3 +293,29 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
+
+class RxTAlphaCriticEncoder(RxTAlphaComponentBase, pipeline_tag="text-classification", license="apache-2.0"):
+    """RxT-Alpha (Reactive Transformer) encoder model"""
+
+    def __init__(self, **kwargs: RxTAlphaComponentConfig):
+        super(RxTAlphaCriticEncoder, self).__init__(False, **kwargs)
+
+    def _init_model(
+            self,
+            stm: ShortTermMemory,
+            layers: nn.ModuleList,
+            embedding: nn.Embedding,
+            use_flash_attention: bool,
+            embed_dim: int,
+            vocab_size: int
+    ) -> ReactiveTransformerEncoderDetachStm:
+        return ReactiveTransformerEncoderDetachStm(
+            stm=stm,
+            embedding=embedding,
+            own_layers=layers,
+            use_flash_attention=use_flash_attention,
+        )
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.model(x, attention_mask=attention_mask)
+

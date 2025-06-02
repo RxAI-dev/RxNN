@@ -44,7 +44,6 @@ class ShortTermMemory(nn.Module):
 
     def update_all(self, new_stm: torch.Tensor):
         self.memory = new_stm
-        # self.memory.copy_(new_stm)
 
     def make_trainable(self):
         if not self.is_trainable:

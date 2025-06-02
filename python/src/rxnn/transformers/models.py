@@ -126,6 +126,39 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
         return x, torch.stack(hidden_states)
 
 
+class ReactiveTransformerEncoderDetachStm(ReactiveTransformerBase):
+    """
+    Reactive Transformer encoder DetachStm version - reactive transformer encoder that's detaching Short-Term Memory tensors,
+    before processing them in layers (memory cross-attention). Made for Memory-Aware Critic models, to not include memory
+    update gradients in Critic optimization.
+    """
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
+        x = super().forward(x)  # apply embeddings
+        if attention_mask is not None:
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
+
+        hidden_states = []
+        # Process shared layers
+        if self.shared_layers is not None:
+            for i in range(self.num_shared_layers):
+                layer_stm = self.stm(i).detach() # <- Detach STM layer
+                # expand layer STM to batch size, if it's not in batch mode
+                if layer_stm.size(0) == 1:
+                    layer_stm = layer_stm.expand(x.size(0), -1, -1)
+                x = self.shared_layers[i](x, layer_stm, mask=attention_mask)
+                hidden_states.append(x)
+        # Process own layers
+        for i in range(self.num_own_layers):
+            layer_stm = self.stm(i).detach() # <- Detach STM layer
+            # expand layer STM to batch size, if it's not in batch mode
+            if layer_stm.size(0) == 1:
+                layer_stm = layer_stm.expand(x.size(0), -1, -1)
+            x = self.layers[i](x, layer_stm, mask=attention_mask)
+            hidden_states.append(x)
+        return x, torch.stack(hidden_states)
+
+
 class ClassicTransformerBase(nn.Module):
     """Base class for Classic Transformer models - common logic for both decoders and encoders."""
 
