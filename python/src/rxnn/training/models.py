@@ -6,6 +6,7 @@ from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
 from ..transformers.ff import GatedLinearUnit, get_activation_layer
 
+
 class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
         super(MLMHead, self).__init__(*args, **kwargs)
@@ -38,6 +39,7 @@ class MLMTrainingModel(nn.Module):
         y = self.mlm_head(h)
         return y
 
+
 class JointTrainingModel(nn.Module):
     def __init__(
             self,
@@ -59,9 +61,11 @@ class JointTrainingModel(nn.Module):
         y_d = self.decoder(x_d, attention_mask=attention_mask)
         return y_e, y_d
 
+
 class MrlActorAction(Enum):
     DECODE = 1
     UPDATE = 2
+
 
 class MrlActorModel(nn.Module):
     def __init__(
@@ -154,15 +158,18 @@ class MrlActorModel(nn.Module):
             list(self.memory_attention.parameters())
         ))
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None, action: MrlActorAction = MrlActorAction.DECODE) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None,
+                action: MrlActorAction = MrlActorAction.DECODE) -> torch.Tensor:
         if action == MrlActorAction.DECODE:
             return self.decoder(x, attention_mask=attention_mask)
         else:
             _, ed = self.encoder(x, attention_mask=attention_mask)
             return self.memory_attention(ed, attention_mask=attention_mask)
 
+
 class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipeline_tag="text-classification"):
-    def __init__(self, encoder: nn.Module, embed_dim: int, out_activation: Literal['sigmoid', 'tanh', 'linear'] = 'sigmoid', output_scale: float = 1.0,  **kwargs):
+    def __init__(self, encoder: nn.Module, embed_dim: int,
+                 out_activation: Literal['sigmoid', 'tanh', 'linear'] = 'sigmoid', output_scale: float = 1.0, **kwargs):
         super(MrlCriticModel, self).__init__(**kwargs)
         self.encoder = encoder
         self.value_head = nn.Sequential(
@@ -172,6 +179,12 @@ class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipe
             get_activation_layer(out_activation)
         )
         self.output_scale = output_scale
+
+    def head_parameters(self) -> Iterator[nn.Parameter]:
+        return self.value_head.parameters()
+
+    def encoder_parameters(self) -> Iterator[nn.Parameter]:
+        return self.encoder.parameters()
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x, _ = self.encoder(x, attention_mask=attention_mask)
@@ -183,4 +196,3 @@ class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipe
             x = x.mean(dim=1)
 
         return self.value_head(x) * self.output_scale
-

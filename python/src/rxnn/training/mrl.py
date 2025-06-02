@@ -15,11 +15,13 @@ from .reward import MrlRewardMode, MrlRewardModel
 from .models import MrlActorAction, MrlActorModel, MrlCriticModel
 from .ddp import get_os_ddp_config, distributed_mean
 
+
 class MrlConfig(TypedDict):
     lr: float
     separate_memory_lr: Optional[bool]
     memory_lr: Optional[float]
     critic_lr: float
+    critic_encoder_lr: float
     max_seq_len: int
     critic_max_len: int
     weight_decay: float
@@ -58,6 +60,7 @@ class CurriculumConfig(TypedDict):
     lr: Optional[float]
     memory_lr: Optional[float]
     critic_lr: Optional[float]
+    critic_encoder_lr: Optional[float]
     weight_decay: Optional[float]
     critic_weight_decay: Optional[float]
     update_epochs: Optional[int]
@@ -158,6 +161,7 @@ class MRLTrainer:
                 'critic_lr': config.get('critic_lr', 1e-4),
                 'weight_decay': config.get('weight_decay', 0.01),
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
+                'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
             }
         else:
             self.base_optim_config = {
@@ -165,6 +169,7 @@ class MRLTrainer:
                 'critic_lr': config.get('critic_lr', 1e-4),
                 'weight_decay': config.get('weight_decay', 0.01),
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
+                'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
             }
 
         self.optim_config = self.base_optim_config
@@ -202,6 +207,7 @@ class MRLTrainer:
             critic_lr: float,
             weight_decay: float,
             critic_weight_decay: float,
+            critic_encoder_lr: float,
             memory_lr: Optional[float] = None,
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
@@ -219,8 +225,10 @@ class MRLTrainer:
             )
 
         critic_optimizer = torch.optim.AdamW(
-            self.critic.parameters(),
-            lr=critic_lr,
+            [
+                {'params': self.critic.head_parameters(), 'lr': critic_lr},
+                {'params': self.critic.encoder_parameters(), 'lr': critic_encoder_lr},
+            ],
             weight_decay=critic_weight_decay,
         )
 
@@ -633,7 +641,8 @@ class MRLTrainer:
                 for i, t in enumerate(episode['steps'])
             ]
             values = torch.stack([
-                self._critic_values_with_memory(r, *self._move_multiple_batches(*t['state'])) for t, r in flat_trajectories
+                self._critic_values_with_memory(r, *self._move_multiple_batches(*t['state'])) for t, r in
+                flat_trajectories
             ]).to(self.device)
             rewards = torch.stack([torch.tensor(t['reward']) for t, _ in flat_trajectories]).to(self.device)
             dones = torch.stack([torch.tensor(t['done']) for t, _ in flat_trajectories]).to(self.device)
@@ -646,7 +655,8 @@ class MRLTrainer:
             dones = torch.stack([torch.tensor(t['done']) for t in flat_trajectories]).to(self.device)
         return values, rewards, dones
 
-    def _critic_values_with_memory(self, reset_stm: bool, *moved_state: tuple[TokenizedDict, TokenizedDict, TokenizedDict]) -> torch.Tensor:
+    def _critic_values_with_memory(self, reset_stm: bool,
+                                   *moved_state: tuple[TokenizedDict, TokenizedDict, TokenizedDict]) -> torch.Tensor:
         # 1. Calculate critic values in memory aware version - reset/update STM before calculating values
         with torch.no_grad():
             # 2. Reset STM if it was reset in trajectory collection
@@ -933,6 +943,7 @@ class MRLTrainer:
                     'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
                     'critic_weight_decay': config.get('critic_weight_decay',
                                                       self.base_optim_config['critic_weight_decay']),
+                    'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
                     'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
                 }
             else:
@@ -942,6 +953,7 @@ class MRLTrainer:
                     'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
                     'critic_weight_decay': config.get('critic_weight_decay',
                                                       self.base_optim_config['critic_weight_decay']),
+                    'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
                 }
             self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
         elif self.optim_config != self.base_optim_config:
