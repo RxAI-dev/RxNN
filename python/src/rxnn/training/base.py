@@ -8,6 +8,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from typing import Callable
 from .callbacks import TrainerCallback
+from .ddp import get_os_ddp_config, distributed_value_mean
 
 
 class BaseTrainer(ABC):
@@ -91,8 +92,7 @@ class BaseTrainer(ABC):
             optimizer = self.optimizer
 
         if self.use_ddp:
-            rank = int(os.environ['RANK'])
-            world_size = int(os.environ['WORLD_SIZE'])
+            rank, world_size = get_os_ddp_config()
             dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
             self.model = DistributedDataParallel(self.model, device_ids=[self.device.index])
             train_sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
@@ -218,10 +218,9 @@ class BaseTrainer(ABC):
         if self.validation_dataset:
             self.validation_steps = 0
             val_loss, val_metrics = self.validate(batch_size)
-            val_loss_tensor = torch.tensor(val_loss).to(self.device)
             if self.use_ddp:
-                dist.all_reduce(val_loss_tensor, op=dist.ReduceOp.SUM)
-                val_loss = val_loss_tensor.item() / dist.get_world_size()
+                val_loss = distributed_value_mean(val_loss, device=self.device)
+
             self.validation_metrics[epoch] = val_metrics
 
             if self.writer:

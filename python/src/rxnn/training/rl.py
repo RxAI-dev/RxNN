@@ -2,8 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from abc import ABC, abstractmethod
-from typing import TypedDict
+from typing import TypedDict, Optional
 from .utils import TokenizedDict
+from .ddp import distributed_mean
 
 
 class RlAlgorithm(ABC):
@@ -23,21 +24,28 @@ class RlAlgorithm(ABC):
     def critic_loss(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
         return self.critic_loss(rewards, values)
 
+
 class PPOConfig(TypedDict):
-    clip_eps: float
-    gae_lambda: float
-    gae_gamma: float
-    entropy_coef: float
+    clip_eps: Optional[float]
+    gae_lambda: Optional[float]
+    gae_gamma: Optional[float]
+    entropy_coef: Optional[float]
+    use_distributed_advantage_norm: Optional[bool]
+
 
 class PPOAlgorithm(RlAlgorithm):
-    def __init__(self, config: PPOConfig):
+    def __init__(self, config: Optional[PPOConfig] = None):
         super(PPOAlgorithm, self).__init__()
+
+        if config is None:
+            config = {}
 
         # PPO Config
         self.clip_eps = config.get('clip_eps', 0.2)
         self.gae_lambda = config.get('gae_lambda', 0.95)
         self.gae_gamma = config.get('gae_gamma', 0.99)
         self.entropy_coef = config.get('entropy_coef', 0.01)
+        self.use_distributed_advantage_norm = config.get('use_distributed_advantage_norm', False)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
                     old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
@@ -101,7 +109,7 @@ class PPOAlgorithm(RlAlgorithm):
                 next_values = values[t + 1]
 
             # Mask next values if episode ended
-            next_values = next_values * (1 - dones[t])
+            next_values = next_values * ~dones[t]
             delta = rewards[t] + self.gae_gamma * next_values - values[t]
             advantages[t] = delta + self.gae_gamma * self.gae_lambda * last_advantage
             last_advantage = advantages[t]
@@ -111,5 +119,10 @@ class PPOAlgorithm(RlAlgorithm):
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
-        normalized_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if self.use_distributed_advantage_norm:
+            mean_advantage = distributed_mean(advantages.mean())
+            std_advantage = distributed_mean(advantages.std())
+            normalized_advantages = (advantages - mean_advantage) / (std_advantage + 1e-8)
+        else:
+            normalized_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         return normalized_advantages, ref_values

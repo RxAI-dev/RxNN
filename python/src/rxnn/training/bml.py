@@ -7,6 +7,7 @@ import torch.distributed as dist
 from ..transformers.models import ReactiveTransformerDecoder
 from ..training.base import BaseTrainer
 from .models import MLMTrainingModel, JointTrainingModel
+from .ddp import distributed_mean
 
 class MLMTrainer(BaseTrainer):
     def __init__(
@@ -96,8 +97,7 @@ class MLMTrainer(BaseTrainer):
         acc = (correct / total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
         node_acc = acc.item()
         if self.use_ddp:
-            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
-            acc = acc / dist.get_world_size()
+            acc = distributed_mean(acc)
 
         metrics = {
             'accuracy': acc.item(),
@@ -198,8 +198,7 @@ class AutoregressiveTrainer(BaseTrainer):
         acc = (correct / total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
         node_acc = acc.item()
         if self.use_ddp:
-            dist.all_reduce(acc, op=dist.ReduceOp.SUM)
-            acc = acc / dist.get_world_size()
+            acc = distributed_mean(acc)
 
         metrics = {
             'accuracy': acc.item(),
@@ -347,14 +346,10 @@ class JointLMTrainer(BaseTrainer):
         node_mlm_acc = mlm_acc.item()
         node_alm_acc = alm_acc.item()
         if self.use_ddp:
-            dist.all_reduce(avg_dec_loss, op=dist.ReduceOp.SUM)
-            dist.all_reduce(avg_enc_loss, op=dist.ReduceOp.SUM)
-            dist.all_reduce(mlm_acc, op=dist.ReduceOp.SUM)
-            dist.all_reduce(alm_acc, op=dist.ReduceOp.SUM)
-            avg_dec_loss = avg_dec_loss / dist.get_world_size()
-            avg_enc_loss = avg_enc_loss / dist.get_world_size()
-            mlm_acc = mlm_acc / dist.get_world_size()
-            alm_acc = alm_acc / dist.get_world_size()
+            avg_dec_loss = distributed_mean(avg_dec_loss)
+            avg_enc_loss = distributed_mean(avg_enc_loss)
+            mlm_acc = distributed_mean(mlm_acc)
+            alm_acc = distributed_mean(alm_acc)
 
         metrics = {
             'accuracy': {
