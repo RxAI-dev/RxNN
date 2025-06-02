@@ -24,6 +24,7 @@ class MrlConfig(TypedDict):
     critic_max_len: int
     weight_decay: float
     critic_weight_decay: float
+    update_epochs: int
 
 
 class MrlStrategy(Enum):
@@ -31,8 +32,10 @@ class MrlStrategy(Enum):
     MULTI_STEP_STRATEGY = 2
     LONG_RANGE_STRATEGY = 3
 
+
 UnfreezeItem = Union[int, tuple[int, float]]
 UnfreezeEpochsStrategy: TypeAlias = Union[int, tuple[UnfreezeItem, UnfreezeItem, UnfreezeItem, int]]
+
 
 class CurriculumConfig(TypedDict):
     steps: int
@@ -52,6 +55,7 @@ class CurriculumConfig(TypedDict):
     critic_lr: Optional[float]
     weight_decay: Optional[float]
     critic_weight_decay: Optional[float]
+    update_epochs: Optional[int]
 
 
 class SamplerConfig(TypedDict):
@@ -66,6 +70,7 @@ class MrlTrajectoryStep(TypedDict):
     log_probs: torch.Tensor
     reward: list[float]
     reference: TokenizedDict
+    done: bool
 
 
 class MrlTrajectoryEpisode(TypedDict):
@@ -107,6 +112,9 @@ class MRLTrainer:
         self.device = device
         self.max_seq_len = config.get('max_seq_len', 256)
         self.critic_max_len = config.get('critic_max_len', 512)
+        # Internal update epochs config
+        self.shared_update_epochs = config.get('update_epochs', 10)
+        self.update_epochs = self.shared_update_epochs
 
         # Move models to device
         if use_amp:
@@ -187,8 +195,8 @@ class MRLTrainer:
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
             optimizer = torch.optim.AdamW([
-                { 'params': self.actor.not_memory_parameters(), 'lr': lr },
-                { 'params': self.actor.memory_parameters(), 'lr': memory_lr },
+                {'params': self.actor.not_memory_parameters(), 'lr': lr},
+                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
             ],
                 weight_decay=weight_decay,
             )
@@ -207,11 +215,9 @@ class MRLTrainer:
 
         return optimizer, critic_optimizer
 
-
     def _init_steps(self):
         return {
             'collect': 0,
-            'critic': 0,
             'rl': 0,
             'eval': 0,
         }
@@ -351,7 +357,7 @@ class MRLTrainer:
                     # state from existing one, instead of new random one)
                     reset_done = self.reset_stm()
 
-                    # 4. Reset reward prev data running mean - it's calculated for multi-step retention, we have to reset it before episode
+                    # 4. Reset reward prev data running mean - it's calculated for multistep retention, we have to reset it before episode
                     self.reward.reset_running_mean()
 
                     # 5. Get first batch of interactions (data to save) and follow-up interactions for current episode, based on curriculum step
@@ -406,6 +412,7 @@ class MRLTrainer:
                             'log_probs': log_probs.detach().cpu(),
                             'reward': reward,
                             'reference': interaction['answer'],
+                            'done': is_last_interaction,
                         }
                         episode_steps.append(trajectory)
                         episode_rewards.append(reward)
@@ -432,92 +439,23 @@ class MRLTrainer:
 
         return trajectories
 
-    def _critic_loss(self, inputs: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
+    def _critic_loss(self, inputs: TokenizedDict, ref_values: torch.Tensor) -> torch.Tensor:
         # 1. Calculate values with critic encoder
         values = self.critic(
             inputs['input_ids'],
             attention_mask=inputs['attention_mask'],
         ).squeeze()
         # 2. Calculate critic loss
-        loss = self.rl_algorithm.critic_loss(values, rewards)
+        loss = self.rl_algorithm.critic_loss(values, ref_values)
         return loss
 
     def _critic_writer(self, critic_loss: float, epoch: int):
         if self.writer is not None:
-            self.writer.add_scalar('Loss/critic (global)', critic_loss, self.global_step['critic'])
+            self.writer.add_scalar('Loss/critic (global)', critic_loss, self.global_step['rl'])
             self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps}, epoch: {epoch})', critic_loss,
-                                   self.epoch_step['critic'])
+                                   self.epoch_step['rl'])
             self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps})', critic_loss,
-                                   self.stage_step['critic'])
-
-    def update_critic(self, states: list[tuple[TokenizedDict, TokenizedDict, TokenizedDict]],
-                      rewards: list[torch.Tensor], epoch: int):
-        """Update critic network using MSE loss."""
-        # 1. Run critic updates for all collected batches
-        critic_losses = []
-        for step_idx, (state, reward) in enumerate(zip(states, rewards)):
-            self._increment_steps('critic')
-            # 2. Move state batches to training device (GPU)
-            prev_query, prev_answer, next_query = self._move_multiple_batches(*state)
-
-            # 3. Reset critic gradients
-            self.critic_optimizer.zero_grad()
-
-            # 4. Run critic and calculate loss - in autocast on/off mode
-            if self.use_amp:
-                # Move tensors to training device and calculate loss in autocast mode
-                batch_rewards = reward.to(self.device)
-                with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
-                    # Concatenate state into single critic input sequence
-                    inputs = smart_concat_critic_states(
-                        prev_query, prev_answer, next_query,
-                        max_length=self.critic_max_len,
-                        pad_token_id=self.pad_token_id,
-                    )
-                    loss = self._critic_loss(inputs, batch_rewards)
-                # Run backpropagation with scaler
-                self.critic_scaler.scale(loss).backward()
-                # Unscale and clip gradients
-                self.critic_scaler.unscale_(self.critic_optimizer)
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0, error_if_nonfinite=False)
-                # Run scaled optimization step
-                self.critic_scaler.step(self.critic_optimizer)
-                self.critic_scaler.update()
-            else:
-                # Concatenate state into single critic input sequence
-                inputs = smart_concat_critic_states(
-                    prev_query, prev_answer, next_query,
-                    max_length=self.critic_max_len,
-                    pad_token_id=self.pad_token_id,
-                )
-                # Calculate loss
-                loss = self._critic_loss(inputs, reward.to(self.device, dtype=self.dtype))
-                # Run backpropagation
-                loss.backward()
-                # Clip gradients
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0, error_if_nonfinite=False)
-                # Run optimizer step
-                self.critic_optimizer.step()
-            critic_loss = loss.item()
-            self._critic_writer(critic_loss, epoch)
-
-            # 5. Run "on critic updated" callbacks
-            for cb in self.callbacks:
-                cb.on_critic_updated(self.actor, self.critic, epoch, step_idx, critic_loss)
-
-            # 6. Accumulate loss for epoch callbacks
-            critic_losses.append(critic_loss)
-
-        # 7. Calculate mean loss for epoch callbacks
-        critic_mean_loss = torch.tensor(critic_losses).mean().item()
-
-        return critic_mean_loss
-
-    def _critic_advantages(self, critic_state: TokenizedDict, rewards: torch.Tensor) -> torch.Tensor:
-        with torch.no_grad():
-            values = self.critic(critic_state['input_ids'],
-                                 attention_mask=critic_state['attention_mask']).squeeze()
-        return self.rl_algorithm.calculate_advantages(rewards, values)
+                                   self.stage_step['rl'])
 
     def _rl_writer(self, policy_loss: float, epoch: int):
         if self.writer is not None:
@@ -526,107 +464,208 @@ class MRLTrainer:
                                    self.epoch_step['rl'])
             self.writer.add_scalar(f'Loss/policy (steps: {self.curriculum_steps})', policy_loss, self.stage_step['rl'])
 
-    def rl_step(self, trajectories: list[MrlTrajectoryEpisode], epoch: int):
+    def _update_critic(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], ref_values: torch.Tensor,
+                       epoch: int) -> float:
+        # 1. Reset critic gradients
+        self.critic_optimizer.zero_grad()
+
+        # 2. Update critic - with autocast on/off
+        if self.use_amp:
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                # 2.1 Concat states and calculate critic loss
+                critic_state = smart_concat_critic_states(*state, max_length=self.critic_max_len,
+                                                          pad_token_id=self.pad_token_id)
+                critic_loss = self._critic_loss(critic_state, ref_values)
+            # 2.2 Run backpropagation with scaler
+            self.critic_scaler.scale(critic_loss).backward()
+            # 2.3 Unscale and clip gradients
+            self.critic_scaler.unscale_(self.critic_optimizer)
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0, error_if_nonfinite=False)
+            # 2.4 Run scaled optimization step
+            self.critic_scaler.step(self.critic_optimizer)
+            self.critic_scaler.update()
+        else:
+            # 2.1 Concat states and calculate critic loss
+            critic_state = smart_concat_critic_states(*state, max_length=self.critic_max_len,
+                                                      pad_token_id=self.pad_token_id)
+            critic_loss = self._critic_loss(critic_state, ref_values)
+            # 2.2 Run backpropagation
+            critic_loss.backward()
+            # 2.3 Clip gradients
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0, error_if_nonfinite=False)
+            # 2.4 Run optimizer step
+            self.critic_optimizer.step()
+        # 3. Get float loss value for callbacks/writer
+        critic_loss_item = critic_loss.item()
+
+        # 4. Write to TensorBoard
+        self._critic_writer(critic_loss_item, epoch)
+
+        # 5. Run "on critic updated" callbacks
+        for cb in self.callbacks:
+            cb.on_critic_updated(self.actor, self.critic, epoch, self.epoch_step['rl'], critic_loss_item)
+        # 6. Return loss item
+        return critic_loss_item
+
+    def _update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
+                      advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
+        # 1. Reset actor gradients
+        self.optimizer.zero_grad()
+        # 2. Unpack state dicts
+        query, answer, next_query = state
+
+        # 3. Encode and update STM on each step, to include encoder and memory attention gradients in loss
+        self.encode_and_update_stm(query, answer)
+
+        # 4. Update actor - with autocast on/off
+        if self.use_amp:
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                # 4.1 Concatenate next query and action and get action logits from decoder
+                inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
+                                      pad_token_id=self.pad_token_id)
+                logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                                    action=MrlActorAction.DECODE)
+                # 4.2 Calculate policy loss with selected algorithm
+                policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
+                                                            advantages)
+            # 4.3 Run backpropagation with scaler
+            self.scaler.scale(policy_loss).backward(retain_graph=True)
+            # 4.4 Unscale and clip gradient norms
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
+                                           error_if_nonfinite=False)
+            # 4.5 Run scaled optimization step
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            # 4.1 Concatenate next query and action and get action logits from decoder
+            inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
+                                  pad_token_id=self.pad_token_id)
+            logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                                action=MrlActorAction.DECODE)
+            # 4.2 Calculate policy loss with selected algorithm
+            policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
+            # 4.3 Run backpropagation
+            policy_loss.backward(retain_graph=True)
+            # 4.4 Clip gradient norms
+            torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
+                                           error_if_nonfinite=False)
+            # 4.5 Run scaled optimization step
+            self.optimizer.step()
+        # 5. Get float loss value for callbacks/writer
+        policy_loss_item = policy_loss.item()
+
+        # 6. Write to TensorBoard
+        self._rl_writer(policy_loss_item, epoch)
+
+        # 7. Run "on batch updated" callback
+        for cb in self.callbacks:
+            cb.on_batch_updated(self.actor, epoch, self.epoch_step['rl'], policy_loss_item)
+
+        # 8. Return loss item
+        return policy_loss_item
+
+    def rl_step(self, trajectories: list[MrlTrajectoryEpisode], advantages: torch.Tensor, ref_values: torch.Tensor,
+                epoch: int, batch_size: int) -> tuple[float, float]:
         """Perform PPO update step using trajectories."""
         # 1. Run update separately for episodes in trajectory - we have to reset memory before each episode, and update
         # memory, based on collected episode data
         all_losses = []
-        trajectories_len = len(trajectories)
+        critic_losses = []
         for episode_idx, episode in enumerate(trajectories):
             episode_steps = episode['steps']
             should_reset_stm = episode['reset_stm']
 
-            # 2. Reset memory for current batch episode
+            # 2. Get advantages and reference values for current full episode (batch_size * episode_steps)
+            start = episode_idx * episode_steps
+            end = start + episode_steps
+            episode_critic_values = ref_values[start:end]
+            episode_advantages = advantages[start:end]
+
+            # 3. Reset memory for current batch episode
             if should_reset_stm:
                 self.reset_stm()
 
-            # 3. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
-            for step in episode_steps:
+            # 4. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
+            for step_idx, step in enumerate(episode_steps):
                 self._increment_steps('rl')
-                state, action, reward, log_probs = step['state'], step['action'], step['reward'], step['log_probs']
+                # 5. Get and move to device collected states, action and log probs
+                state, action, _, log_probs = step['state'], step['action'], step['reward'], step['log_probs']
                 query, answer, next_query = self._move_multiple_batches(*state)
                 action = self._move_batch(action)
                 log_probs = log_probs.to(self.device)
-                rewards = torch.tensor(reward).to(self.device)
 
-                # 4. Compute advantages using critic
-                if self.use_amp:
-                    with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
-                        critic_state = smart_concat_critic_states(query, answer, next_query,
-                                                                  max_length=self.critic_max_len,
-                                                                  pad_token_id=self.pad_token_id)
-                        advantages = self._critic_advantages(critic_state, rewards)
-                else:
-                    critic_state = smart_concat_critic_states(query, answer, next_query, max_length=self.critic_max_len,
-                                                              pad_token_id=self.pad_token_id)
-                    advantages = self._critic_advantages(critic_state, rewards)
+                # 6. Select advantages and reference values for current step (batch_size)
+                step_critic_values = episode_critic_values[step_idx]
+                step_advantages = episode_advantages[step_idx]
 
-                # 5. Encode and update STM on each step, to include encoder and memory attention gradients in loss
-                self.encode_and_update_stm(query, answer)
-                # 6. Concatenate next query and action and get action logits from decoder
-                if self.use_amp:
-                    with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
-                        inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
-                                              pad_token_id=self.pad_token_id)
-                        logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
-                                            action=MrlActorAction.DECODE)
-                else:
-                    inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
-                                          pad_token_id=self.pad_token_id)
-                    logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
-                                        action=MrlActorAction.DECODE)
+                # 7. Update critic
+                critic_loss_item = self._update_critic((query, answer, next_query), step_critic_values, epoch)
 
-                # 7. Calculate RL Algorithm (PPO etc.) loss
-                policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, log_probs, advantages)
+                # 8. Accumulate critic loss for epoch callbacks
+                critic_losses.append(critic_loss_item)
 
-                # 8. Reset gradients
-                self.optimizer.zero_grad()
-
-                # 9. Update the model in AMP or regular mode
-                if self.use_amp:
-                    self.scaler.scale(policy_loss).backward(retain_graph=True)
-                    self.scaler.unscale_(self.optimizer)
-                    torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                                   error_if_nonfinite=False)
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                else:
-                    policy_loss.backward(retain_graph=True)
-                    torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                                   error_if_nonfinite=False)
-                    self.optimizer.step()
-
-                policy_loss_item = policy_loss.item()
-                self._rl_writer(policy_loss_item, epoch)
+                # 9. Update actor
+                policy_loss_item = self._update_actor((query, answer, next_query), action, step_advantages, log_probs,
+                                                      epoch)
                 all_losses.append(policy_loss_item)
+        # 10. Return mean losses for epoch callbacks
+        return torch.mean(torch.tensor(all_losses)).item(), torch.mean(torch.tensor(critic_losses)).item()
 
-                # 10. Run "on batch updated" callback
-                for cb in self.callbacks:
-                    cb.on_batch_updated(self.actor, epoch, self.epoch_step['rl'], policy_loss_item)
-
-        return torch.mean(torch.tensor(all_losses)).item()
-
-    def _critic_states_and_rewards(self, trajectories: list[MrlTrajectoryEpisode]):
+    def _critic_values_rewards_and_dones(self, trajectories: list[MrlTrajectoryEpisode]):
         flat_trajectories = [t for episode in trajectories for t in episode['steps']]
-        states = [t['state'] for t in flat_trajectories]
-        rewards = [torch.tensor(t['reward']) for t in flat_trajectories]
-        return states, rewards
+        values = [
+            self._critic_values(
+                smart_concat_critic_states(
+                    *self._move_multiple_batches(*t['state']),
+                    max_length=self.critic_max_len,
+                    pad_token_id=self.pad_token_id,
+                )
+            ) for t in flat_trajectories
+        ]
+        values = torch.stack(values).to(self.device)
+        rewards = torch.stack([torch.tensor(t['reward']) for t in flat_trajectories]).to(self.device)
+        dones = torch.stack([torch.BoolTensor(t['done']) for t in flat_trajectories]).to(self.device)
+        return values, rewards, dones
+
+    def _critic_values(self, inputs: TokenizedDict) -> torch.Tensor:
+        with torch.no_grad():
+            return self.critic(inputs['input_ids'],
+                                 attention_mask=inputs['attention_mask']).squeeze()
+
+        # return self.rl_algorithm.calculate_advantages(rewards, values)
 
     def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int):
         """Train for one epoch."""
         # 1. Collect trajectories for current epoch
         trajectories = self.collect_trajectories(dataloader, epoch, batch_size)
 
-        # 2. Flatten trajectories and collect state and rewards for critic update
-        states, rewards = self._critic_states_and_rewards(trajectories)
-        # 3. Update critic model, based on states and rewards
-        critic_loss = self.update_critic(states, rewards, epoch)
+        # 2. Flatten trajectories, call critic and collect values, dones and rewards, and calculate advantages
+        if self.use_amp:
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                values, rewards, dones = self._critic_values_rewards_and_dones(trajectories)
+                advantages, ref_values = self.rl_algorithm.calculate_advantages(rewards, values, dones)
+        else:
+            values, rewards, dones = self._critic_values_rewards_and_dones(trajectories)
+            advantages, ref_values = self.rl_algorithm.calculate_advantages(rewards, values, dones)
 
-        # 4. Run PPO algorithm step
-        policy_loss = self.rl_step(trajectories, epoch)
+        # 3. Run internal update epochs
+        critic_loss_sum, policy_loss_sum = 0.0, 0.0
+        for update_epoch in range(self.update_epochs):
+            # 4. Run 'on update epoch start' callbacks
+            for cb in self.callbacks:
+                cb.on_update_epoch_start(self.actor, self.critic, epoch, update_epoch)
+            # 5. Run RL algorithm step
+            policy_loss, critic_loss = self.rl_step(trajectories[:-1], advantages, ref_values, epoch, batch_size)
 
-        # 5. Return policy and critic mean losses for epoch callbacks
-        return policy_loss, critic_loss
+            for cb in self.callbacks:
+                cb.on_update_epoch_end(self.actor, self.critic, epoch, update_epoch, policy_loss, critic_loss)
+
+            critic_loss_sum += critic_loss
+            policy_loss_sum += policy_loss
+
+        # 6. Return policy and critic mean losses for epoch callbacks
+        return policy_loss_sum / self.update_epochs, critic_loss_sum / self.update_epochs
 
     def _eval_loader(self, batch_size: int):
         if self.use_ddp:
@@ -747,55 +786,6 @@ class MRLTrainer:
 
         return should_stop_stage
 
-    def _setup_curriculum_step(self, config: CurriculumConfig) -> tuple[tuple[int, UnfreezeEpochsStrategy], tuple[bool, int, float]]:
-        # 1. Set common fields based on config
-        self.curriculum_steps = config.get('steps', 1)  # number of steps to run in episode
-        self.train_dataset = config.get('dataset', None)  # training dataset for current curriculum stage
-        self.eval_dataset = config.get('eval_dataset', None)  # evaluation dataset for current curriculum stage
-        self.callbacks = config.get('callbacks',
-                                    self.shared_callbacks)  # trainer callbacks for current curriculum stage
-        self.strategy = config.get('strategy',
-                                   MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
-        self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
-        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config['critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
-            if config.get('separate_memory_lr', False):
-                self.optim_config = {
-                    'lr': config.get('lr', self.base_optim_config['lr']),
-                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
-                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
-                    'critic_weight_decay': config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
-                    'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
-                }
-            else:
-                self.optim_config = {
-                    'lr': config.get('lr', self.base_optim_config['lr']),
-                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
-                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
-                    'critic_weight_decay': config.get('critic_weight_decay', self.base_optim_config['critic_weight_decay']),
-                }
-            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
-        elif self.optim_config != self.base_optim_config:
-            self.optim_config = self.base_optim_config
-            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
-
-
-
-
-        # 2. Get epochs and random resets configs
-        epochs = config.get('epochs', 5)  # number of epochs for current stage
-        unfreeze_epoch = config.get('unfreeze_epoch',
-                                    0)  # epoch when components (other than memory) are unfrozen (before epoch starts)
-        random_resets = config.get('random_resets',
-                                   False)  # flag for using random STM resets (recommended, as model should learn transitions between different states)
-        random_resets_from = config.get('random_resets_from', None)  # epoch from which random STM resets are started
-        random_resets_ratio = config.get('random_resets_ratio',
-                                         None)  # ratio of random STM resets - 1.0 is "always reset", 0.0 is "no resets"
-
-        # 3. Reset stage step counter
-        self.stage_step = self._init_steps()
-
-        return (epochs, unfreeze_epoch), (random_resets, random_resets_from, random_resets_ratio)
-
     def _apply_unfreeze_strategy(self, epoch: int, unfreeze_epoch: UnfreezeEpochsStrategy):
         is_staged_unfreeze = isinstance(unfreeze_epoch, tuple)
         if is_staged_unfreeze:
@@ -808,28 +798,31 @@ class MRLTrainer:
                     self.optimizer = self._init_unfreeze_optimizer('update', cross_att_lr)
                     print(f"Activating 'update' unfreeze strategy with custom cross_att_lr: {cross_att_lr}")
             elif epoch == update_epoch:
-                 self.actor.freeze_components('update')
-                 print(f"Activating 'update' unfreeze strategy - mem-att trainable / cross-att frozen / rest model frozen")
+                self.actor.freeze_components('update')
+                print(
+                    f"Activating 'update' unfreeze strategy - mem-att trainable / cross-att frozen / rest model frozen")
 
             if isinstance(fetch_epoch, tuple):
                 switch_epoch, mem_att_lr = fetch_epoch
-                if epoch == fetch_epoch:
+                if epoch == switch_epoch:
                     self.actor.freeze_components('joint')
                     self.optimizer = self._init_unfreeze_optimizer('fetch', mem_att_lr)
                     print(f"Activating 'fetch' unfreeze strategy with custom mem_att_lr: {mem_att_lr}")
             elif epoch == fetch_epoch:
                 self.actor.freeze_components('fetch')
-                print(f"Activating 'fetch' unfreeze strategy - mem-att frozen / cross-att trainable / rest model frozen")
+                print(
+                    f"Activating 'fetch' unfreeze strategy - mem-att frozen / cross-att trainable / rest model frozen")
 
             if isinstance(joint_epoch, tuple):
                 switch_epoch, model_lr = joint_epoch
-                if epoch == joint_epoch:
+                if epoch == switch_epoch:
                     self.actor.unfreeze_components()
                     self.optimizer = self._init_unfreeze_optimizer('joint', model_lr)
                     print(f"Activating 'joint' unfreeze strategy with custom model_lr: {model_lr}")
             elif epoch == joint_epoch:
-                    self.actor.freeze_components('joint')
-                    print(f"Activating 'joint' unfreeze strategy - mem-att/cross-att trainable / rest model frozen")
+                self.actor.freeze_components('joint')
+                print(f"Activating 'joint' unfreeze strategy - mem-att/cross-att trainable / rest model frozen")
+
             if epoch == all_epoch:
                 self.actor.unfreeze_components()
                 self.optimizer = self._init_unfreeze_optimizer('all', 0.)
@@ -871,6 +864,56 @@ class MRLTrainer:
 
         return torch.optim.AdamW(params, weight_decay=self.optim_config['weight_decay'])
 
+    def _setup_curriculum_step(self, config: CurriculumConfig) -> tuple[
+        tuple[int, UnfreezeEpochsStrategy], tuple[bool, int, float]]:
+        # 1. Set common fields based on config
+        self.curriculum_steps = config.get('steps', 1)  # number of steps to run in episode
+        self.train_dataset = config.get('dataset', None)  # training dataset for current curriculum stage
+        self.eval_dataset = config.get('eval_dataset', None)  # evaluation dataset for current curriculum stage
+        self.callbacks = config.get('callbacks',
+                                    self.shared_callbacks)  # trainer callbacks for current curriculum stage
+        self.strategy = config.get('strategy',
+                                   MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
+        self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
+        self.update_epochs = config.get('update_epochs', self.shared_update_epochs)  # Internal update epochs
+        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config[
+            'critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
+            if config.get('separate_memory_lr', False):
+                self.optim_config = {
+                    'lr': config.get('lr', self.base_optim_config['lr']),
+                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
+                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
+                    'critic_weight_decay': config.get('critic_weight_decay',
+                                                      self.base_optim_config['critic_weight_decay']),
+                    'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
+                }
+            else:
+                self.optim_config = {
+                    'lr': config.get('lr', self.base_optim_config['lr']),
+                    'critic_lr': config.get('critic_lr', self.base_optim_config['critic_lr']),
+                    'weight_decay': config.get('weight_decay', self.base_optim_config['weight_decay']),
+                    'critic_weight_decay': config.get('critic_weight_decay',
+                                                      self.base_optim_config['critic_weight_decay']),
+                }
+            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
+        elif self.optim_config != self.base_optim_config:
+            self.optim_config = self.base_optim_config
+            self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
+
+        # 2. Get epochs and random resets configs
+        epochs = config.get('epochs', 5)  # number of epochs for current stage
+        unfreeze_epoch = config.get('unfreeze_epoch',
+                                    0)  # epoch when components (other than memory) are unfrozen (before epoch starts)
+        random_resets = config.get('random_resets',
+                                   False)  # flag for using random STM resets (recommended, as model should learn transitions between different states)
+        random_resets_from = config.get('random_resets_from', None)  # epoch from which random STM resets are started
+        random_resets_ratio = config.get('random_resets_ratio',
+                                         None)  # ratio of random STM resets - 1.0 is "always reset", 0.0 is "no resets"
+
+        # 3. Reset stage step counter
+        self.stage_step = self._init_steps()
+
+        return (epochs, unfreeze_epoch), (random_resets, random_resets_from, random_resets_ratio)
 
     def __call__(self, curriculum_config: list[CurriculumConfig], batch_size: int):
         """Start Memory Reinforcement Learning Curriculum."""
@@ -899,9 +942,11 @@ class MRLTrainer:
             if unfreeze_epoch != 0:
                 self.actor.freeze_components('joint')
                 if isinstance(unfreeze_epoch, tuple):
-                    print(f"Starting training with unfreeze strategies - 'warmup' - mem-att/cross-att trainable / rest model frozen")
+                    print(
+                        f"Starting training with unfreeze strategies - 'warmup' - mem-att/cross-att trainable / rest model frozen")
                 else:
-                    print(f"Starting training with simple unfreeze - 'joint' - mem-att/cross-att trainable / rest model frozen")
+                    print(
+                        f"Starting training with simple unfreeze - 'joint' - mem-att/cross-att trainable / rest model frozen")
 
             # 5. Setup train DataLoader
             if self.use_ddp:

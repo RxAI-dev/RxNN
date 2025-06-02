@@ -536,11 +536,17 @@ class MrlTrainerCallback:
     def on_reward(self, actor: nn.Module, reward: float, generated: str, reference: str, saved_data: str, eval_mode: bool) -> None:
         pass
 
+    def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
+        pass
+
     def on_batch_updated(self, actor: nn.Module, epoch: int, step: int, policy_loss: float) -> None:
         pass
 
     def on_critic_updated(self, actor: nn.Module, critic: nn.Module, epoch: int, step: int,
                           critic_loss: float) -> None:
+        pass
+
+    def on_update_epoch_end(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int, policy_loss: float, critic_loss: float) -> None:
         pass
 
     def on_training_end(self, actor: nn.Module, critic: nn.Module, curriculum_config: dict) -> None:
@@ -572,12 +578,18 @@ class MrlPrintCallback(MrlTrainerCallback):
                   reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], eval_mode: bool) -> None:
         print(f"{'Eval' if eval_mode else 'Train'} | Collected reward {reward}")
 
+    def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
+        print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
+
     def on_batch_updated(self, actor: nn.Module, epoch: int, step: int, policy_loss: float) -> None:
         print(f'Epoch {epoch} | Step {step} - updated policy loss {policy_loss}')
 
     def on_critic_updated(self, actor: nn.Module, critic: nn.Module, epoch: int, step: int,
                           critic_loss: float) -> None:
         print(f'Epoch {epoch} | Step {step} - updated critic loss {critic_loss}')
+
+    def on_update_epoch_end(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int, policy_loss: float, critic_loss: float) -> None:
+        print(f'Epoch {global_epoch} | Update epoch {update_epoch} - mean policy loss {policy_loss} | mean critic loss {critic_loss}')
 
     def on_training_end(self, actor: nn.Module, critic: nn.Module, curriculum_config: dict) -> None:
         print(f'Finished training for {curriculum_config["steps"]} steps in {curriculum_config["strategy"]} strategy.')

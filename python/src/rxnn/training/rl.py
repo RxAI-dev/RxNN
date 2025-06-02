@@ -17,7 +17,7 @@ class RlAlgorithm(ABC):
         pass
 
     @abstractmethod
-    def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
+    def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         pass
 
     def critic_loss(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
@@ -25,6 +25,9 @@ class RlAlgorithm(ABC):
 
 class PPOConfig(TypedDict):
     clip_eps: float
+    gae_lambda: float
+    gae_gamma: float
+    entropy_coef: float
 
 class PPOAlgorithm(RlAlgorithm):
     def __init__(self, config: PPOConfig):
@@ -32,6 +35,9 @@ class PPOAlgorithm(RlAlgorithm):
 
         # PPO Config
         self.clip_eps = config.get('clip_eps', 0.2)
+        self.gae_lambda = config.get('gae_lambda', 0.95)
+        self.gae_gamma = config.get('gae_gamma', 0.99)
+        self.entropy_coef = config.get('entropy_coef', 0.01)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
                     old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
@@ -78,11 +84,32 @@ class PPOAlgorithm(RlAlgorithm):
 
         # d) Entropy bonus
         entropy = -torch.sum(new_probs * new_probs.exp(), dim=-1).mean()
-        policy_loss -= 0.01 * entropy
+        policy_loss -= self.entropy_coef * entropy
 
         return policy_loss
 
-    def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
-        advantages = rewards - values
+    def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor, next_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        T, B = rewards.shape
+        advantages = torch.zeros_like(rewards, device=values.device)
+        last_advantage = 0
+        last_value = next_value.detach()
+
+        for t in reversed(range(T)):
+            if t == T - 1:
+                next_values = last_value
+            else:
+                next_values = values[t + 1]
+
+            # Mask next values if episode ended
+            next_values = next_values * (1 - dones[t])
+            delta = rewards[t] + self.gae_gamma * next_values - values[t]
+            advantages[t] = delta + self.gae_gamma * self.gae_lambda * last_advantage
+            last_advantage = advantages[t]
+
+        returns = advantages + values
+        return advantages, returns
+
+    def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
         normalized_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-        return normalized_advantages
+        return normalized_advantages, ref_values
