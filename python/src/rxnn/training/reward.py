@@ -42,6 +42,7 @@ class MrlRewardModel:
             running_mean_decay: float = 0.2,
             bleu_saved_weights: tuple = (0.5, 0.5),
             bleu_ref_weights: tuple = (0.5, 0.5),
+            tanh_reward_scale: bool = False,
             rewards_scale: float = 1.0,
     ):
         self.shared_embedding = shared_embedding.to(device)
@@ -71,6 +72,7 @@ class MrlRewardModel:
         self.running_mean_decay = running_mean_decay
         self.bleu_ref_weights = bleu_ref_weights
         self.bleu_saved_weights = bleu_saved_weights
+        self.tanh_reward_scale = tanh_reward_scale
         self.rewards_scale = rewards_scale
 
         self.prev_data_running_mean = None
@@ -175,6 +177,12 @@ class MrlRewardModel:
         self.prev_data_running_mean = (1 - self.running_mean_decay) * self._sequence_embedding(
             prev_data) + self.running_mean_decay * self.prev_data_running_mean
 
+    def _pre_scale_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
+        if self.tanh_reward_scale:
+            return (rewards * 2) - 1  # Convert [0,1] to [-1,1]
+        else:
+            return rewards
+
     def __call__(
             self,
             generated: TokenizedDict,
@@ -204,5 +212,5 @@ class MrlRewardModel:
             cosine = self.negative_cosine(generated['input_ids'], reference['input_ids'], saved_data['input_ids'])
             sim_rewards = self.neg_bleu_factor * torch.tensor(bleu, device=self.device) + self.neg_cos_factor * cosine
 
-        rewards = (sim_rewards + self.len_factor * self.len_reward(generated) if self.reward_len else sim_rewards) * self.rewards_scale
+        rewards = self._pre_scale_rewards(sim_rewards + self.len_factor * self.len_reward(generated) if self.reward_len else sim_rewards) * self.rewards_scale
         return rewards.tolist()

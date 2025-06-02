@@ -481,7 +481,7 @@ class MRLTrainer:
                 critic_state = smart_concat_critic_states(*state, max_length=self.critic_max_len,
                                                           pad_token_id=self.pad_token_id)
                 values = self.critic(critic_state['input_ids'], attention_mask=critic_state['attention_mask']).squeeze()
-                critic_loss = self.rl_algorithm.critic_loss(values, ref_values)
+                critic_loss = self.rl_algorithm.critic_loss(values, ref_values.detach())
             # 2.2 Run backpropagation with scaler
             self.critic_scaler.scale(critic_loss).backward()
             # 2.3 Unscale and clip gradients
@@ -495,7 +495,7 @@ class MRLTrainer:
             critic_state = smart_concat_critic_states(*state, max_length=self.critic_max_len,
                                                       pad_token_id=self.pad_token_id)
             values = self.critic(critic_state['input_ids'], attention_mask=critic_state['attention_mask']).squeeze()
-            critic_loss = self.rl_algorithm.critic_loss(values, ref_values)
+            critic_loss = self.rl_algorithm.critic_loss(values, ref_values.detach())
             # 2.2 Run backpropagation
             critic_loss.backward()
             # 2.3 Clip gradients

@@ -21,8 +21,8 @@ class RlAlgorithm(ABC):
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         pass
 
-    def critic_loss(self, rewards: torch.Tensor, values: torch.Tensor) -> torch.Tensor:
-        return self.critic_loss(rewards, values)
+    def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
+        return self.critic_loss(values, ref_values)
 
 
 class PPOConfig(TypedDict):
@@ -31,6 +31,8 @@ class PPOConfig(TypedDict):
     gae_gamma: Optional[float]
     entropy_coef: Optional[float]
     use_distributed_advantage_norm: Optional[bool]
+    clip_critic_values: Optional[bool]
+    critic_value_clip: Optional[float]
 
 
 class PPOAlgorithm(RlAlgorithm):
@@ -46,6 +48,14 @@ class PPOAlgorithm(RlAlgorithm):
         self.gae_gamma = config.get('gae_gamma', 0.99)
         self.entropy_coef = config.get('entropy_coef', 0.01)
         self.use_distributed_advantage_norm = config.get('use_distributed_advantage_norm', False)
+        self.clip_critic_values = config.get('clip_critic_values', True)
+        self.critic_value_clip = config.get('critic_value_clip', 10.0)
+
+    def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
+        # Critic loss with clipped values
+        if self.clip_critic_values:
+            values = torch.clamp(values, -self.critic_value_clip, self.critic_value_clip)
+        return self.critic_loss(values, ref_values)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
                     old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
@@ -96,23 +106,24 @@ class PPOAlgorithm(RlAlgorithm):
 
         return policy_loss
 
-    def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor, next_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        T, B = rewards.shape
-        advantages = torch.zeros_like(rewards, device=values.device)
+    def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
+                     last_value: torch.Tensor, dones: torch.Tensor):
+        trajectory_len, batch_size = rewards.shape
+        advantages = torch.zeros_like(rewards, device=rewards.device)
         last_advantage = 0
-        last_value = next_value.detach()
+        next_value = last_value
+        next_done = torch.zeros(batch_size, device=dones.device)  # Last state is terminal
+        dones = dones.float()
+        for t in reversed(range(trajectory_len)):
+            # Check if next state is terminal
+            non_terminal = 1.0 - next_done
 
-        for t in reversed(range(T)):
-            if t == T - 1:
-                next_values = last_value
-            else:
-                next_values = values[t + 1]
-
-            # Mask next values if episode ended
-            next_values = next_values * ~dones[t]
-            delta = rewards[t] + self.gae_gamma * next_values - values[t]
-            advantages[t] = delta + self.gae_gamma * self.gae_lambda * last_advantage
+            # Delta should not include next_value if next is terminal
+            delta = rewards[t] + self.gae_gamma * next_value * non_terminal - values[t]
+            advantages[t] = delta + self.gae_gamma * self.gae_lambda * non_terminal * last_advantage
             last_advantage = advantages[t]
+            next_value = values[t]
+            next_done = dones[t]
 
         returns = advantages + values
         return advantages, returns

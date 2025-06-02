@@ -66,6 +66,8 @@ def get_activation_layer(activation: str):
         return nn.SiLU()
     elif activation == 'sigmoid':
         return nn.Sigmoid()
+    elif activation == 'tanh':
+        return nn.Tanh()
     elif activation == 'linear':
         return LinearActivation()
     else:
