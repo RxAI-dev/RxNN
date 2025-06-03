@@ -10,7 +10,7 @@ from .ddp import distributed_mean
 class RlAlgorithm(ABC):
     def __init__(self):
         super(RlAlgorithm, self).__init__()
-        self.critic_loss = nn.MSELoss()
+        self.critic_loss_fn = nn.MSELoss()
 
     @abstractmethod
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
@@ -22,7 +22,7 @@ class RlAlgorithm(ABC):
         pass
 
     def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
-        return self.critic_loss(values, ref_values)
+        return self.critic_loss_fn(values, ref_values)
 
 
 class PPOConfig(TypedDict):
@@ -55,7 +55,7 @@ class PPOAlgorithm(RlAlgorithm):
         # Critic loss with clipped values
         if self.clip_critic_values:
             values = torch.clamp(values, -self.critic_value_clip, self.critic_value_clip)
-        return self.critic_loss(values, ref_values)
+        return self.critic_loss_fn(values, ref_values)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
                     old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
@@ -107,29 +107,30 @@ class PPOAlgorithm(RlAlgorithm):
         return policy_loss
 
     def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
-                     last_value: torch.Tensor, dones: torch.Tensor):
+                     last_value: torch.Tensor, dones: torch.Tensor, last_done: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         trajectory_len, batch_size = rewards.shape
         advantages = torch.zeros_like(rewards, device=rewards.device)
         last_advantage = 0
         next_value = last_value
-        next_done = torch.zeros(batch_size, device=dones.device)  # Last state is terminal
+        next_done = last_done.float()
         dones = dones.float()
+
         for t in reversed(range(trajectory_len)):
-            # Check if next state is terminal
-            non_terminal = 1.0 - next_done
-
-            # Delta should not include next_value if next is terminal
-            delta = rewards[t] + self.gae_gamma * next_value * non_terminal - values[t]
-            advantages[t] = delta + self.gae_gamma * self.gae_lambda * non_terminal * last_advantage
+            # Calculate delta from rewards, stored next_value, masked by stored next_done, and values
+            delta = rewards[t] + self.gae_gamma * next_value * (1 - next_done) - values[t]
+            # Calculate advantages based on delta, gamma/lambda factors and last advantage, masked by current done flags
+            advantages[t] = delta + self.gae_gamma * self.gae_lambda * (1 - dones[t]) * last_advantage
+            # Store current step data as last_advantage, next_done and next_value, for the next iteration step
             last_advantage = advantages[t]
-            next_value = values[t]
             next_done = dones[t]
+            next_value = values[t]
 
+        # Calculate reference returns, based on advantages and values, and return them with advantages for critic update
         returns = advantages + values
         return advantages, returns
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
+        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1], dones[-1])
         if self.use_distributed_advantage_norm:
             mean_advantage = distributed_mean(advantages.mean())
             std_advantage = distributed_mean(advantages.std())
