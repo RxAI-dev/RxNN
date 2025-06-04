@@ -82,6 +82,7 @@ class BaseTrainer(ABC):
             dataset: torch.utils.data.Dataset = None,
             optimizer: torch.optim.Optimizer = None,
             scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+            ddp_find_unused_parameters: bool = False,
     ) -> None:
         self.is_running = True
         if dataset is None:
@@ -94,7 +95,7 @@ class BaseTrainer(ABC):
         if self.use_ddp:
             rank, world_size = get_os_ddp_config()
             dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-            self.model = DistributedDataParallel(self.model, device_ids=[self.device.index])
+            self.model = DistributedDataParallel(self.model, device_ids=[self.device.index], find_unused_parameters=ddp_find_unused_parameters)
             train_sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
             dataloader = torch.utils.data.DataLoader(
                 dataset,

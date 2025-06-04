@@ -42,6 +42,18 @@ to generate the answer, based on the previous interactions from episode - just l
 
 First experimental reactive models should be able to accomplish 16 MRL Curriculum Steps, then it may be increased to 32 steps for production-ready models
 
+> ### Update: Abandoning Single-Step Strategy
+> During first tests, we noticed that when using only the single step, not all the model can learn correctly:
+> - we are starting from encoding initial interaction and updating memory
+> - before the first step, there's memory reset - it starts from random normal distribution
+> - in first encoding, encoder's memory cross-attention has access only to initial random STM state
+> - then memory is updated by memory-attention and decoder's cross-attention has access to correctly updated memory
+> 
+> So, in single step, the encoder's memory cross-attention cannot learn, because it has no access to any meaningful signals.
+> 
+> Additionally, with Single-Step Strategy, every step is final (terminal), so in PPO it's using only simplified GAE calculation.
+> It seems, that we should start from 2 or even from 4 steps - we will check what's better here.
+
 > ##### Increasing Curriculum Steps
 > Curriculum steps could be increased linearly (1, 2, 3, ..., 15, 16), exponentially (1, 2, 4, 8, 16) or with custom
 > schedule (like 1, 2, 3, 4, 6, 8, 12, 16). Exponential or custom schedules should be recommended, as it require simpler and
