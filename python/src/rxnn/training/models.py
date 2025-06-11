@@ -146,6 +146,9 @@ class MrlActorModel(nn.Module):
     def reset_memory(self):
         self.memory_attention.reset_memory()
 
+    def clone_reset_memory(self):
+        self.memory_attention.clone_reset_memory()
+
     def memory_parameters(self) -> list[nn.Parameter]:
         return list(set(
             self.encoder.memory_parameters() +

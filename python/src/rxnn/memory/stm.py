@@ -62,6 +62,9 @@ class ShortTermMemory(nn.Module):
     def reset(self, init_type: str = None):
         self.memory = self._init_tensor(init_type).to(self.memory.device)
 
+    def clone_detach_reset(self):
+        self.memory = self.memory.detach().clone()
+
     def resize(self, new_stm_size: int, init_type: str = None):
         self.stm_size = new_stm_size
         delattr(self, 'memory')

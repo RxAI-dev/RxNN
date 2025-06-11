@@ -91,6 +91,7 @@ class MrlTrajectoryEpisode(TypedDict):
     reset_stm: bool
     steps: list[MrlTrajectoryStep]
 
+OptimField: TypeAlias = Literal['lr', 'critic_lr', 'weight_decay', 'critic_weight_decay', 'separate_memory_lr', 'memory_lr']
 
 class MRLTrainer:
     def __init__(
@@ -646,6 +647,8 @@ class MRLTrainer:
                 step_critic_values = episode_critic_values[step_idx]
                 step_advantages = episode_advantages[step_idx]
 
+                self.actor.clone_reset_memory()
+
                 # 7. In memory aware critic version, encode and update STM before critic update, to include its gradients in critic loss too
                 if self.memory_aware_critic:
                     self.encode_and_update_stm(query, answer)
@@ -979,8 +982,19 @@ class MRLTrainer:
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
         self.update_epochs = config.get('update_epochs', self.shared_update_epochs)  # Internal update epochs
         self.freeze_embeddings = config.get('freeze_embeddings', self.shared_freeze_embeddings)
-        if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config[
-            'critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
+
+
+
+        def has_param(field: OptimField) -> bool:
+            return field in config and config[field] is not None
+
+        optim_params: list[OptimField] = ['lr', 'critic_lr', 'weight_decay', 'critic_weight_decay']
+
+        has_any_optim_param = any(
+            has_param(field) for field in optim_params
+        ) or (has_param('separate_memory_lr') and config['separate_memory_lr'] and has_param('memory_lr'))
+
+        if has_any_optim_param:
             if config.get('separate_memory_lr', False):
                 self.optim_config = {
                     'lr': config.get('lr', self.base_optim_config['lr']),

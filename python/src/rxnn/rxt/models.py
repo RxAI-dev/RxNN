@@ -301,6 +301,9 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
     def reset_memory(self, init_type: str = None):
         self.model.stm.reset(init_type)
 
+    def clone_reset_memory(self):
+        self.model.stm.clone_detach_reset()
+
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
