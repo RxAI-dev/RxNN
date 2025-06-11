@@ -21,18 +21,20 @@ class MrlConfig(TypedDict):
     separate_memory_lr: Optional[bool]
     memory_lr: Optional[float]
     critic_lr: float
-    critic_encoder_lr: float
+    critic_encoder_lr: Optional[float]
     max_seq_len: int
     critic_max_len: int
-    weight_decay: float
-    critic_weight_decay: float
+    weight_decay: Optional[float]
+    critic_weight_decay: Optional[float]
     update_epochs: int
     pad_token_id: int
     end_token_id: int
     callbacks: Optional[list[MrlTrainerCallback]]
-    memory_aware_critic: bool
-    use_moe_aux_loss: bool
-    moe_aux_loss_scale: float
+    memory_aware_critic: Optional[bool]
+    use_moe_aux_loss: Optional[bool]
+    moe_aux_loss_scale: Optional[float]
+    freeze_embeddings: Optional[bool]
+    embedding_lr: Optional[float]
 
 
 class MrlStrategy(Enum):
@@ -66,6 +68,8 @@ class CurriculumConfig(TypedDict):
     weight_decay: Optional[float]
     critic_weight_decay: Optional[float]
     update_epochs: Optional[int]
+    freeze_embeddings: Optional[bool]
+    embedding_lr: Optional[float]
 
 
 class SamplerConfig(TypedDict):
@@ -129,6 +133,8 @@ class MRLTrainer:
         self.memory_aware_critic = config.get('memory_aware_critic', False)
         self.use_moe_aux_loss = config.get('use_moe_aux_loss', False)
         self.moe_aux_loss_scale = config.get('moe_aux_loss_scale', 0.01)
+        self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
+        self.freeze_embeddings = self.shared_freeze_embeddings
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -166,6 +172,7 @@ class MRLTrainer:
                 'weight_decay': config.get('weight_decay', 0.01),
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
                 'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
+                'embedding_lr': config.get('embedding_lr', config.get('lr', 3e-4)),
             }
         else:
             self.base_optim_config = {
@@ -174,6 +181,7 @@ class MRLTrainer:
                 'weight_decay': config.get('weight_decay', 0.01),
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
                 'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
+                'embedding_lr': config.get('embedding_lr', config.get('lr', 3e-4)),
             }
 
         self.optim_config = self.base_optim_config
@@ -212,20 +220,22 @@ class MRLTrainer:
             weight_decay: float,
             critic_weight_decay: float,
             critic_encoder_lr: float,
+            embedding_lr: float,
             memory_lr: Optional[float] = None,
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
             optimizer = torch.optim.AdamW([
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
                 {'params': self.actor.not_memory_parameters(), 'lr': lr},
                 {'params': self.actor.memory_parameters(), 'lr': memory_lr},
             ],
                 weight_decay=weight_decay,
             )
         else:
-            optimizer = torch.optim.AdamW(
-                self.actor.unique_parameters(),
-                lr=lr,
+            optimizer = torch.optim.AdamW([
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
+                {'params': self.actor.unique_parameters(with_embedding=False), 'lr': lr},
+            ],
                 weight_decay=weight_decay,
             )
 
@@ -872,41 +882,41 @@ class MRLTrainer:
             if isinstance(update_epoch, tuple):
                 switch_epoch, cross_att_lr = update_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components()
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
                     self.optimizer = self._init_unfreeze_optimizer('update', cross_att_lr)
                     print(f"Activating 'update' unfreeze strategy with custom cross_att_lr: {cross_att_lr}")
             elif epoch == update_epoch:
-                self.actor.freeze_components('update')
+                self.actor.freeze_components('update', freeze_embeddings=self.freeze_embeddings)
                 print(
                     f"Activating 'update' unfreeze strategy - mem-att trainable / cross-att frozen / rest model frozen")
 
             if isinstance(fetch_epoch, tuple):
                 switch_epoch, mem_att_lr = fetch_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components()
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
                     self.optimizer = self._init_unfreeze_optimizer('fetch', mem_att_lr)
                     print(f"Activating 'fetch' unfreeze strategy with custom mem_att_lr: {mem_att_lr}")
             elif epoch == fetch_epoch:
-                self.actor.freeze_components('fetch')
+                self.actor.freeze_components('fetch', freeze_embeddings=self.freeze_embeddings)
                 print(
                     f"Activating 'fetch' unfreeze strategy - mem-att frozen / cross-att trainable / rest model frozen")
 
             if isinstance(joint_epoch, tuple):
                 switch_epoch, model_lr = joint_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components()
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
                     self.optimizer = self._init_unfreeze_optimizer('joint', model_lr)
                     print(f"Activating 'joint' unfreeze strategy with custom model_lr: {model_lr}")
             elif epoch == joint_epoch:
-                self.actor.freeze_components('joint')
+                self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings)
                 print(f"Activating 'joint' unfreeze strategy - mem-att/cross-att trainable / rest model frozen")
 
             if epoch == all_epoch:
-                self.actor.unfreeze_components()
+                self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
                 self.optimizer = self._init_unfreeze_optimizer('all', 0.)
                 print(f"Switching to train 'all' strategy - unfreeze all components")
         elif epoch == unfreeze_epoch:
-            self.actor.unfreeze_components()
+            self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
             print(f"Switching to train 'all' strategy - unfreeze all components")
 
     def _init_unfreeze_optimizer(
@@ -915,11 +925,11 @@ class MRLTrainer:
             unfreeze_lr: float,
     ) -> torch.optim.Optimizer:
         memory_lr = self.optim_config['memory_lr'] if 'memory_lr' in self.optim_config else self.optim_config['lr']
-        model_lr = self.optim_config['lr']
+        model_lr, embedding_lr = self.optim_config['lr'], self.optim_config['embedding_lr']
 
         if mode == 'update':
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
@@ -946,7 +956,7 @@ class MRLTrainer:
             ]
         else:
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
@@ -968,6 +978,7 @@ class MRLTrainer:
                                    MrlStrategy.MULTI_STEP_STRATEGY)  # MRL strategy for given curriculum stage
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
         self.update_epochs = config.get('update_epochs', self.shared_update_epochs)  # Internal update epochs
+        self.freeze_embeddings = config.get('freeze_embeddings', self.shared_freeze_embeddings)
         if config['lr'] is not None or config['critic_lr'] is not None or config['weight_decay'] is not None or config[
             'critic_weight_decay'] is not None or (config['separate_memory_lr'] and config['memory_lr'] is not None):
             if config.get('separate_memory_lr', False):
@@ -979,6 +990,7 @@ class MRLTrainer:
                                                       self.base_optim_config['critic_weight_decay']),
                     'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
                     'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
+                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr'])
                 }
             else:
                 self.optim_config = {
@@ -988,6 +1000,7 @@ class MRLTrainer:
                     'critic_weight_decay': config.get('critic_weight_decay',
                                                       self.base_optim_config['critic_weight_decay']),
                     'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
+                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr'])
                 }
             self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
         elif self.optim_config != self.base_optim_config:
@@ -1039,7 +1052,7 @@ class MRLTrainer:
                 if callable(unfreeze_epoch):
                     unfreeze_epoch(-1)
                 else:
-                    self.actor.freeze_components('joint')
+                    self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings)
                     if isinstance(unfreeze_epoch, tuple):
                         print(
                             f"Starting training with unfreeze strategies - 'warmup' - mem-att/cross-att trainable / rest model frozen")

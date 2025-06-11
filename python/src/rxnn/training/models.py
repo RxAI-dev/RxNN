@@ -80,7 +80,7 @@ class MrlActorModel(nn.Module):
         self.decoder = decoder
         self.memory_attention = memory_attention
 
-    def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint'):
+    def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint', freeze_embeddings: bool = False):
         """Freeze encoder/decoder except memory-related layers."""
         # Freeze/unfreeze encoder
         if self.encoder.freeze_without_memory is not None:
@@ -116,7 +116,11 @@ class MrlActorModel(nn.Module):
             for param in self.memory_attention.parameters():
                 param.requires_grad = True if stage != 'fetch' else False
 
-    def unfreeze_components(self):
+        if freeze_embeddings:
+            for param in self.encoder.model.embedding.parameters():
+                param.requires_grad = False
+
+    def unfreeze_components(self, freeze_embeddings: bool = False):
         """Unfreeze all components after initial training."""
         if self.encoder.unfreeze_all is not None:
             self.encoder.unfreeze_all()
@@ -133,6 +137,11 @@ class MrlActorModel(nn.Module):
         else:
             for param in self.memory_attention.parameters():
                 param.requires_grad = True
+
+        if freeze_embeddings:
+            for param in self.encoder.model.embedding.parameters():
+                param.requires_grad = False
+
 
     def reset_memory(self):
         self.memory_attention.reset_memory()
@@ -159,12 +168,19 @@ class MrlActorModel(nn.Module):
             self.decoder.not_memory_parameters()
         ))
 
-    def unique_parameters(self):
-        return list(set(
-            list(self.encoder.parameters()) +
-            list(self.decoder.parameters()) +
-            list(self.memory_attention.parameters())
-        ))
+    def unique_parameters(self, with_embedding: bool = True):
+        if with_embedding:
+            return list(set(
+                list(self.encoder.parameters()) +
+                list(self.decoder.parameters()) +
+                list(self.memory_attention.parameters())
+            ))
+        else:
+            return list(set(
+                self.not_memory_parameters() +
+                self.memory_cross_attention_parameters() +
+                list(self.memory_attention_parameters())
+            ))
 
     def moe_router_loss(self):
         if self.encoder.model.use_moe and self.decoder.model.use_moe:

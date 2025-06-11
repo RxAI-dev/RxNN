@@ -250,6 +250,9 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             norm_init_gate: float = -2.0,
             norm_per_dim_scale: bool = False,
             norm_decay: float = 0.9,
+            use_gated_residual: bool = False,
+            residual_per_slot_gate: bool = False,
+            residual_init_gate: float = 0.0,
             **kwargs,
     ):
         super(RxTAlphaMemoryAttention, self).__init__(**kwargs)
@@ -276,7 +279,10 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
                                                              init_gate=norm_init_gate, per_dim_scale=norm_per_dim_scale)
                                             for _ in range(num_layers)])
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
-        self.model = StmMemoryAttention(stm, attention_layers, memory_norm_layers)
+        self.model = StmMemoryAttention(
+            stm, attention_layers, memory_norm_layers,
+            use_gated_residual=use_gated_residual, per_slot_gate=residual_per_slot_gate, init_gate=residual_init_gate
+        )
 
     def freeze(self):
         for param in self.parameters():
