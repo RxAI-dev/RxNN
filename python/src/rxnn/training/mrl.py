@@ -1022,7 +1022,7 @@ class MRLTrainer:
 
         return (epochs, unfreeze_epoch), (random_resets, random_resets_from, random_resets_ratio)
 
-    def __call__(self, curriculum_config: list[CurriculumConfig], batch_size: int):
+    def __call__(self, curriculum_config: list[CurriculumConfig], batch_size: int, ddp_find_unused_parameters: bool = False):
         """Start Memory Reinforcement Learning Curriculum."""
 
         # 0. Set global epoch count for all stages
@@ -1033,7 +1033,7 @@ class MRLTrainer:
         if self.use_ddp:
             rank, world_size = get_os_ddp_config()
             dist.init_process_group(backend='nccl', rank=rank, world_size=world_size)
-            self.actor = DistributedDataParallel(self.actor, device_ids=[self.device.index])
+            self.actor = DistributedDataParallel(self.actor, device_ids=[self.device.index], find_unused_parameters=ddp_find_unused_parameters)
             self.critic = DistributedDataParallel(self.critic, device_ids=[self.device.index])
 
         # 2. Init BatchSampler with actor model (we have to run it after DDP init)
