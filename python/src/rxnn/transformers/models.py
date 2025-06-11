@@ -17,6 +17,7 @@ class ReactiveTransformerBase(nn.Module):
             absolute_embedding: AbsolutePositionalEmbedding = None,
             use_flash_attention: bool = False,
             use_relative_embedding: bool = False,
+            use_moe: bool = False,
             *args,
             **kwargs,
     ):
@@ -32,6 +33,7 @@ class ReactiveTransformerBase(nn.Module):
         self.layers = own_layers
         self.num_shared_layers = len(shared_layers) if shared_layers else 0
         self.num_own_layers = len(own_layers) if own_layers else 0
+        self.use_moe = use_moe
 
     def trainable_cross_attention_(self, is_trainable: bool, with_norms: bool = True):
         for i in range(self.num_shared_layers):
@@ -50,8 +52,11 @@ class ReactiveTransformerBase(nn.Module):
         return own + shared
 
     def moe_router_loss(self):
-        return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att] + [
-            self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe or self.shared_layers[i].use_moe_att]).mean()
+        if self.use_moe:
+            return torch.stack([self.layers[i].moe_router_loss() for i in range(self.num_own_layers) if self.layers[i].use_moe or self.layers[i].use_moe_att] + [
+                self.shared_layers[i].moe_router_loss() for i in range(self.num_shared_layers) if self.shared_layers[i].use_moe or self.shared_layers[i].use_moe_att]).mean()
+        else:
+            return None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding

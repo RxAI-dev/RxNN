@@ -31,6 +31,8 @@ class MrlConfig(TypedDict):
     end_token_id: int
     callbacks: Optional[list[MrlTrainerCallback]]
     memory_aware_critic: bool
+    use_moe_aux_loss: bool
+    moe_aux_loss_scale: float
 
 
 class MrlStrategy(Enum):
@@ -125,6 +127,8 @@ class MRLTrainer:
         self.max_seq_len = config.get('max_seq_len', 256)
         self.critic_max_len = config.get('critic_max_len', 512)
         self.memory_aware_critic = config.get('memory_aware_critic', False)
+        self.use_moe_aux_loss = config.get('use_moe_aux_loss', False)
+        self.moe_aux_loss_scale = config.get('moe_aux_loss_scale', 0.01)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -212,6 +216,7 @@ class MRLTrainer:
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
             optimizer = torch.optim.AdamW([
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': lr},
                 {'params': self.actor.not_memory_parameters(), 'lr': lr},
                 {'params': self.actor.memory_parameters(), 'lr': memory_lr},
             ],
@@ -522,6 +527,18 @@ class MRLTrainer:
         # 6. Return loss item
         return critic_loss_item
 
+    def _moe_aux_loss(self, main_loss: torch.Tensor) -> torch.Tensor:
+        if not self.use_moe_aux_loss:
+            return main_loss
+
+        actor = next(self.actor.children()) if isinstance(self.actor, DistributedDataParallel) else self.actor
+
+        router_loss = actor.moe_router_loss()
+        if router_loss is not None:
+            return main_loss + self.moe_aux_loss_scale * router_loss
+        else:
+            return main_loss
+
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
                      advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
         # 1. Reset actor gradients
@@ -544,6 +561,8 @@ class MRLTrainer:
                 # 4.2 Calculate policy loss with selected algorithm
                 policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
                                                             advantages)
+                policy_loss = self._moe_aux_loss(policy_loss)
+
             # 4.3 Run backpropagation with scaler
             self.scaler.scale(policy_loss).backward(retain_graph=True)
             # 4.4 Unscale and clip gradient norms
@@ -561,6 +580,7 @@ class MRLTrainer:
                                 action=MrlActorAction.DECODE)
             # 4.2 Calculate policy loss with selected algorithm
             policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
+            policy_loss = self._moe_aux_loss(policy_loss)
             # 4.3 Run backpropagation
             policy_loss.backward(retain_graph=True)
             # 4.4 Clip gradient norms
@@ -852,7 +872,7 @@ class MRLTrainer:
             if isinstance(update_epoch, tuple):
                 switch_epoch, cross_att_lr = update_epoch
                 if epoch == switch_epoch:
-                    self.actor.freeze_components('joint')
+                    self.actor.unfreeze_components()
                     self.optimizer = self._init_unfreeze_optimizer('update', cross_att_lr)
                     print(f"Activating 'update' unfreeze strategy with custom cross_att_lr: {cross_att_lr}")
             elif epoch == update_epoch:
@@ -863,7 +883,7 @@ class MRLTrainer:
             if isinstance(fetch_epoch, tuple):
                 switch_epoch, mem_att_lr = fetch_epoch
                 if epoch == switch_epoch:
-                    self.actor.freeze_components('joint')
+                    self.actor.unfreeze_components()
                     self.optimizer = self._init_unfreeze_optimizer('fetch', mem_att_lr)
                     print(f"Activating 'fetch' unfreeze strategy with custom mem_att_lr: {mem_att_lr}")
             elif epoch == fetch_epoch:
@@ -899,25 +919,39 @@ class MRLTrainer:
 
         if mode == 'update':
             params = [
-                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
-                {'params': self.actor.memory_cross_attention_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': unfreeze_lr},
             ]
         elif mode == 'fetch':
             params = [
-                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
-                {'params': self.actor.memory_cross_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': model_lr},
             ]
         elif mode == 'joint':
             params = [
-                {'params': self.actor.not_memory_parameters(), 'lr': unfreeze_lr},
-                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': unfreeze_lr},
             ]
         else:
             params = [
-                {'params': self.actor.not_memory_parameters(), 'lr': model_lr},
-                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.embedding.parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': model_lr},
             ]
 
         return torch.optim.AdamW(params, weight_decay=self.optim_config['weight_decay'])

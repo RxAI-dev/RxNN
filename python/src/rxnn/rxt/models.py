@@ -130,10 +130,10 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
                 memory_cross_attention=cross_att_init(),
             ) for _ in range(num_layers)
         ])
-        self.model = self._init_model(stm, layers, embedding, use_flash_attention, embed_dim, vocab_size)
+        self.model = self._init_model(stm, layers, embedding, use_flash_attention, embed_dim, vocab_size, use_moe)
 
     def _init_model(self, stm: ShortTermMemory, layers: nn.ModuleList, embedding: nn.Embedding,
-                    use_flash_attention: bool, embed_dim: int, vocab_size: int) -> ReactiveTransformerBase:
+                    use_flash_attention: bool, embed_dim: int, vocab_size: int, use_moe: bool) -> ReactiveTransformerBase:
         pass
 
     def params_count(self):
@@ -185,13 +185,15 @@ class RxTAlphaEncoder(RxTAlphaComponentBase, pipeline_tag="fill-mask", license="
             embedding: nn.Embedding,
             use_flash_attention: bool,
             embed_dim: int,
-            vocab_size: int
+            vocab_size: int,
+            use_moe: bool,
     ) -> ReactiveTransformerEncoder:
         return ReactiveTransformerEncoder(
             stm=stm,
             embedding=embedding,
             own_layers=layers,
             use_flash_attention=use_flash_attention,
+            use_moe=use_moe,
         )
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -210,7 +212,8 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
             embedding: nn.Embedding,
             use_flash_attention: bool,
             embed_dim: int,
-            vocab_size: int
+            vocab_size: int,
+            use_moe: bool,
     ) -> ReactiveTransformerDecoder:
         return ReactiveTransformerDecoder(
             embed_dim,
@@ -219,6 +222,7 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
             embedding=embedding,
             own_layers=layers,
             use_flash_attention=use_flash_attention,
+            use_moe=use_moe,
         )
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -307,13 +311,15 @@ class RxTAlphaCriticEncoder(RxTAlphaComponentBase, pipeline_tag="text-classifica
             embedding: nn.Embedding,
             use_flash_attention: bool,
             embed_dim: int,
-            vocab_size: int
+            vocab_size: int,
+            use_moe: bool = False,
     ) -> ReactiveTransformerEncoderDetachStm:
         return ReactiveTransformerEncoderDetachStm(
             stm=stm,
             embedding=embedding,
             own_layers=layers,
             use_flash_attention=use_flash_attention,
+            use_moe=use_moe,
         )
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:

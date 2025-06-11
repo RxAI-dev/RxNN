@@ -82,23 +82,31 @@ class MrlActorModel(nn.Module):
 
     def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint'):
         """Freeze encoder/decoder except memory-related layers."""
+        # Freeze/unfreeze encoder
         if self.encoder.freeze_without_memory is not None:
-            self.encoder.freeze_without_memory(unfreeze_norms=True)
-            if stage == 'update':
+            if stage == 'update' or stage == 'joint':
+                self.encoder.unfreeze_all()
+            else:
+                self.encoder.freeze_without_memory(unfreeze_norms=True)
                 self.encoder.freeze_memory(with_norms=True)
         else:
             for param in self.encoder.parameters():
-                param.requires_grad = False
-            self.encoder.model.trainable_cross_attention_(True if stage != 'update' else False, with_norms=True)
+                param.requires_grad = True if stage != 'fetch' else False
+            self.encoder.model.trainable_cross_attention_(True if stage != 'fetch' else False, with_norms=True)
+        # Freeze/unfreeze decoder
         if self.decoder.freeze_without_memory is not None:
-            self.decoder.freeze_without_memory(unfreeze_norms=True)
-            if stage == 'update':
-                self.decoder.freeze_memory(with_norms=True)
+            if stage == 'fetch':
+                self.decoder.unfreeze_all()
+            else:
+                self.decoder.freeze_without_memory(unfreeze_norms=True)
+                if stage == 'update':
+                    self.decoder.freeze_memory(with_norms=True)
         else:
             for param in self.decoder.parameters():
-                param.requires_grad = False
+                param.requires_grad = True if stage == 'fetch' else False
             self.decoder.model.trainable_cross_attention_(True if stage != 'update' else False, with_norms=True)
-        # Unfreeze memory attention
+
+        # Freeze/unfreeze memory attention
         if self.memory_attention.freeze is not None:
             if stage == 'fetch':
                 self.memory_attention.freeze()
@@ -157,6 +165,16 @@ class MrlActorModel(nn.Module):
             list(self.decoder.parameters()) +
             list(self.memory_attention.parameters())
         ))
+
+    def moe_router_loss(self):
+        if self.encoder.model.use_moe and self.decoder.model.use_moe:
+            return (self.encoder.model.moe_router_loss() + self.decoder.model.moe_router_loss()) / 2
+        elif self.encoder.model.use_moe:
+            return self.encoder.model.moe_router_loss()
+        elif self.decoder.model.use_moe:
+            return self.decoder.model.moe_router_loss()
+        else:
+            return None
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None,
                 action: MrlActorAction = MrlActorAction.DECODE) -> torch.Tensor:
