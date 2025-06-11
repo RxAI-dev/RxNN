@@ -225,7 +225,7 @@ class MRLTrainer:
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
             optimizer = torch.optim.AdamW([
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.not_memory_parameters(), 'lr': lr},
                 {'params': self.actor.memory_parameters(), 'lr': memory_lr},
             ],
@@ -233,7 +233,7 @@ class MRLTrainer:
             )
         else:
             optimizer = torch.optim.AdamW([
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.unique_parameters(with_embedding=False), 'lr': lr},
             ],
                 weight_decay=weight_decay,
@@ -929,7 +929,7 @@ class MRLTrainer:
 
         if mode == 'update':
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
@@ -938,7 +938,7 @@ class MRLTrainer:
             ]
         elif mode == 'fetch':
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': unfreeze_lr},
@@ -947,7 +947,7 @@ class MRLTrainer:
             ]
         elif mode == 'joint':
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
@@ -956,7 +956,7 @@ class MRLTrainer:
             ]
         else:
             params = [
-                {'params': self.actor.encoder.embedding.parameters(), 'lr': embedding_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},

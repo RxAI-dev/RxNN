@@ -168,6 +168,9 @@ class MrlActorModel(nn.Module):
             self.decoder.not_memory_parameters()
         ))
 
+    def embedding_parameters(self) -> Iterator[nn.Parameter]:
+        return self.encoder.model.embedding.parameters()
+
     def unique_parameters(self, with_embedding: bool = True):
         if with_embedding:
             return list(set(
