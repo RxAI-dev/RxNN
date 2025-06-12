@@ -533,7 +533,7 @@ class MrlTrainerCallback:
                              reward: float) -> None:
         pass
 
-    def on_reward(self, actor: nn.Module, reward: float, generated: str, reference: str, saved_data: str, eval_mode: bool) -> None:
+    def on_reward(self, actor: nn.Module, rewards: list[float], generated: str, reference: str, saved_data: str, eval_mode: bool) -> None:
         pass
 
     def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
@@ -563,20 +563,20 @@ class MrlPrintCallback(MrlTrainerCallback):
     def on_epoch_start(self, actor: nn.Module, epoch: int, stage_epochs: int, curriculum_config: dict,
                        global_epoch: int, global_epochs: int) -> None:
         print(
-            f'Starting epoch {epoch}/{stage_epochs} (stage) | {global_epoch}/{global_epochs} (global) for {curriculum_config["steps"]} steps in {curriculum_config["strategy"]} strategy.')
+            f'Starting epoch {epoch}/{stage_epochs - 1} (stage) | {global_epoch}/{global_epochs} (global) for {curriculum_config["steps"]} steps in {curriculum_config["strategy"]} strategy.')
 
     def on_epoch_end(self, actor: nn.Module, epoch: int, stage_epochs: int, policy_loss: float,
                      critic_loss: float, global_epoch: int, global_epochs: int) -> None:
-        print(f'Finished epoch {epoch}/{stage_epochs} (stage) | {global_epoch}/{global_epochs} (global)')
+        print(f'Finished epoch {epoch}/{stage_epochs - 1} (stage) | {global_epoch}/{global_epochs} (global)')
         print(f'Policy mean loss: {policy_loss} | Critic mean loss: {critic_loss}')
 
     def on_episode_collected(self, actor: nn.Module, batch_idx: int, episode_trajectories: list[dict],
                              reward: float) -> None:
         print(f'Collected {batch_idx} episode | mean reward {reward}')
 
-    def on_reward(self, actor: nn.Module, reward: float, generated: dict[str, torch.Tensor],
+    def on_reward(self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
                   reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], eval_mode: bool) -> None:
-        print(f"{'Eval' if eval_mode else 'Train'} | Collected reward {reward}")
+        print(f"{'Eval' if eval_mode else 'Train'} | Mean reward: {sum(rewards) / len(rewards)} | All collected rewards: {rewards}")
 
     def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
         print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
@@ -780,7 +780,7 @@ class MrlGeneratedTokensCallback(MrlTrainerCallback):
         self.steps_log_interval = steps_log_interval
         self.step = 0
 
-    def on_reward(self, actor: nn.Module, reward: float, generated: dict[str, torch.Tensor],
+    def on_reward(self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
                   reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], eval_mode: bool) -> None:
         self.step += 1
         attention_mask = generated['attention_mask']

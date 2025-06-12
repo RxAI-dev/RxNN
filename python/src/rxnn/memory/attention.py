@@ -11,6 +11,7 @@ class StmMemoryAttention(nn.Module):
             use_gated_residual: bool = False,
             per_slot_gate: bool = False,
             init_gate: float = 0.0,
+            use_dynamic_gate: bool = False,
             *args,
             **kwargs
     ):
@@ -22,8 +23,10 @@ class StmMemoryAttention(nn.Module):
         self.num_layers = len(attention_layers)
         self.use_gated_residual = use_gated_residual
         self.per_slot_gate = per_slot_gate
+        self.use_dynamic_gate = use_dynamic_gate
         if self.use_gated_residual:
-            self.gate = nn.Parameter(torch.full((self.num_layers, self.stm.stm_size, 1), init_gate) if self.per_slot_gate else torch.full((self.num_layers,), init_gate))
+            gate_shape = (self.num_layers, self.stm.stm_size, 1) if self.per_slot_gate else (self.num_layers,)
+            self.gate = nn.Parameter(torch.full(gate_shape, init_gate))
 
     def update_max_len(self, max_seq_len: int):
         for i in range(self.num_layers):
@@ -44,7 +47,8 @@ class StmMemoryAttention(nn.Module):
             new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=mask)
             if self.use_gated_residual:
                 # gated residual
-                layer_gate = torch.sigmoid(self.gate[i])
+                gate_input = self.gate[i] * (new_layer_stm + layer_stm) if self.use_dynamic_gate else self.gate[i]
+                layer_gate = torch.sigmoid(gate_input)
                 new_stm[i] = layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
             else:
                 new_stm[i] = new_layer_stm + layer_stm # residual

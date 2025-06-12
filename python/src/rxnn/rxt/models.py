@@ -253,6 +253,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             use_gated_residual: bool = False,
             residual_per_slot_gate: bool = False,
             residual_init_gate: float = 0.0,
+            use_dynamic_residual_gate: bool = False,
             **kwargs,
     ):
         super(RxTAlphaMemoryAttention, self).__init__(**kwargs)
@@ -281,7 +282,8 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
         self.model = StmMemoryAttention(
             stm, attention_layers, memory_norm_layers,
-            use_gated_residual=use_gated_residual, per_slot_gate=residual_per_slot_gate, init_gate=residual_init_gate
+            use_gated_residual=use_gated_residual, per_slot_gate=residual_per_slot_gate,
+            init_gate=residual_init_gate, use_dynamic_gate=use_dynamic_residual_gate,
         )
 
     def freeze(self):
