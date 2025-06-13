@@ -306,8 +306,8 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
     def clone_reset_memory(self):
         self.model.stm.clone_detach_reset()
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
-        return self.model(x, attention_mask=attention_mask)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.model(x)
 
 class RxTAlphaCriticEncoder(RxTAlphaComponentBase, pipeline_tag="text-classification", license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) encoder model"""

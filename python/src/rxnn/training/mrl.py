@@ -941,7 +941,7 @@ class MRLTrainer:
             ]
         elif mode == 'fetch':
             params = [
-                {'params': self.actor.embedding_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': unfreeze_lr},
@@ -950,7 +950,7 @@ class MRLTrainer:
             ]
         elif mode == 'joint':
             params = [
-                {'params': self.actor.embedding_parameters(), 'lr': unfreeze_lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},

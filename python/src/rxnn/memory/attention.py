@@ -33,9 +33,16 @@ class StmMemoryAttention(nn.Module):
             if self.attention_layers[i].rope is not None:
                 self.attention_layers[i].rope.update_max_len(max_seq_len)
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
-        mask = attention_mask.unsqueeze(1).unsqueeze(1).bool() if attention_mask is not None else None
+    def _residual_gate(self, gate: torch.Tensor, layer_stm: torch.Tensor, new_layer_stm: torch.Tensor) -> torch.Tensor:
+        if self.use_dynamic_gate:
+            mean_dim = -1 if self.per_slot_gate else [1, 2]
+            gate_input = gate * (new_layer_stm + layer_stm).mean(dim=mean_dim, keepdim=True)
+            layer_gate = torch.sigmoid(gate_input)
+        else:
+            layer_gate = torch.sigmoid(gate)
+        return layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
 
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         new_stm = torch.zeros_like(self.stm.memory)
         for i in range(self.num_layers):
             layer_stm = self.stm(i)
@@ -44,14 +51,10 @@ class StmMemoryAttention(nn.Module):
                 layer_stm = layer_stm.expand(x.size(0), -1, -1)
             encoded_layer_data = x[i]
             normalized_layer_stm = self.memory_norm_layers[i](layer_stm)
-            new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=mask)
+            new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data)
             if self.use_gated_residual:
-                # gated residual
-                gate_input = self.gate[i] * (new_layer_stm + layer_stm) if self.use_dynamic_gate else self.gate[i]
-                layer_gate = torch.sigmoid(gate_input)
-                new_stm[i] = layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
+                new_stm[i] = self._residual_gate(self.gate[i], layer_stm, new_layer_stm) # gated residual
             else:
                 new_stm[i] = new_layer_stm + layer_stm # residual
         self.stm.update_all(new_stm)
         return self.stm.memory
-

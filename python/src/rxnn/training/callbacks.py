@@ -560,6 +560,12 @@ class MrlTrainerCallback:
 
 
 class MrlPrintCallback(MrlTrainerCallback):
+    def __init__(self, update_steps_interval: int = 10) -> None:
+        super(MrlPrintCallback, self).__init__()
+        self.update_steps_interval = update_steps_interval
+        self.policy_losses = []
+        self.critic_losses = []
+
     def on_epoch_start(self, actor: nn.Module, epoch: int, stage_epochs: int, curriculum_config: dict,
                        global_epoch: int, global_epochs: int) -> None:
         print(
@@ -582,11 +588,21 @@ class MrlPrintCallback(MrlTrainerCallback):
         print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
 
     def on_batch_updated(self, actor: nn.Module, epoch: int, step: int, policy_loss: float) -> None:
-        print(f'Epoch {epoch} | Step {step} - updated policy loss {policy_loss}')
+        if step != 0 and step % self.update_steps_interval == 0:
+            loss = sum(self.policy_losses) / len(self.policy_losses)
+            self.policy_losses = []
+            print(f'Epoch {epoch} | Steps {step - self.update_steps_interval} - {step} - mean policy loss {loss} | current policy loss {policy_loss}')
+        else:
+            self.policy_losses.append(policy_loss)
 
     def on_critic_updated(self, actor: nn.Module, critic: nn.Module, epoch: int, step: int,
                           critic_loss: float) -> None:
-        print(f'Epoch {epoch} | Step {step} - updated critic loss {critic_loss}')
+        if step != 0 and step % self.update_steps_interval == 0:
+            loss = sum(self.critic_losses) / len(self.critic_losses)
+            self.critic_losses = []
+            print(f'Epoch {epoch} | Steps {step - self.update_steps_interval} - {step} - mean critic loss {loss} | current critic loss {critic_loss}')
+        else:
+            self.critic_losses.append(critic_loss)
 
     def on_update_epoch_end(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int, policy_loss: float, critic_loss: float) -> None:
         print(f'Epoch {global_epoch} | Update epoch {update_epoch} - mean policy loss {policy_loss} | mean critic loss {critic_loss}')
