@@ -163,7 +163,7 @@ def init_memory_norm(
     init_scale: float = 1.0,
     per_dim_scale: bool = False,
 ) -> nn.Module:
-    assert norm_type in ['layer', 'rms', 'adaptive', 'positional']
+    assert norm_type in ['layer', 'rms', 'adaptive', 'positional', 'classic-rms']
     if norm_type == 'layer':
         return MemoryLayerNorm(dim, use_gate, init_scale, init_gate)
     elif norm_type == 'rms':
@@ -172,4 +172,6 @@ def init_memory_norm(
         return AdaptiveRMSMemoryNorm(dim, use_gate, decay, init_scale, init_gate)
     elif norm_type == 'positional':
         return AdaptivePositionalMemoryNorm(num_slots, dim, decay, use_scale, use_gate, init_gate, per_dim_scale)
+    elif norm_type == 'classic-rms':
+        return nn.RMSNorm(dim)
     return MemoryLayerNorm(dim, use_gate, init_scale, init_gate)

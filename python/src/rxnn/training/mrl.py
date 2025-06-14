@@ -35,6 +35,7 @@ class MrlConfig(TypedDict):
     moe_aux_loss_scale: Optional[float]
     freeze_embeddings: Optional[bool]
     embedding_lr: Optional[float]
+    use_memory_warmup: Optional[bool]
 
 
 class MrlStrategy(Enum):
@@ -70,6 +71,7 @@ class CurriculumConfig(TypedDict):
     update_epochs: Optional[int]
     freeze_embeddings: Optional[bool]
     embedding_lr: Optional[float]
+    teacher_forcing: Optional[bool]
 
 
 class SamplerConfig(TypedDict):
@@ -136,6 +138,7 @@ class MRLTrainer:
         self.moe_aux_loss_scale = config.get('moe_aux_loss_scale', 0.01)
         self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
         self.freeze_embeddings = self.shared_freeze_embeddings
+        self.use_memory_warmup = config.get('use_memory_warmup', False)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -213,6 +216,7 @@ class MRLTrainer:
         self.callbacks = []
         self.global_epoch = 0
         self.global_epochs_count = 0
+        self.teacher_forcing = False
 
     def _init_optimizers(
             self,
@@ -381,6 +385,11 @@ class MRLTrainer:
             self.writer.add_scalar(f'Collect/episode reward (steps: {self.curriculum_steps})', avg_reward,
                                    self.stage_step['collect'])
 
+    def memory_warmup(self, query: TokenizedDict, answer: TokenizedDict):
+        if self.use_memory_warmup:
+            with torch.no_grad():
+                self.encode_and_update_stm(query, answer)
+
     def collect_trajectories(self, dataloader: DataLoader, epoch: int, batch_size: int) -> list[MrlTrajectoryEpisode]:
         """Collect trajectories for PPO for current curriculum step."""
         # 1. Init trajectories list
@@ -402,8 +411,13 @@ class MRLTrainer:
                     first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
                     interactions = interactions[:self.curriculum_steps]
                     interactions_len = len(interactions)
+
+                    first_interaction = self._move_multiple_batches(first_query, first_answer)
+
+                    if reset_done:
+                        self.memory_warmup(*first_interaction)
                     # 6. Encode and update STM with data to save from first interaction
-                    self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
+                    self.encode_and_update_stm(*first_interaction)
 
                     # 7. Save first interaction as data to save (for trajectory state)
                     query, answer = first_query, first_answer
@@ -440,8 +454,10 @@ class MRLTrainer:
 
                         # 11. Update STM with generated response (except last interaction, it's not needed)
                         if not is_last_interaction:
-                            self.encode_and_update_stm(next_query,
-                                                       generated_answer)  # update with generated_answer on GPU
+                            self.encode_and_update_stm(
+                                next_query,
+                                self._move_batch(interaction['answer']) if self.teacher_forcing else generated_answer
+                            )  # update with generated_answer on GPU
 
                         # 12. Store trajectory step
                         trajectory: MrlTrajectoryStep = {
@@ -458,7 +474,7 @@ class MRLTrainer:
                         # 13. Set previous and current interaction query and generated answer (batches), as saved data for next interaction
                         if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
                             prev_interaction = (query, answer)
-                        query, answer = interaction['query'], detached_answer
+                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else detached_answer)
 
                     # 14. Append full batched episode (number of steps depends on curriculum stage) to trajectories
                     episode_trajectory: MrlTrajectoryEpisode = {
@@ -649,6 +665,9 @@ class MRLTrainer:
 
                 self.actor.clone_reset_memory()
 
+                if should_reset_stm and step_idx == 0:
+                    self.memory_warmup(query, answer)
+
                 # 7. In memory aware critic version, encode and update STM before critic update, to include its gradients in critic loss too
                 if self.memory_aware_critic:
                     self.encode_and_update_stm(query, answer)
@@ -798,13 +817,16 @@ class MRLTrainer:
                 if batch['query']['input_ids'].size(0) == batch_size:
                     self._increment_steps('eval')
                     # 3. Reset STM with random resets ratio and reward model running mean
-                    self.reset_stm()
+                    reset_stm = self.reset_stm()
                     self.reward.reset_running_mean()
 
                     # 4. Get batches for first queries, answers and all follow-up interactions
                     first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
                     # 5. Encode and update STM with initial interactions (batch)
-                    self.encode_and_update_stm(*self._move_multiple_batches(first_query, first_answer))
+                    first_interaction = self._move_multiple_batches(first_query, first_answer)
+                    if reset_stm:
+                        self.memory_warmup(*first_interaction)
+                    self.encode_and_update_stm(*first_interaction)
 
                     # 6. Save follow-up interactions len and first query and answer as previous one for iteration
                     interactions_len = len(interactions)
@@ -839,7 +861,10 @@ class MRLTrainer:
 
                         # 10. Encode and update memory for the next interaction
                         if not is_last_interaction:
-                            self.encode_and_update_stm(next_query, generated_answer)
+                            self.encode_and_update_stm(
+                                next_query,
+                                self._move_batch(interaction['answer']) if self.teacher_forcing else generated_answer
+                            )
 
                         # 11. Accumulate rewards
                         step_reward = torch.tensor(reward).mean().to(self.device)
@@ -852,7 +877,7 @@ class MRLTrainer:
                         # 12. Save previous interaction
                         if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
                             prev_interaction = (query, answer)
-                        query, answer = interaction['query'], detached_answer
+                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else detached_answer)
                     avg_episode_reward = (episode_reward / episode_interactions).item()
                     # 13. Run eval TensorBoard writer with average episode reward
                     self._eval_writer(avg_episode_reward, epoch)
@@ -982,8 +1007,7 @@ class MRLTrainer:
         self.reward = config.get('reward_model', self.shared_reward_model)  # MRL Reward Model for curriculum stage
         self.update_epochs = config.get('update_epochs', self.shared_update_epochs)  # Internal update epochs
         self.freeze_embeddings = config.get('freeze_embeddings', self.shared_freeze_embeddings)
-
-
+        self.teacher_forcing = config.get('teacher_forcing', False)
 
         def has_param(field: OptimField) -> bool:
             return field in config and config[field] is not None
