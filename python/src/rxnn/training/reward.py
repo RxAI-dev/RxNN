@@ -242,8 +242,8 @@ class MrlRewardModel:
         return self.neg_cos_saved_factor * (1 - gen_and_saved) + self.neg_cos_ref_factor * gen_and_ref
 
     def len_reward(self, generated: TokenizedDict, reference: TokenizedDict) -> torch.Tensor:
-        target_lens = reference['attention_mask'].sum(dim=1) if self.target_len_as_ref else self.max_rewarded_len
-        lens = generated['attention_mask'].sum(dim=1)
+        target_lens = reference['attention_mask'].to(self.device).sum(dim=1) if self.target_len_as_ref else self.max_rewarded_len
+        lens = generated['attention_mask'].to(self.device).sum(dim=1)
         neg_lens = target_lens / lens if self.neg_reward_len else 1.0
         len_reward = torch.where(lens >= target_lens, neg_lens, lens / target_lens)
         return len_reward
