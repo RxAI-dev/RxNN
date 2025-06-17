@@ -208,17 +208,18 @@ class MrlActorModel(nn.Module):
 
 
 class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipeline_tag="text-classification"):
-    def __init__(self, encoder: nn.Module, embed_dim: int,
-                 out_activation: Literal['sigmoid', 'tanh', 'linear'] = 'sigmoid', output_scale: float = 1.0, **kwargs):
+    def __init__(self, encoder: nn.Module, embed_dim: int, **kwargs):
         super(MrlCriticModel, self).__init__(**kwargs)
         self.encoder = encoder
         self.value_head = nn.Sequential(
             GatedLinearUnit(embed_dim, embed_dim, nn.SiLU()),
             nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, 1),
-            get_activation_layer(out_activation)
+            nn.Linear(embed_dim, 1)
         )
-        self.output_scale = output_scale
+        # Learnable scaling parameters
+        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.shift = nn.Parameter(torch.tensor(0.0))
+
 
     def head_parameters(self) -> Iterator[nn.Parameter]:
         return self.value_head.parameters()
@@ -235,4 +236,4 @@ class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipe
         else:
             x = x.mean(dim=1)
 
-        return self.value_head(x) * self.output_scale
+        return self.value_head(x) * self.scale + self.shift

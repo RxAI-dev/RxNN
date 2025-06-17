@@ -55,6 +55,7 @@ class PPOAlgorithm(RlAlgorithm):
         # Critic loss with clipped values
         if self.clip_critic_values:
             values = torch.clamp(values, -self.critic_value_clip, self.critic_value_clip)
+            ref_values = torch.clamp(ref_values, -self.critic_value_clip, self.critic_value_clip)
         return self.critic_loss_fn(values, ref_values)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
