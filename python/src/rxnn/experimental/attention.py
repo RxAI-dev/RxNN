@@ -367,7 +367,7 @@ class FlexAttention(MultiHeadAttention):
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
         b, t, d = query.size()
 
-        # Prepend global tokens to the input query
+        # Prepend global tokens
         global_tokens = self.global_tokens.expand(b, -1, -1)
         x = torch.cat([global_tokens, query], dim=1)
 
@@ -380,39 +380,42 @@ class FlexAttention(MultiHeadAttention):
         if self.rope:
             q, k = self._apply_rope(q, k, separate=True)
 
-        # Split Q into global and local parts
-        global_q = q[:, :, :self.num_global_tokens]  # (B, H, G, head_dim)
-        local_q = q[:, :, self.num_global_tokens:]   # (B, H, L, head_dim)
+        # Split Q into global and local
+        global_q = q[:, :, :self.num_global_tokens]  # (B, H, G, D)
+        local_q = q[:, :, self.num_global_tokens:]   # (B, H, L, D)
+
+        # Global attention
+        global_attn = F.scaled_dot_product_attention(global_q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal)
+
+        # Local attention with windowed slicing (no large masks)
         L = local_q.size(2)
         S = k.size(2)
+        windowed_attn = []
 
-        # Global attention: global_q attends to all K/V
-        global_attn = F.scaled_dot_product_attention(
-            global_q, k, v, attn_mask=mask if not self.is_causal else None,
-            dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal
-        )
+        for i in range(0, L, self.window_size):
+            start = i
+            end = min(i + self.window_size, L)
+            window_q = local_q[:, :, start:end]  # (B, H, W, D)
 
-        # Local attention: local_q attends to windowed K/V
-        # Vectorized window mask
-        indices = torch.arange(S, device=local_q.device)
-        local_pos = torch.arange(L, device=local_q.device)
-        local_window = (local_pos // self.window_size).unsqueeze(-1)  # (L, 1)
-        key_window = (indices // self.window_size).expand(L, -1)      # (L, S)
-        window_mask = (local_window == key_window).to(device=local_q.device)
+            # Use only relevant keys/values (same window)
+            k_window_start = max(0, start - self.window_size)
+            k_window_end = min(S, end + self.window_size)
+            window_k = k[:, :, k_window_start:k_window_end]
+            window_v = v[:, :, k_window_start:k_window_end]
 
-        local_attn = F.scaled_dot_product_attention(
-            local_q, k, v, attn_mask=window_mask if not self.is_causal else None,
-            dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal
-        )
 
-        # Combine global and local attention outputs
-        attn = torch.cat([global_attn, local_attn], dim=2)  # (B, H, G+L, head_dim)
+            window_attn = F.scaled_dot_product_attention(window_q, window_k, window_v, attn_mask=None, dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal)
 
-        # Merge heads and project back
-        output = self._merge_heads(attn)  # (B, G+L, D)
-        output = self.out_proj(output)    # (B, G+L, D)
+            windowed_attn.append(window_attn)
 
-        # Return only the local tokens (original query tokens)
+        # Concat local attention
+        local_attn = torch.cat(windowed_attn, dim=2)
+
+        # Combine global and local
+        attn = torch.cat([global_attn, local_attn], dim=2)
+        output = self._merge_heads(attn)
+        output = self.out_proj(output)
+
         return output[:, self.num_global_tokens:, :]
 
 
