@@ -9,7 +9,7 @@ import random, os
 from ..transformers.sampler import BatchSampler
 from .callbacks import MrlTrainerCallback
 from .dataset import MrlCurriculumDataset
-from .utils import smart_concat, smart_concat_critic_states, TokenizedDict
+from .utils import smart_concat, smart_concat_critic_states, TokenizedDict, get_gradient_norms
 from .rl import RlAlgorithm
 from .reward import MrlRewardMode, MrlRewardModel
 from .models import MrlActorAction, MrlActorModel, MrlCriticModel
@@ -109,6 +109,7 @@ class MRLTrainer:
             use_ddp: bool = False,
             use_amp: bool = False,
             dtype: torch.dtype = torch.float32,
+            debug_mode: bool = False,
     ):
         """
         Trainer for Memory Reinforcement Learning (MRL) algorithm for reactive models and Attention-Based Memory System.
@@ -139,6 +140,7 @@ class MRLTrainer:
         self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
         self.freeze_embeddings = self.shared_freeze_embeddings
         self.use_memory_warmup = config.get('use_memory_warmup', False)
+        self.debug_mode = debug_mode
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -566,6 +568,14 @@ class MRLTrainer:
         else:
             return main_loss
 
+    def _log_gradients(self):
+        encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder)
+        decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder)
+        mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention)
+        print(f"Encoder grad norm - total: {encoder_total:.4f}, mean: {encoder_mean:.4f}")
+        print(f"Decoder grad norm - total: {decoder_total:.4f}, mean: {decoder_mean:.4f}")
+        print(f"Memory attention grad norm - total: {mem_att_total:.4f}, mean: {mem_att_mean:.4f}")
+
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
                      advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
         # 1. Reset actor gradients
@@ -596,6 +606,8 @@ class MRLTrainer:
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
+            if self.debug_mode:
+                self._log_gradients()
             # 4.5 Run scaled optimization step
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -613,6 +625,8 @@ class MRLTrainer:
             # 4.4 Clip gradient norms
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
+            if self.debug_mode:
+                self._log_gradients()
             # 4.5 Run scaled optimization step
             self.optimizer.step()
         # 5. Get float loss value for callbacks/writer

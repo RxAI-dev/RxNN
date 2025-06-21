@@ -12,6 +12,7 @@ class StmMemoryAttention(nn.Module):
             per_slot_gate: bool = False,
             init_gate: float = 0.0,
             use_dynamic_gate: bool = False,
+            use_tanh_gate: bool = False,
             *args,
             **kwargs
     ):
@@ -24,6 +25,7 @@ class StmMemoryAttention(nn.Module):
         self.use_gated_residual = use_gated_residual
         self.per_slot_gate = per_slot_gate
         self.use_dynamic_gate = use_dynamic_gate
+        self.use_tanh_gate = use_tanh_gate
         if self.use_gated_residual:
             gate_shape = (self.num_layers, self.stm.stm_size, 1) if self.per_slot_gate else (self.num_layers,)
             self.gate = nn.Parameter(torch.full(gate_shape, init_gate))
@@ -37,10 +39,13 @@ class StmMemoryAttention(nn.Module):
         if self.use_dynamic_gate:
             mean_dim = -1 if self.per_slot_gate else [1, 2]
             gate_input = gate * (new_layer_stm + layer_stm).mean(dim=mean_dim, keepdim=True)
-            layer_gate = torch.sigmoid(gate_input)
+            layer_gate = torch.tanh(gate_input) if self.use_tanh_gate else torch.sigmoid(gate_input)
         else:
-            layer_gate = torch.sigmoid(gate)
-        return layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
+            layer_gate = torch.tanh(gate) if self.use_tanh_gate else torch.sigmoid(gate)
+        if self.use_tanh_gate:
+            return (1 + layer_gate) * new_layer_stm + (1 - layer_gate) * layer_stm
+        else:
+            return layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         new_stm = torch.zeros_like(self.stm.memory)

@@ -36,7 +36,7 @@ class PPOConfig(TypedDict):
 
 
 class PPOAlgorithm(RlAlgorithm):
-    def __init__(self, config: Optional[PPOConfig] = None):
+    def __init__(self, config: Optional[PPOConfig] = None, debug_mode: bool = False):
         super(PPOAlgorithm, self).__init__()
 
         if config is None:
@@ -49,7 +49,8 @@ class PPOAlgorithm(RlAlgorithm):
         self.entropy_coef = config.get('entropy_coef', 0.01)
         self.use_distributed_advantage_norm = config.get('use_distributed_advantage_norm', False)
         self.clip_critic_values = config.get('clip_critic_values', True)
-        self.critic_value_clip = config.get('critic_value_clip', 10.0)
+        self.critic_value_clip = config.get('critic_value_clip', 20.0)
+        self.debug_mode = debug_mode
 
     def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
         # Critic loss with clipped values
@@ -95,6 +96,14 @@ class PPOAlgorithm(RlAlgorithm):
         ratio = (new_log_probs - old_log_probs).exp()
 
         advantages = advantages.unsqueeze(-1)
+
+        if self.debug_mode:
+            print(
+                f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
+            print(
+                f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={ratio.mean().item():.4f}")
+            print(
+                f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
 
         # c) Clipped surrogate loss
         surr1 = ratio * advantages

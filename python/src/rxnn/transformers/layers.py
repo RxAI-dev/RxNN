@@ -110,7 +110,7 @@ class ReactiveTransformerLayer(nn.Module):
         residual = x
         if not self.use_post_norm:
             x = self.norm2(x)
-        x = self.memory_cross_attention(x, stm, stm)
+        x = self.memory_cross_attention(x, stm, stm, mask=mask)
         x = residual + x
         if self.use_post_norm:
             x = self.norm2(x)
