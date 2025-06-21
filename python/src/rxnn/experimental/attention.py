@@ -318,76 +318,102 @@ class SparseQueryAttention(MultiHeadAttention):
 
 
 # Others
-
 class FlexAttention(MultiHeadAttention):
     def __init__(
-            self,
-            embed_dim: int,
-            num_heads: int,
-            num_global_tokens: int = 16,
-            window_size: int = 128,
-            **kwargs
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout: float = 0.0,
+        rope: RotaryPositionalEmbedding = None,
+        rope_only_for_query: bool = False,
+        rope_only_for_keys: bool = False,
+        use_relative_embeddings: bool = False,
+        max_seq_len: int = 1024,
+        use_flash_attention: bool = True,
+        is_causal: bool = False,
+        use_bias: bool = False,
+        num_global_tokens: int = 16,
+        window_size: int = 128,
     ):
-        super().__init__(embed_dim, num_heads, **kwargs)
+        super(FlexAttention, self).__init__(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            rope=rope,
+            rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
+            use_relative_embeddings=use_relative_embeddings,
+            max_seq_len=max_seq_len,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+        )
+        self.head_dim = embed_dim // num_heads
         self.num_global_tokens = num_global_tokens
         self.window_size = window_size
-        self.global_tokens = nn.Parameter(torch.zeros(1, num_global_tokens, embed_dim))
 
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask=None):
+        # Learnable global tokens
+        self.global_tokens = nn.Parameter(torch.randn(1, num_global_tokens, embed_dim))
+
+
+    def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
+        b, t, d = x.size()
+        return x.view(b, t, self.num_heads, self.head_dim).transpose(1, 2)
+
+    def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
+        b, h, t, d = x.size()
+        return self._transpose_output(x, b, t, h * d)
+
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
         b, t, d = query.size()
-        head_dim = d // self.num_heads
 
-        # Split into global and local
-        x = torch.cat([self.global_tokens.expand(b, -1, -1), query], dim=1)
-        seq_len = x.size(1)
-        num_windows = (seq_len - self.num_global_tokens + self.window_size - 1) // self.window_size
+        # Prepend global tokens to the input query
+        global_tokens = self.global_tokens.expand(b, -1, -1)
+        x = torch.cat([global_tokens, query], dim=1)
 
         # Project Q, K, V
-        q, k, v = self._forward_qkv(x, key, value, b, seq_len, d)
+        q = self._split_heads(self.q_proj(x))
+        k = self._split_heads(self.k_proj(key))
+        v = self._split_heads(self.v_proj(value))
 
-        # Process Global-to-Global Attention
-        global_q = q[:, :, :self.num_global_tokens]  # [B, H, G, head_dim]
-        global_k = k[:, :, :self.num_global_tokens]
-        global_v = v[:, :, :self.num_global_tokens]
-        global_attn = self._calculate_attn_weights(global_q, global_k, d) @ global_v
-
-        # Process Global-to-Local Attention
-        local_k = k[:, :, self.num_global_tokens:]  # [B, H, (num_windows * window_size), head_dim]
-        local_v = v[:, :, self.num_global_tokens:]
-        # Apply RoPE to local_k if needed
+        # Apply RoPE
         if self.rope:
-            # Compute frequencies for entire local sequence
-            local_k = self.rope.forward_one(local_k)
+            q, k = self._apply_rope(q, k, separate=True)
 
-        global_local_attn = self._calculate_attn_weights(global_q, local_k, d) @ local_v
+        # Split Q into global and local parts
+        global_q = q[:, :, :self.num_global_tokens]  # (B, H, G, head_dim)
+        local_q = q[:, :, self.num_global_tokens:]   # (B, H, L, head_dim)
+        L = local_q.size(2)
+        S = k.size(2)
 
-        # Process Local-to-Local Attention (per window)
-        local_q = q[:, :, self.num_global_tokens:]  # [B, H, (num_windows * window_size), head_dim]
-        local_q = local_q.view(b, self.num_heads, num_windows, self.window_size, head_dim)
-        local_k = local_k.view(b, self.num_heads, num_windows, self.window_size, head_dim)
-        local_v = local_v.view(b, self.num_heads, num_windows, self.window_size, head_dim)
+        # Global attention: global_q attends to all K/V
+        global_attn = F.scaled_dot_product_attention(
+            global_q, k, v, attn_mask=mask if not self.is_causal else None,
+            dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal
+        )
 
-        local_attn = []
-        for i in range(num_windows):
-            window_q = local_q[:, :, i]  # [B, H, window_size, head_dim]
-            window_k = local_k[:, :, i]
-            window_v = local_v[:, :, i]
+        # Local attention: local_q attends to windowed K/V
+        # Vectorized window mask
+        indices = torch.arange(S, device=local_q.device)
+        local_pos = torch.arange(L, device=local_q.device)
+        local_window = (local_pos // self.window_size).unsqueeze(-1)  # (L, 1)
+        key_window = (indices // self.window_size).expand(L, -1)      # (L, S)
+        window_mask = (local_window == key_window).to(device=local_q.device)
 
-            # Apply RoPE to window_q and window_k
-            if self.rope:
-                # Compute frequencies for this window
-                window_q, window_k = self.rope(window_q, window_k)
+        local_attn = F.scaled_dot_product_attention(
+            local_q, k, v, attn_mask=window_mask if not self.is_causal else None,
+            dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal
+        )
 
-            # Calculate attention for this window
-            attn = self._calculate_attn_weights(window_q, window_k, d)
-            attn_i = torch.einsum('bhij, bhjd -> bhid', attn, window_v)
-            local_attn.append(attn_i)
-        local_attn = torch.cat(local_attn, dim=2).view(b, self.num_heads, -1, head_dim)
+        # Combine global and local attention outputs
+        attn = torch.cat([global_attn, local_attn], dim=2)  # (B, H, G+L, head_dim)
 
-        # Combine all attention outputs
-        combined_attn = torch.cat([global_attn, global_local_attn, local_attn], dim=2)
-        output = self._calculate_output(combined_attn, v, b, t, d)
-        return self.out_proj(output)
+        # Merge heads and project back
+        output = self._merge_heads(attn)  # (B, G+L, D)
+        output = self.out_proj(output)    # (B, G+L, D)
+
+        # Return only the local tokens (original query tokens)
+        return output[:, self.num_global_tokens:, :]
 
 
 class InfiniteAttention(MultiHeadAttention):
@@ -467,8 +493,10 @@ def init_experimental_attention(
         num_experts: int = None,
         num_query_experts: int = None,
         num_query_groups: int = None,
+        num_global_tokens: int = 16,
+        window_size: int = 128,
 ) -> MultiHeadAttention:
-    assert attention_type in ['gma', 'dma', 'sqa'], "Error, attention type should be one of: 'gma', 'dma', 'sqa'"
+    assert attention_type in ['gma', 'dma', 'sqa', 'flex'], "Error, attention type should be one of: 'gma', 'dma', 'sqa', 'flex'"
 
     if attention_type == "gma":
         return GroupedMoeAttention(
@@ -503,6 +531,21 @@ def init_experimental_attention(
             num_experts=num_experts,
             num_query_experts=num_query_experts,
             num_query_groups=num_query_groups,
+        )
+    elif attention_type == "flex":
+        return FlexAttention(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            rope=rope,
+            max_seq_len=max_seq_len,
+            rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+            num_global_tokens=num_global_tokens,
+            window_size=window_size,
         )
     else:
         return SparseQueryAttention(

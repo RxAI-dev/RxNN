@@ -32,6 +32,8 @@ class ExperimentalAttentionTransformerConfig(TypedDict):
     att_num_experts: int
     att_num_query_experts: int
     att_num_query_groups: int
+    att_num_global_tokens: int
+    att_window_size: int
 
 
 class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
@@ -63,13 +65,15 @@ class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline
             att_num_experts: int = None,
             att_num_query_experts: int = None,
             att_num_query_groups: int = None,
+            att_num_global_tokens: int = 16,
+            att_window_size: int = 128,
             **kwargs
     ):
         super(ExperimentalAttentionTransformer, self).__init__(**kwargs)
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
-        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma', 'sqa', 'flex'], 'Self-attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa", "flex".'
 
         embedding = nn.Embedding(vocab_size, embed_dim)
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
@@ -84,8 +88,8 @@ class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
                                                            max_seq_len=seq_len, is_causal=True, num_experts=att_num_experts,
-                                                           num_query_experts=att_num_query_experts,
-                                                           num_query_groups=att_num_query_groups)
+                                                           num_query_experts=att_num_query_experts, num_query_groups=att_num_query_groups,
+                                                           num_global_tokens=att_num_global_tokens, window_size=att_window_size)
 
         use_moe_att = att_type in ['gma', 'dma']
 

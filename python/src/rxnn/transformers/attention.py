@@ -69,12 +69,14 @@ class MultiHeadAttention(nn.Module):
         v = self.v_proj(value).view(b, -1, self.num_heads, d // self.num_heads).transpose(1, 2)
         return q, k, v
 
-    def _apply_rope(self, q: torch.Tensor, k: torch.Tensor):
+    def _apply_rope(self, q: torch.Tensor, k: torch.Tensor, separate: bool = False):
         if self.rope is not None:
             if self.rope_only_for_query:
                 q = self.rope.forward_one(q)
             elif self.rope_only_for_keys:
                 k = self.rope.forward_one(k)
+            elif separate:
+                q, k = self.rope.forward_one(q), self.rope.forward_one(k)
             else:
                 q, k = self.rope(q, k)
         return q, k
