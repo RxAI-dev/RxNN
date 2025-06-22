@@ -204,7 +204,7 @@ class MrlActorModel(nn.Module):
             return self.decoder(x, attention_mask=attention_mask)
         else:
             _, ed = self.encoder(x, attention_mask=attention_mask)
-            return self.memory_attention(ed)
+            return self.memory_attention(ed, attention_mask=attention_mask)
 
 
 class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipeline_tag="text-classification"):

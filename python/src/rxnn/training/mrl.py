@@ -36,6 +36,8 @@ class MrlConfig(TypedDict):
     freeze_embeddings: Optional[bool]
     embedding_lr: Optional[float]
     use_memory_warmup: Optional[bool]
+    debug_mode: Optional[bool]
+    debug_interval: Optional[int]
 
 
 class MrlStrategy(Enum):
@@ -109,7 +111,6 @@ class MRLTrainer:
             use_ddp: bool = False,
             use_amp: bool = False,
             dtype: torch.dtype = torch.float32,
-            debug_mode: bool = False,
     ):
         """
         Trainer for Memory Reinforcement Learning (MRL) algorithm for reactive models and Attention-Based Memory System.
@@ -140,7 +141,8 @@ class MRLTrainer:
         self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
         self.freeze_embeddings = self.shared_freeze_embeddings
         self.use_memory_warmup = config.get('use_memory_warmup', False)
-        self.debug_mode = debug_mode
+        self.debug_mode = config.get('debug_mode', False)
+        self.debug_interval = config.get('debug_interval', 10)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -606,7 +608,7 @@ class MRLTrainer:
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
-            if self.debug_mode:
+            if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients()
             # 4.5 Run scaled optimization step
             self.scaler.step(self.optimizer)
@@ -625,7 +627,7 @@ class MRLTrainer:
             # 4.4 Clip gradient norms
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
-            if self.debug_mode:
+            if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients()
             # 4.5 Run scaled optimization step
             self.optimizer.step()

@@ -943,7 +943,7 @@ class MrlCurriculumDataset(Dataset):
         return self.get_tokenized_item(idx)
 
     def __len__(self) -> int:
-        return len(self.episodes)
+        return len(self.inputs if self.is_pre_tokenized else self.episodes)
 
     def get_subset(self, size: float, from_start: bool = False, **kwargs) -> "MRlCurriculumDataset":
         split_point = int(len(self.episodes) * ((1 - size) if not from_start else size))

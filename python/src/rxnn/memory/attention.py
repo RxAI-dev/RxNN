@@ -47,7 +47,8 @@ class StmMemoryAttention(nn.Module):
         else:
             return layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        mem_mask = attention_mask.unsqueeze(1).unsqueeze(1).bool() if attention_mask else None
         new_stm = torch.zeros_like(self.stm.memory)
         for i in range(self.num_layers):
             layer_stm = self.stm(i)
@@ -56,7 +57,7 @@ class StmMemoryAttention(nn.Module):
                 layer_stm = layer_stm.expand(x.size(0), -1, -1)
             encoded_layer_data = x[i]
             normalized_layer_stm = self.memory_norm_layers[i](layer_stm)
-            new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data)
+            new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=mem_mask)
             if self.use_gated_residual:
                 new_stm[i] = self._residual_gate(self.gate[i], layer_stm, new_layer_stm) # gated residual
             else:

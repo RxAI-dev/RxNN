@@ -33,10 +33,12 @@ class PPOConfig(TypedDict):
     use_distributed_advantage_norm: Optional[bool]
     clip_critic_values: Optional[bool]
     critic_value_clip: Optional[float]
+    debug_mode: Optional[bool]
+    debug_interval: Optional[int]
 
 
 class PPOAlgorithm(RlAlgorithm):
-    def __init__(self, config: Optional[PPOConfig] = None, debug_mode: bool = False):
+    def __init__(self, config: Optional[PPOConfig] = None):
         super(PPOAlgorithm, self).__init__()
 
         if config is None:
@@ -50,7 +52,9 @@ class PPOAlgorithm(RlAlgorithm):
         self.use_distributed_advantage_norm = config.get('use_distributed_advantage_norm', False)
         self.clip_critic_values = config.get('clip_critic_values', True)
         self.critic_value_clip = config.get('critic_value_clip', 20.0)
-        self.debug_mode = debug_mode
+        self.debug_mode = config.get('debug_mode', False)
+        self.debug_interval = config.get('debug_interval', 10)
+        self.debug_step = 0
 
     def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
         # Critic loss with clipped values
@@ -98,12 +102,16 @@ class PPOAlgorithm(RlAlgorithm):
         advantages = advantages.unsqueeze(-1)
 
         if self.debug_mode:
-            print(
-                f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
-            print(
-                f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={ratio.mean().item():.4f}")
-            print(
-                f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
+            if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
+                self.debug_step = 0
+                print(
+                    f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
+                print(
+                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={ratio.mean().item():.4f}")
+                print(
+                    f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
+            else:
+                self.debug_step += 1
 
         # c) Clipped surrogate loss
         surr1 = ratio * advantages
