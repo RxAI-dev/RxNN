@@ -103,13 +103,13 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
         if cross_att_type in ['mha', 'gqa', 'mqa']:
             cross_att_init = lambda: init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
                                                     use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                    max_seq_len=seq_len, is_causal=is_causal, rope_only_for_query=True)
+                                                    max_seq_len=seq_len, is_causal=False, rope_only_for_query=True)
         else:
             cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type,
                                                                  cross_att_groups or att_groups, rope=rope,
                                                                  use_flash_attention=use_flash_attention,
                                                                  dropout=att_dropout,
-                                                                 max_seq_len=seq_len, is_causal=is_causal,
+                                                                 max_seq_len=seq_len, is_causal=False,
                                                                  num_experts=att_experts,
                                                                  num_query_experts=att_query_experts,
                                                                  num_query_groups=cross_att_query_groups or att_query_groups,

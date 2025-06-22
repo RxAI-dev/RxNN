@@ -213,6 +213,7 @@ class ClassicTransformerDecoder(ClassicTransformerBase):
             if attention_mask is not None:
                 mask &= attention_mask.unsqueeze(1).unsqueeze(1).bool()
         elif attention_mask is not None:
+            print(attention_mask.size())
             mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
         else:
             mask = None
