@@ -319,6 +319,8 @@ class SparseQueryAttention(MultiHeadAttention):
 
 # Others
 class FlexAttention(MultiHeadAttention):
+    """Flex attention layer, with RoPE support"""
+
     def __init__(
         self,
         embed_dim: int,
@@ -355,14 +357,17 @@ class FlexAttention(MultiHeadAttention):
         # Learnable global tokens
         self.global_tokens = nn.Parameter(torch.randn(1, num_global_tokens, embed_dim))
 
-
-    def _split_heads(self, x: torch.Tensor) -> torch.Tensor:
+    def _split_heads(self, x: torch.Tensor, is_query: bool = False) -> torch.Tensor:
         b, t, d = x.size()
         return x.view(b, t, self.num_heads, self.head_dim).transpose(1, 2)
 
     def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
         b, h, t, d = x.size()
         return self._transpose_output(x, b, t, h * d)
+
+    def _sdpa(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0,
+                                       is_causal=self.is_causal)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
         b, t, d = query.size()
@@ -372,7 +377,7 @@ class FlexAttention(MultiHeadAttention):
         x = torch.cat([global_tokens, query], dim=1)
 
         # Project Q, K, V
-        q = self._split_heads(self.q_proj(x))
+        q = self._split_heads(self.q_proj(x), is_query=True)
         k = self._split_heads(self.k_proj(key))
         v = self._split_heads(self.v_proj(value))
 
@@ -385,7 +390,7 @@ class FlexAttention(MultiHeadAttention):
         local_q = q[:, :, self.num_global_tokens:]   # (B, H, L, D)
 
         # Global attention
-        global_attn = F.scaled_dot_product_attention(global_q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal)
+        global_attn = self._sdpa(global_q, k, v, mask=mask)
 
         # Local attention with windowed slicing (no large masks)
         L = local_q.size(2)
@@ -403,8 +408,7 @@ class FlexAttention(MultiHeadAttention):
             window_k = k[:, :, k_window_start:k_window_end]
             window_v = v[:, :, k_window_start:k_window_end]
 
-
-            window_attn = F.scaled_dot_product_attention(window_q, window_k, window_v, attn_mask=None, dropout_p=self.dropout.p if self.training else 0, is_causal=self.is_causal)
+            window_attn = self._sdpa(window_q, window_k, window_v, mask=None)
 
             windowed_attn.append(window_attn)
 
@@ -417,6 +421,74 @@ class FlexAttention(MultiHeadAttention):
         output = self.out_proj(output)
 
         return output[:, self.num_global_tokens:, :]
+
+
+class FlexSparseQueryAttention(FlexAttention):
+    """Combined Flex and Sparse Query attention layer, with RoPE support"""
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        num_groups: int,
+        num_query_groups: int,
+        dropout: float = 0.0,
+        rope: RotaryPositionalEmbedding = None,
+        rope_only_for_query: bool = False,
+        rope_only_for_keys: bool = False,
+        use_relative_embeddings: bool = False,
+        max_seq_len: int = 1024,
+        use_flash_attention: bool = True,
+        is_causal: bool = False,
+        use_bias: bool = False,
+        num_global_tokens: int = 16,
+        window_size: int = 128,
+    ):
+        self.num_groups = num_groups
+        self.num_query_groups = num_query_groups
+        super(FlexSparseQueryAttention, self).__init__(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            rope=rope,
+            rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
+            use_relative_embeddings=use_relative_embeddings,
+            max_seq_len=max_seq_len,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+            num_global_tokens=num_global_tokens,
+            window_size=window_size,
+        )
+        assert num_heads % num_groups == 0, "num_heads must be divisible by num_groups"
+
+    def _init_kv(self, embed_dim: int):
+        self.k_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
+
+    def _init_q(self, embed_dim: int):
+        self.q_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_query_groups), bias=self.use_bias)
+
+    def _init_out(self, embed_dim: int):
+        """Initialize output projection"""
+        self.out_proj = nn.Linear(embed_dim // (self.num_heads // self.num_query_groups), embed_dim)
+
+    def _split_heads(self, x: torch.Tensor, is_query: bool = False) -> torch.Tensor:
+        b, t, d = x.size()
+        return x.view(b, t, self.num_query_groups if is_query else self.num_groups, self.head_dim).transpose(1, 2)
+
+    def _transpose_output(self, attn_output: torch.Tensor, b: int, t: int, d: int):
+        """Transpose attention output back to (B, T, D) shape"""
+        return attn_output.transpose(1, 2).contiguous().view(b, t, d // (self.num_heads // self.num_query_groups))
+
+    def _merge_heads(self, x: torch.Tensor) -> torch.Tensor:
+        b, h, t, d = x.size()
+        return self._transpose_output(x, b, t, self.embed_dim)
+
+    def _sdpa(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+        is_gqa = self.num_query_groups != self.num_groups
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0,
+                                       is_causal=self.is_causal, enable_gqa=is_gqa)
 
 
 class InfiniteAttention(MultiHeadAttention):
@@ -499,7 +571,7 @@ def init_experimental_attention(
         num_global_tokens: int = 16,
         window_size: int = 128,
 ) -> MultiHeadAttention:
-    assert attention_type in ['gma', 'dma', 'sqa', 'flex'], "Error, attention type should be one of: 'gma', 'dma', 'sqa', 'flex'"
+    assert attention_type in ['gma', 'dma', 'sqa', 'flex', 'flex-sqa'], "Error, attention type should be one of: 'gma', 'dma', 'sqa', 'flex', 'flex-sqa"
 
     if attention_type == "gma":
         return GroupedMoeAttention(
@@ -539,6 +611,23 @@ def init_experimental_attention(
         return FlexAttention(
             embed_dim,
             num_heads,
+            dropout=dropout,
+            rope=rope,
+            max_seq_len=max_seq_len,
+            rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+            num_global_tokens=num_global_tokens,
+            window_size=window_size,
+        )
+    elif attention_type == "flex-sqa":
+        return FlexSparseQueryAttention(
+            embed_dim,
+            num_heads,
+            gqa_groups,
+            num_query_groups,
             dropout=dropout,
             rope=rope,
             max_seq_len=max_seq_len,

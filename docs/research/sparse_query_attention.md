@@ -174,49 +174,66 @@ was even better
 - [xSQAT-mm](https://huggingface.co/ReactiveAI/xSQAT-mm): 2/8 query heads, 2/8 kv heads
 
 ### Computational efficiency benchmarks
-Tested on Dense models (~10-12M params) with different sequence length, on single L4 24 GB GPU.
+Tested on Dense models (~10-12M params) with different sequence length, on single A100 40 GB GPU.
 
 > Results are sorted from the fastest one. Time (in seconds) is for 50 steps and per single step
 
 #### 1024 Sequence / 128 batch size / 50 steps
-1. xSQA: 4.7669 / 0.2383
-2. SQA: 5.2710 / 0.2635
-3. sSQA: 5.3359 / 0.2668
-4. MQA: 5.7171 / 0.2859
-5. GQA: 5.8207 / 0.2910
-6. MHA: 6.4760 / 0.3238
+1. xSQA: 2.8543s / 0.0570s
+2. SQA: 3.2102s / 0.0642s
+3. sSQA: 3.3467s / 0.0669s
+4. Flex: 3.7994s / 0.0759s
+5. MQA: 3.8032s / 0.0760s
+6. GQA: 3.9252s / 0.0785s
+7. MHA: 4.3478s / 0.0869s
 
 #### 4096 Sequence / 32 batch size / 50 steps
-1. xSQA: 5.1942 / 0.2597
-2. SQA: 6.0414 / 0.3021
-3. sSQA: 6.0466 / 0.3023
-4. MQA: 7.0939 / 0.3547
-5. GQA: 7.1983 / 0.3599
-6. MHA: 7.9115 / 0.3956
+1. xSQA: 3.1889s / 0.0637s
+2. SQA: 3.7534s / 0.0750s
+3. sSQA: 3.9682s / 0.0793s
+4. Flex: 3.9744s / 0.0794s
+5. MQA: 5.0089s / 0.1001s
+6. GQA: 5.1361s / 0.1027s
+7. MHA: 5.5703s / 0.1114s
 
 #### 32k Sequence / 4 batch size / 50 steps
-1. **xSQA: 8.6792 / 0.4340**
-2. **sSQA: 12.2262 / 0.6113**
-3. **SQA: 12.9228 / 0.6461**
-4. MQA: 19.2118 / 0.9606
-5. GQA: 19.4045 / 0.9702
-6. MHA: 20.0299/ 1.0015
+1. xSQA: 6.7444s / 0.1348s
+2. Flex: 9.3590s / 0.1871s
+3. SQA: 9.9590s / 0.1991s
+4. sSQA: 10.5884s / 0.2117s
+5. MQA: 18.0621s / 0.3612s
+6. GQA: 18.1891s / 0.3637s
+7. MHA: 18.6358s / 0.3727s
 
-#### 128k Sequence / 1 batch size / 50 steps
-1. **xSQA: 20.3782 / 1.0189**
-2. **sSQA: 32.9969 / 1.6498**
-3. **SQA: 36.0181 / 1.8009**
-4. MQA: 60.5910 / 3.0295
-5. GQA: 60.7724 / 3.0386
-6. MHA: 61.4984 / 3.0749
+#### 131k Sequence / 1 batch size / 50 steps
+1. xSQA 18.7965s / 0.3759s
+2. SQA: 31.5411s / 0.6308s
+3. sSQA: 33.1529s / 0.6630s
+4. Flex 37.6574s / 0.7531s
+5. MQA: 62.6528s / 1.2530s
+6. GQA: 62.7922s / 1.2558s
+7. MHA: 63.2441s / 1.2648s
+
+#### 200k Sequence / 1 batch size / 50 steps
+1. xSQA: 40.9741s / 0.8194s
+2. Flex: 59.3576s / 1.1871s
+3. SQA: 70.5818s / 1.4116s
+4. sSQA: 74.1229s / 1.4824s
+5. MQA: 142.7783s / 2.8555s
+6. GQA: 142.9824s / 2.8596s
+7. MHA: 143.6748s / 2.8734s
+
+#### Bonus Flex vs xSQA: 500k Sequence / 1 batch size / 50 steps (H100)
+1. Flex: 61.1173s, 1.2223s
+2. xSQA: 128.7628s, 2.5752s
 
 Benchmark results are really surprising - from tests on shorter sequences, where it was up to 10% difference, I expected
 that for longer ones it will be up to 20-30% difference, but as you can see in the results, for 128k sequence, **xSQA**
 is about 3x faster! If we confirm that performance results for that sequence lengths are also on **GQA/MQA** level, it
-could be a gamechanger for training costs.
-
-> It's interesting, that for longer sequences **sSQA** is becoming faster than **SQA**, while it has 2x more key/value
-> heads - that's probably caused by better optimization for the same number of query and key/value heads, like in **MHA**.
+could be a gamechanger for training costs. For 0-200k sequence lengths, **SQA** variant are the fastest possible solution,
+outperforming even **Flex Attention**, but that efficiency gains are limited. For longer sequences, **Flex Attention** becoming
+faster. However, both solutions could be easily combined, resulting in even faster models (implemented in RxNN as
+**FlexSparseQueryAttention**)
 
 ## Summary
 According to experiment results, **Sparse Query Attention** seems to be the most cost-effective variant of **Grouped Query Attention**,
