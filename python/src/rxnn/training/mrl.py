@@ -22,6 +22,9 @@ class MrlConfig(TypedDict):
     memory_lr: Optional[float]
     critic_lr: float
     critic_encoder_lr: Optional[float]
+    encoder_lr: Optional[float]
+    encoder_memory_lr: Optional[float]
+    memory_attn_lr: Optional[float]
     max_seq_len: int
     critic_max_len: int
     weight_decay: Optional[float]
@@ -68,6 +71,9 @@ class CurriculumConfig(TypedDict):
     memory_lr: Optional[float]
     critic_lr: Optional[float]
     critic_encoder_lr: Optional[float]
+    encoder_lr: Optional[float]
+    encoder_memory_lr: Optional[float]
+    memory_attn_lr: Optional[float]
     weight_decay: Optional[float]
     critic_weight_decay: Optional[float]
     update_epochs: Optional[int]
@@ -95,7 +101,10 @@ class MrlTrajectoryEpisode(TypedDict):
     reset_stm: bool
     steps: list[MrlTrajectoryStep]
 
-OptimField: TypeAlias = Literal['lr', 'critic_lr', 'weight_decay', 'critic_weight_decay', 'separate_memory_lr', 'memory_lr']
+OptimField: TypeAlias = Literal[
+    'lr', 'critic_lr', 'weight_decay', 'critic_weight_decay', 'separate_memory_lr',
+    'memory_lr', 'encoder_lr', 'encoder_memory_lr', 'memory_attn_lr'
+]
 
 class MRLTrainer:
     def __init__(
@@ -181,6 +190,9 @@ class MRLTrainer:
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
                 'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
                 'embedding_lr': config.get('embedding_lr', config.get('lr', 3e-4)),
+                'encoder_lr': config.get('encoder_lr', config.get('lr', 3e-4)),
+                'encoder_memory_lr': config.get('encoder_memory_lr', config.get('memory_lr', 5e-4)),
+                'memory_attn_lr': config.get('memory_attn_lr', config.get('memory_lr', 5e-4)),
             }
         else:
             self.base_optim_config = {
@@ -190,6 +202,7 @@ class MRLTrainer:
                 'critic_weight_decay': config.get('critic_weight_decay', 0.01),
                 'critic_encoder_lr': config.get('critic_encoder_lr', config.get('critic_lr', 1e-4)),
                 'embedding_lr': config.get('embedding_lr', config.get('lr', 3e-4)),
+                'encoder_lr': config.get('encoder_lr', config.get('lr', 3e-4)),
             }
 
         self.optim_config = self.base_optim_config
@@ -574,9 +587,18 @@ class MRLTrainer:
         encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder)
         decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder)
         mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention)
-        print(f"Encoder grad norm - total: {encoder_total:.4f}, mean: {encoder_mean:.4f}")
-        print(f"Decoder grad norm - total: {decoder_total:.4f}, mean: {decoder_mean:.4f}")
-        print(f"Memory attention grad norm - total: {mem_att_total:.4f}, mean: {mem_att_mean:.4f}")
+        print(f"Encoder grad norm - total: {encoder_total:.6f}, mean: {encoder_mean:.6f}")
+        print(f"Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
+        print(f"Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
+        # decoder's cross att
+        dec_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[0] for layer in self.actor.decoder.model.layers]
+        print(f"Decoder cross-att mean total norm: {(sum(dec_x_att_norms) / len(dec_x_att_norms)):.6f}, all: {dec_x_att_norms}")
+
+        mem_att_norms = [get_gradient_norms(layer)[0] for layer in self.actor.memory_attention.model.attention_layers]
+        print(f"Memory attention layers mean total norm: {(sum(mem_att_norms) / len(mem_att_norms)):.6f}, all: {mem_att_norms}")
+
+        enc_ff_norms = [get_gradient_norms(layer.ff)[0] for layer in self.actor.encoder.model.layers]
+        print(f"Encoder ff mean total norm: {(sum(enc_ff_norms) / len(enc_ff_norms)):.6f}, all: {enc_ff_norms}")
 
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
                      advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
@@ -969,14 +991,16 @@ class MRLTrainer:
             unfreeze_lr: float,
     ) -> torch.optim.Optimizer:
         memory_lr = self.optim_config['memory_lr'] if 'memory_lr' in self.optim_config else self.optim_config['lr']
-        model_lr, embedding_lr = self.optim_config['lr'], self.optim_config['embedding_lr']
+        encoder_memory_lr = self.optim_config['encoder_memory_lr'] if 'encoder_memory_lr' in self.optim_config else self.optim_config['encoder_lr']
+        memory_attn_lr = self.optim_config['memory_attn_lr'] if 'memory_attn_lr' in self.optim_config else self.optim_config['lr']
+        model_lr, embedding_lr, encoder_lr = self.optim_config['lr'], self.optim_config['embedding_lr'], self.optim_config['encoder_lr']
 
         if mode == 'update':
             params = [
                 {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
-                {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
-                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
-                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': encoder_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': encoder_memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_attn_lr},
                 {'params': self.actor.decoder.memory_parameters(), 'lr': unfreeze_lr},
                 {'params': self.actor.decoder.not_memory_parameters(), 'lr': unfreeze_lr},
             ]
@@ -993,17 +1017,17 @@ class MRLTrainer:
             params = [
                 {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
                 {'params': self.actor.encoder.not_memory_parameters(), 'lr': unfreeze_lr},
-                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
-                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': encoder_memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_attn_lr},
                 {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.decoder.not_memory_parameters(), 'lr': unfreeze_lr},
             ]
         else:
             params = [
                 {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
-                {'params': self.actor.encoder.not_memory_parameters(), 'lr': model_lr},
-                {'params': self.actor.encoder.memory_parameters(), 'lr': memory_lr},
-                {'params': self.actor.memory_attention_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': encoder_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': encoder_memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_attn_lr},
                 {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
                 {'params': self.actor.decoder.not_memory_parameters(), 'lr': model_lr},
             ]
@@ -1028,11 +1052,14 @@ class MRLTrainer:
         def has_param(field: OptimField) -> bool:
             return field in config and config[field] is not None
 
-        optim_params: list[OptimField] = ['lr', 'critic_lr', 'weight_decay', 'critic_weight_decay']
+        optim_params: list[OptimField] = ['lr', 'critic_lr', 'weight_decay', 'critic_weight_decay', 'encoder_lr']
+        mem_optim_params: list[OptimField] = ['memory_lr', 'encoder_memory_lr', 'memory_attn_lr']
 
         has_any_optim_param = any(
             has_param(field) for field in optim_params
-        ) or (has_param('separate_memory_lr') and config['separate_memory_lr'] and has_param('memory_lr'))
+        ) or (has_param('separate_memory_lr') and config['separate_memory_lr'] and any(
+            has_param(field) for field in mem_optim_params
+        ))
 
         if has_any_optim_param:
             if config.get('separate_memory_lr', False):
@@ -1044,7 +1071,10 @@ class MRLTrainer:
                                                       self.base_optim_config['critic_weight_decay']),
                     'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
                     'memory_lr': config.get('memory_lr', self.base_optim_config['memory_lr']),
-                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr'])
+                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr']),
+                    'encoder_lr': config.get('encoder_lr', self.base_optim_config['encoder_lr']),
+                    'encoder_memory_lr': config.get('encoder_memory_lr', self.base_optim_config['encoder_memory_lr']),
+                    'memory_attn_lr': config.get('memory_attn_lr', self.base_optim_config['memory_attn_lr']),
                 }
             else:
                 self.optim_config = {
@@ -1054,7 +1084,8 @@ class MRLTrainer:
                     'critic_weight_decay': config.get('critic_weight_decay',
                                                       self.base_optim_config['critic_weight_decay']),
                     'critic_encoder_lr': config.get('critic_encoder_lr', self.base_optim_config['critic_encoder_lr']),
-                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr'])
+                    'embedding_lr': config.get('embedding_lr', self.base_optim_config['embedding_lr']),
+                    'encoder_lr': config.get('encoder_lr', self.base_optim_config['encoder_lr']),
                 }
             self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
         elif self.optim_config != self.base_optim_config:

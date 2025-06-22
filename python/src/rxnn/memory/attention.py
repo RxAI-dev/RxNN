@@ -13,6 +13,8 @@ class StmMemoryAttention(nn.Module):
             init_gate: float = 0.0,
             use_dynamic_gate: bool = False,
             use_tanh_gate: bool = False,
+            debug_mode: bool = False,
+            debug_interval: int = 10,
             *args,
             **kwargs
     ):
@@ -29,6 +31,10 @@ class StmMemoryAttention(nn.Module):
         if self.use_gated_residual:
             gate_shape = (self.num_layers, self.stm.stm_size, 1) if self.per_slot_gate else (self.num_layers,)
             self.gate = nn.Parameter(torch.full(gate_shape, init_gate))
+
+        self.debug_mode = debug_mode
+        self.debug_interval = debug_interval
+        self.debug_step = 0
 
     def update_max_len(self, max_seq_len: int):
         for i in range(self.num_layers):
@@ -58,6 +64,14 @@ class StmMemoryAttention(nn.Module):
                 layer_stm = layer_stm.expand(x.size(0), -1, -1)
             encoded_layer_data = x[i]
             normalized_layer_stm = self.memory_norm_layers[i](layer_stm)
+
+            if self.debug_mode and self.training:
+                if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
+                    self.debug_step = 0
+                    print(f"Normalized STM stats - mean: {normalized_layer_stm.mean().item():.4f}, std: {normalized_layer_stm.std().item():.4f}")
+                else:
+                    self.debug_step += 1
+
             new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=attention_mask)
             if self.use_gated_residual:
                 new_stm[i] = self._residual_gate(self.gate[i], layer_stm, new_layer_stm) # gated residual
