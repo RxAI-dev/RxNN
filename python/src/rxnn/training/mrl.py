@@ -243,20 +243,31 @@ class MRLTrainer:
             critic_weight_decay: float,
             critic_encoder_lr: float,
             embedding_lr: float,
+            encoder_lr: float,
             memory_lr: Optional[float] = None,
+            encoder_memory_lr: Optional[float] = None,
+            memory_attn_lr: Optional[float] = None,
     ) -> tuple[torch.optim.Optimizer, torch.optim.Optimizer]:
         if memory_lr is not None:
             optimizer = torch.optim.AdamW([
                 {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
-                {'params': self.actor.not_memory_parameters(), 'lr': lr},
-                {'params': self.actor.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': encoder_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': encoder_memory_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': memory_attn_lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': memory_lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': lr},
             ],
                 weight_decay=weight_decay,
             )
         else:
             optimizer = torch.optim.AdamW([
                 {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
-                {'params': self.actor.unique_parameters(with_embedding=False), 'lr': lr},
+                {'params': self.actor.embedding_parameters(), 'lr': embedding_lr},
+                {'params': self.actor.encoder.not_memory_parameters(), 'lr': encoder_lr},
+                {'params': self.actor.encoder.memory_parameters(), 'lr': encoder_lr},
+                {'params': self.actor.memory_attention_parameters(), 'lr': lr},
+                {'params': self.actor.decoder.memory_parameters(), 'lr': lr},
+                {'params': self.actor.decoder.not_memory_parameters(), 'lr': lr},
             ],
                 weight_decay=weight_decay,
             )
