@@ -13,9 +13,20 @@ datasets:
 library_name: RxNN
 ---
 
-# RxT-Alpha Micro Decoder (Base)
+# RxT-Alpha Micro Plus Decoder (Base)
 ## Reactive Transformer Architecture
 Experimental research model made to test our Reactive Transformer architecture and Attention-based Memory System.
+
+> ### RxT-Alpha Micro Plus
+> Extended architecture to improve results in Memory Reinforcement Learning. Changes vs. base RxT-Alpha Micro:
+> - 10 layers instead of 6
+> - 20 experts instead of 12
+> - 4 active experts instead of 2
+> - symmetric SQA for memory cross-attention (4 key/value heads instead of 2)
+> - 7.5k vocab instead of 5k
+> - better tokenizer training
+>
+> Model has ~22.4M vs ~8.6M in base version.
 
 Reactive Transformer has additional Short-Term Memory layers, connected to model with Memory Cross-Attention, and updated by Memory Encoder and Memory Attention.
 Short-Term Memory state is kept between interactions/event (single message), not between tokens in sequence - that's key difference between RxNNs and RNNs.
@@ -37,36 +48,36 @@ Learning, they will be connected into bigger ensemble with additional Memory Nor
 
 <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/stm-abms.png" width="800">
 
-Decoder is based on Mixture-of-Experts architecture with 12 experts and 2 active ones.
+Decoder is based on Mixture-of-Experts architecture with 20 experts and 4 active ones.
 
-## RxT-Alpha Micro Training
+## RxT-Alpha Micro Plus Training
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
-Decoder was trained on Autoregressive Language Modelling task with embedding from [encoder pre-training](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder),
-with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~70.7% accuracy**.
+Decoder was trained on Autoregressive Language Modelling task with embedding from [encoder pre-training](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Encoder),
+with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **4B total tokens** and reached **~75% accuracy**.
 
-## Next Stage: Memory Reinforcement Learning
-The model is able to generate meaningful short stories, using grammatically correct sentences, and is ready for the memory training in the next stage. More info soon.
+## Next Stage: Interaction Supervised Fine-Tuning
+The model is able to generate meaningful short stories, using grammatically correct sentences, and is ready for the fine-tuning to interaction (single query + answer)
+fine-tuning in next stage.
 
 ### Decoder architecture details:
 - dim: 128
-- layers: 6
+- layers: 10
 - heads: 8
 - self-attention: symmetric Sparse Query Attention
   - query/key/value groups: 4
-- memory cross-attention: Sparse Query Attention
-  - query groups: 4
-  - key/value groups: 2
+- memory cross-attention: symmetric Sparse Query Attention
+  - query/key/value groups: 4
 - Mixture-of-Experts Feed Forward
-  - experts: 12
-  - active experts: 2
+  - experts: 20
+  - active experts: 4
   - SwiGLU feed forward with 256 dim
 - RoPE
 - RMS Norm
-- vocab: 5k (english only)
+- vocab: 7.5k (english only)
 - message length: 256
-- STM size: 256 * 6 layers
-- size: ~8.77M
+- STM size: 256 * 10 layers
+- size: ~22.4M (~6.5M Activated)
 - Library: RxNN
 - Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)
