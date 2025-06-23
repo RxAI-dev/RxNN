@@ -69,9 +69,18 @@ class ReactiveTransformerBase(nn.Module):
 class ReactiveTransformerDecoder(ReactiveTransformerBase):
     """Reactive Transformer decoder - extending the classic Transformer decoder with Memory Cross-Attention"""
 
-    def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
+    def __init__(self, embed_dim: int, vocab_size: int, use_head_norm: bool = False, init_identity_norm: bool = False, *args, **kwargs):
         super(ReactiveTransformerDecoder, self).__init__(*args, **kwargs)
+
         self.head = nn.Linear(embed_dim, vocab_size)
+        self.use_head_norm = use_head_norm
+        if use_head_norm:
+            self.head_norm = nn.LayerNorm(embed_dim)
+            if init_identity_norm:
+                self.head_norm.weight.data.fill_(1.0)
+                self.head_norm.bias.data.fill_(0.0)
+        else:
+            self.head_norm = None
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
@@ -99,7 +108,7 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
             if layer_stm.size(0) == 1:
                 layer_stm = layer_stm.expand(x.size(0), -1, -1)
             x = self.layers[i](x, layer_stm, mask=mask)
-        return self.head(x)
+        return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 
 class ReactiveTransformerEncoder(ReactiveTransformerBase):
@@ -201,9 +210,17 @@ class ClassicTransformerBase(nn.Module):
 class ClassicTransformerDecoder(ClassicTransformerBase):
     """Classic Transformer decoder - for decoder-only Transformer models"""
 
-    def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
+    def __init__(self, embed_dim: int, vocab_size: int, use_head_norm: bool = False, init_identity_norm: bool = False, *args, **kwargs):
         super(ClassicTransformerDecoder, self).__init__(*args, **kwargs)
         self.head = nn.Linear(embed_dim, vocab_size)
+        self.use_head_norm = use_head_norm
+        if use_head_norm:
+            self.head_norm = nn.LayerNorm(embed_dim)
+            if init_identity_norm:
+                self.head_norm.weight.data.fill_(1.0)
+                self.head_norm.bias.data.fill_(0.0)
+        else:
+            self.head_norm = None
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
@@ -213,7 +230,6 @@ class ClassicTransformerDecoder(ClassicTransformerBase):
             if attention_mask is not None:
                 mask &= attention_mask.unsqueeze(1).unsqueeze(1).bool()
         elif attention_mask is not None:
-            print(attention_mask.size())
             mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
         else:
             mask = None
@@ -221,7 +237,7 @@ class ClassicTransformerDecoder(ClassicTransformerBase):
         # Process layers
         for i in range(self.num_layers):
             x = self.layers[i](x, mask=mask)
-        return self.head(x)
+        return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 
 class ClassicTransformerEncoder(ClassicTransformerBase):

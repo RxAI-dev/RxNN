@@ -39,6 +39,8 @@ class RxTAlphaComponentConfig(TypedDict):
     att_query_groups: int
     cross_att_groups: int
     cross_att_query_groups: int
+    use_head_norm: bool
+    init_identity_norm: bool
 
 
 class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
@@ -71,6 +73,8 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
             att_query_groups: int = None,
             cross_att_groups: int = None,
             cross_att_query_groups: int = None,
+            use_head_norm: bool = False,
+            init_identity_norm: bool = False,
             **kwargs
     ):
         super(RxTAlphaComponentBase, self).__init__(**kwargs)
@@ -130,10 +134,14 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
                 memory_cross_attention=cross_att_init(),
             ) for _ in range(num_layers)
         ])
-        self.model = self._init_model(stm, layers, embedding, use_flash_attention, embed_dim, vocab_size, use_moe)
+        self.model = self._init_model(
+            stm, layers, embedding, use_flash_attention, embed_dim, vocab_size, use_moe,
+            use_head_norm=use_head_norm, init_identity_norm=init_identity_norm,
+        )
 
     def _init_model(self, stm: ShortTermMemory, layers: nn.ModuleList, embedding: nn.Embedding,
-                    use_flash_attention: bool, embed_dim: int, vocab_size: int, use_moe: bool) -> ReactiveTransformerBase:
+                    use_flash_attention: bool, embed_dim: int, vocab_size: int, use_moe: bool,
+                    use_head_norm: bool = False, init_identity_norm: bool = False) -> ReactiveTransformerBase:
         pass
 
     def params_count(self):
@@ -187,6 +195,8 @@ class RxTAlphaEncoder(RxTAlphaComponentBase, pipeline_tag="fill-mask", license="
             embed_dim: int,
             vocab_size: int,
             use_moe: bool,
+            use_head_norm: bool = False,
+            init_identity_norm: bool = False,
     ) -> ReactiveTransformerEncoder:
         return ReactiveTransformerEncoder(
             stm=stm,
@@ -214,6 +224,8 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
             embed_dim: int,
             vocab_size: int,
             use_moe: bool,
+            use_head_norm: bool = False,
+            init_identity_norm: bool = False,
     ) -> ReactiveTransformerDecoder:
         return ReactiveTransformerDecoder(
             embed_dim,
@@ -223,6 +235,8 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
             own_layers=layers,
             use_flash_attention=use_flash_attention,
             use_moe=use_moe,
+            use_head_norm=use_head_norm,
+            init_identity_norm=init_identity_norm,
         )
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
@@ -327,6 +341,8 @@ class RxTAlphaCriticEncoder(RxTAlphaComponentBase, pipeline_tag="text-classifica
             embed_dim: int,
             vocab_size: int,
             use_moe: bool = False,
+            use_head_norm: bool = False,
+            init_identity_norm: bool = False,
     ) -> ReactiveTransformerEncoderDetachStm:
         return ReactiveTransformerEncoderDetachStm(
             stm=stm,

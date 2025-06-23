@@ -34,6 +34,8 @@ class ExperimentalAttentionTransformerConfig(TypedDict):
     att_num_query_groups: int
     att_num_global_tokens: int
     att_window_size: int
+    use_head_norm: bool
+    init_identity_norm: bool
 
 
 class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
@@ -67,6 +69,8 @@ class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline
             att_num_query_groups: int = None,
             att_num_global_tokens: int = 16,
             att_window_size: int = 128,
+            use_head_norm: bool = False,
+            init_identity_norm: bool = False,
             **kwargs
     ):
         super(ExperimentalAttentionTransformer, self).__init__(**kwargs)
@@ -110,6 +114,8 @@ class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline
                     use_rms_norm=use_rms_norm,
                     self_attention=att_init(),
                     use_moe_att=use_moe_att,
+                    use_head_norm=use_head_norm,
+                    init_identity_norm=init_identity_norm,
                 ) for _ in range(num_layers)
             ]),
             use_flash_attention=use_flash_attention,

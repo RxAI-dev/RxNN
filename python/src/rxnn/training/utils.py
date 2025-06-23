@@ -146,10 +146,10 @@ def smart_concat(query: TokenizedDict, answer: TokenizedDict, max_length: int, p
 
 def get_gradient_norms(model: nn.Module):
     total_norm = 0
-    for p in model.parameters():
-        if p.grad is not None:
-            param_norm = p.grad.data.norm(2)
-            total_norm += param_norm.item() ** 2
+    grad_params = list(filter(lambda p: p.requires_grad and p.grad is not None, model.parameters()))
+    for p in grad_params:
+        param_norm = p.grad.data.norm(2)
+        total_norm += param_norm.item() ** 2
     total_norm = total_norm ** 0.5
-    mean_norm = total_norm / len(list(model.parameters()))
+    mean_norm = total_norm / len(grad_params)
     return total_norm, mean_norm
