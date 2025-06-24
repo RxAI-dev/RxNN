@@ -58,6 +58,21 @@ validation dataset.
 
 Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Plus-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Decoder) training.
 
+### Supervised Fine-Tuning
+**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset,
+inspired by TinyStories - [**ReactiveAI/TinyStories-Plus-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Plus-Interaction-SFT)
+
+Encoder reached the best validation loss after full 20 epochs (~502M processed tokens)
+
+#### Details
+- GPU: 1x L4
+- epochs: full 20/20
+- lr: 2e-4 peak, cosine annealing schedule
+- batch size: 256
+- processed tokens: ~502M
+- loss: 0.7288 (validation) / 0.7680 (train)
+- accuracy: **83.25%**
+
 ### Encoder architecture details:
 - dim: 128
 - layers: 10

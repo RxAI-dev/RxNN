@@ -16,7 +16,7 @@ library_name: RxNN
 ---
 
 # RxT-Alpha Micro Plus MLM
-Masked Language Modelling head for [**RxT-Alpha-Micro-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder) pre-training. In
+Masked Language Modelling head for [**RxT-Alpha-Micro-Plus-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Encoder) pre-training. In
 **Reactive Transformer** architecture, final **Memory Encoder** is using only **Transformer** layers, but it has to be pre-trained using standard
 MLM training, so we have to include additional head model.
 
@@ -51,10 +51,10 @@ This model (MLM Head) is not used in final Reactive Transformer system. It's mad
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
-[**RxT-Alpha-Micro-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder) was trained on Masked Language Modelling task with MLM head,
+[**RxT-Alpha-Micro-Plus-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Encoder) was trained on Masked Language Modelling task with MLM head,
 on [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **4B total tokens** and reached **~81% accuracy**.
 
-Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Decoder) training.
+Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Plus-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Decoder) training.
 
 ### Encoder architecture details:
 - dim: 128

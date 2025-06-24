@@ -51,7 +51,8 @@ Decoder was trained on Autoregressive Language Modelling task with embedding fro
 with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~70.7% accuracy**.
 
 ### Supervised Fine-Tuning
-**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset, inspired by TinyStories - [**ReactiveAI/TinyStories-QA-SFT-v2**](https://huggingface.co/datasets/ReactiveAI/TinyStories-QA-SFT-v2).
+**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset,
+inspired by TinyStories - [**ReactiveAI/TinyStories-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Interaction-SFT).
 
 Decoder reached the best validation loss after full 30 epochs (~433M processed tokens)
 
