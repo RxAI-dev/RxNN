@@ -268,6 +268,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             residual_per_slot_gate: bool = False,
             residual_init_gate: float = 0.0,
             use_dynamic_residual_gate: bool = False,
+            use_tanh_residual_gate: bool = False,
             debug_mode: bool = False,
             debug_interval: int = 10,
             **kwargs,
@@ -300,7 +301,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             stm, attention_layers, memory_norm_layers,
             use_gated_residual=use_gated_residual, per_slot_gate=residual_per_slot_gate,
             init_gate=residual_init_gate, use_dynamic_gate=use_dynamic_residual_gate,
-            debug_mode=debug_mode, debug_interval=debug_interval,
+            use_tanh_gate=use_tanh_residual_gate, debug_mode=debug_mode, debug_interval=debug_interval,
         )
 
     def freeze(self):

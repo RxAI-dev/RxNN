@@ -12,10 +12,11 @@ language:
 - en
 datasets:
 - roneneldan/TinyStories
+- ReactiveAI/TinyStories-Plus-Interaction-SFT
 library_name: RxNN
 ---
 
-# RxT-Alpha Micro Plus MLM
+# RxT-Alpha Micro Plus MLM (SFT)
 Masked Language Modelling head for [**RxT-Alpha-Micro-Plus-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Plus-Encoder) pre-training. In
 **Reactive Transformer** architecture, final **Memory Encoder** is using only **Transformer** layers, but it has to be pre-trained using standard
 MLM training, so we have to include additional head model.

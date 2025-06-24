@@ -10,10 +10,11 @@ language:
 - en
 datasets:
 - roneneldan/TinyStories
+- ReactiveAI/TinyStories-Plus-Interaction-SFT
 library_name: RxNN
 ---
 
-# RxT-Alpha Micro Plus Encoder (Base)
+# RxT-Alpha Micro Plus Encoder (SFT)
 ## Reactive Transformer Architecture
 Experimental research model made to test our Reactive Transformer architecture and Attention-based Memory System.
 
