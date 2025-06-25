@@ -87,17 +87,17 @@ and [TensorBoard](https://github.com/tensorflow/tensorboard).
 > if it's set to `False`, when `flash-attn` library is installed, **PyTorch** will try to use it implicitly through _SDPA backend_. It's better to set it
 > to `False` and use automatically, because of better compatibility. Explicit options could be used for research
 
-### Modules
+## Modules
 **RxNN** framework has multiple modules with models, layers, training and inference tools, made for complete development
 of _reactive models_, and could be also used for regular **Transformers**.
 
-#### Transformers
+### Transformers
 Transformers module includes classes for models and layers. It includes **Reactive Transformers** as well as **Classic Transformers**
 
 Submodules:
 - `rxnn.transformers.attention` - basic, most common attention layers - `MultiHeadAttention`, `GroupedQueryAttention` and `MultiQueryAttention`
   - additional attention layers, especially `SparseQueryAttention` could be found in `rxnn.experimental.attention` module
-  - `SparseQueryAttention` will be moved to `rxnn.transformers.attention` in 0.2.x version
+  - `SparseQueryAttention` will be moved to `rxnn.transformers.attention` in 0.3.x version
 - `rxnn.transformers.positional` - positional encoding layers - `RotaryPositionalEmbedding` and legacy ones - `AbsolutePositionalEmbedding`/`RelativePositionalEmbedding`
 - `rxnn.transformers.ff` - dense feed forward layers, including gated layers (_SwiGLU_, etc.) - `FeedForward` & `GatedFeedForward` (recommended)
 - `rxnn.transformers.moe` - Mixture-of-Experts feed forward layers - `MoeFeedForward` & `GatedMoeFeedForward` (recommended)
@@ -107,7 +107,6 @@ Submodules:
 
 In **RxNN** models are initialized in declarative style by class composition, but then they are wrapped in imperative classes,
 to be compatible with HuggingFace **JSON** config. In example:
-
 ```python
 from typing import TypedDict
 import torch
@@ -167,11 +166,11 @@ class YourReactiveTransformerDecoder(nn.Module, PyTorchModelHubMixin):
                     memory_cross_attention=GroupedQueryAttention(
                         config['embed_dim'],
                         config['att_heads'],
-                        config['att_groups'],
+                        config['cross_att_groups'] if 'cross_att_groups' in config else config['att_groups'],
                         rope=rope,
                         dropout=0.1,
                         max_seq_len=config['seq_len'],
-                        is_causal=True,
+                        is_causal=False,
                         rope_only_for_query=True
                     ),
                 ) for _ in range(config['num_layers'])
@@ -182,15 +181,99 @@ class YourReactiveTransformerDecoder(nn.Module, PyTorchModelHubMixin):
         return self.model(x, attention_mask=attention_mask)
 ```
 
-#### Memory
+### Memory
 The _memory_ module includes **Short-Term Memory** and layers responsible for its update. In future versions it will also
 include **Long-Term Memory**.
 
 The main `ShortTermMemory` class is located in `rxnn.memory.stm` module - the usage example is in Transformers module description.
 
-> 0.2.x Memory modules docs in progress - will be released soon
+#### Memory Attention Network
+**Memory Attention Network** is responsible for memory layers update. It includes memory attention layers, with normalization
+and residual connection (with optional gated residual). **Memory Attention Network** should have the same number of layers
+as other components (encoder & decoder). It takes the results from each encoder layer (hidden states), and combine them
+with actual memory state.
 
-#### Training
+You can create your own **Memory Attention Network**, integrated with **HuggingFace Hub**, same way as reactive transformers:
+```python
+from typing import TypedDict
+import torch
+import torch.nn as nn
+from huggingface_hub import PyTorchModelHubMixin
+from rxnn.transformers.attention import GroupedQueryAttention
+from rxnn.transformers.positional import RotaryPositionalEmbedding
+from rxnn.memory.stm import ShortTermMemory
+from rxnn.memory.attention import StmMemoryAttention
+
+class YourMemoryAttentionConfig(TypedDict):
+    num_layers: int
+    vocab_size: int
+    embed_dim: int
+    ff_dim: int
+    att_heads: int
+    seq_len: int
+    stm_size: int
+    att_groups: int
+
+class YourMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+    """RxT-Alpha (Reactive Transformer) memory attention model"""
+
+    def __init__(
+            self,
+            config: YourMemoryAttentionConfig,
+            **kwargs,
+    ):
+        super(YourMemoryAttention, self).__init__(**kwargs)
+
+        rope = RotaryPositionalEmbedding(config['embed_dim'] // config['att_heads'], config['seq_len'])
+        # This separately initialized STM will be replaced by shared instance with `load_shared_memory` call
+        stm = ShortTermMemory(config['num_layers'], config['embed_dim'], config['stm_size'])
+
+        self.model = StmMemoryAttention(
+            stm,
+            attention_layers=nn.ModuleList([
+                GroupedQueryAttention(
+                    config['embed_dim'],
+                    config['att_heads'],
+                    config['att_groups'],
+                    rope=rope,
+                    dropout=0.1,
+                    is_causal=False,
+                    rope_only_for_keys=True
+                ) for _ in range(config['num_layers'])
+            ]),
+            memory_norm_layers=nn.ModuleList([
+              nn.RMSNorm(config['embed_dim']) for _ in range(config['num_layers'])
+            ]),
+            use_gated_residual=False, # memory attention residual gate
+            per_slot_gate=False, # gate per memory slot, otherwise it's per layer
+            init_gate=None, # initial value for gate weights
+            use_dynamic_gate=False, # dynamic gate calculated from weights and memory state, otherwise it's calculated only from weights
+            use_tanh_gate=False, # use tanh gate, otherwise it's sigmoid
+        )
+
+    def load_shared_memory(self, stm: ShortTermMemory):
+        self.model.stm = stm
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        return self.model(x, attention_mask=attention_mask)
+```
+
+> #### Gated residual
+> Optional gated residual could be used to improve Memory Attention expressiveness. It's using gate (sigmoid or tanh)
+> with trainable weights, to decide how much information from old and new updated memory state should be stored. Depending
+> on params weights are declared per layer or per memory slot (more expressive). It could work in two modes, that could
+> be switched, because they are using the same weights shape:
+> - static - gate values calculated only from weights (`gate = torch.sigmoid(weights)`) - enable explicit control with `init_gate` param
+> - dynamic - gate values calculated from weights and updated memory state (`gate = torch.sigmoid(weights * (new_layer_stm + layer_stm).mean(dim=-1, keepdim=True))`)
+> 
+> Depending on `use_tanh_gate` param, final gated residual connection is calculated with different formulas:
+> - sigmoid gate - `stm[i] = layer_gate * new_layer_stm + (1 - layer_gate) * layer_stm`
+> - tanh gate - `stm[i] = (1 + layer_gate) * new_layer_stm + (1 - layer_gate) * layer_stm`
+> - tanh gate preserve residual connection scale, while sigmoid gate result is equivalent to `(new_layer_stm + layer_stm) / 2`
+>
+> **Gated residual** is currently in tests - we are not sure if it will provide better results, so **it's not recommended**
+
+### Training
 Training module includes **Trainers** for different training stages of reactive models and shared training utils.
 
 Submodules:
@@ -207,6 +290,9 @@ Submodules:
     returns new subset and modifying existing one - i.e. `valid_dataset = train_dataset.get_subset(0.1)`
   - for concatenated datasets, validation/test split could be created with `concat_from_hf_hub_with_subset` - it cuts the
     same percentage of each loaded dataset
+  - each dataset has `pre_tokenize` method, to tokenize all items before the training (otherwise they are tokenized on
+    dynamically on item access). It's recommended for smaller datasets (fine-tuning, MRL, etc.) and not recommended for
+    very big datasets (pre-training), because it's using a lot of RAM (CPU)
 - `rxnn.training.callbacks` contain Trainer callbacks, for different kind of utils (more info below)
 - `rxnn.training.scheduler` includes learning rate scheduler for training
 - `rxnn.training.bml` - Base Model Learning module with Trainers for pre-training and fine-tuning
@@ -214,6 +300,471 @@ Submodules:
 - `rxnn.training.rxrlhf` - Reinforcement Learning from Human Feedback for Reactive Models module (from 0.3.x)
 - `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x)
 
-##### Base Model Learning
-Docs in progress
+#### Base Model Learning
+**Base Model Learning (BML)** module is made for both pre-training and fine-tuning base models, that will be used as components
+in reactive models. Generally the only two differences between pre-training and supervised fine-tuning are different dataset
+classes and trainer/callbacks hyperparams config.
 
+Reactive models are based on transformer decoder and encoder, with shared embeddings and memory layers - it require special
+handling in first training stages:
+- layers connected with memory - **Memory Cross-Attention** are frozen during pre-training and fine-tuning, and they are
+  skipped by residual connections
+- as encoder is able to learn little better embeddings, because of bidirectional modelling, it's pre-trained first, then
+  decoder is trained with frozen embeddings from encoder
+- in **Reactive Transformer** fine-tuning, both encoder and decoder are fit to interaction format (single query and answer), the
+  training order is the same as for pre-training
+- in **Preactor** architecture there are 2 encoders and single decoder. Encoders are fine-tuned from single pre-trained
+  encoder - first one is processing only queries and second one only the answers. More info soon
+- in **Reactor** architecture there are 2 encoders and 2 decoders. Both encoders and decoders are fine-tuned from single
+  pre-trained encoder and decoder. Each component is fine-tuned to their specific task. More info soon
+
+##### Pre-training
+We have to start with importing required modules/libraries, initializing the models and loading the tokenized - I will
+use _RxT-Alpha-Micro-Plus_ models as example:
+```python
+import torch
+from rxnn.rxt.models import RxTAlphaDecoder, RxTAlphaEncoder
+from rxnn.training.dataset import AutoregressiveLMDataset, MaskedLMDataset
+from rxnn.training.bml import AutoregressiveTrainer, MLMTrainer
+from rxnn.training.models import MLMHead, MLMTrainingModel
+from rxnn.training.scheduler import get_transformer_lr_scheduler, calculate_steps
+from rxnn.training.callbacks import PrintLossCallback, PrintAccuracyCallback, TokenCounterCallback, ModelSaveCallback, JointModelSaveCallback
+from rxnn.training.tokenizer import load_tokenizer_from_hf_hub
+from rxnn.utils import set_random_seed, cache_clean
+
+embed_dim = 128
+vocab_size = 7_500
+seq_len = 256
+
+set_random_seed(42)
+
+config = {
+  'num_layers': 10,
+  'vocab_size': vocab_size,
+  'embed_dim': embed_dim,
+  'att_heads': 16,
+  'att_groups': 8,
+  'seq_len': seq_len,
+  'stm_size': seq_len,
+  'use_flash_attention': False,
+  'use_gated': True,
+  'ff_dropout': 0.1,
+  'self_att_type': 'sqa',
+  'cross_att_type': 'sqa',
+  'att_query_groups': 8,
+}
+
+encoder_config = {
+  'ff_dim': 384,
+  **config
+}
+
+decoder_config = {
+  'ff_dim': 256,
+  'use_moe': True,
+  'num_experts': 20,
+  'moe_top_k': 4,
+  **config
+}
+
+encoder = RxTAlphaEncoder(**encoder_config)
+decoder = RxTAlphaDecoder(**decoder_config)
+head = MLMHead(embed_dim, vocab_size)
+
+# Tokenizer is the same for encoder and decoder
+tokenizer = load_tokenizer_from_hf_hub('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder', token='HF_TOKEN')
+```
+Then, we have to load MLM datasets, set callbacks and run encoder training:
+```python
+# 1. Load datasets
+load_kwargs = {
+    'trust_remote_code': True
+}
+
+train_dataset = MaskedLMDataset.from_hf_hub('roneneldan/TinyStories', load_kwargs=load_kwargs, tokenizer=tokenizer, max_seq_len=seq_len)
+valid_dataset = MaskedLMDataset.from_hf_hub('roneneldan/TinyStories', split="validation", load_kwargs=load_kwargs, tokenizer=tokenizer, max_seq_len=seq_len)
+
+# 2. Select device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# 3. Clean GPU cache (optional)
+cache_clean()
+
+# 4. Set training config variables
+batch_size = 256
+epochs = 8
+gradient_acc_steps = 1
+peak_lr = 1e-3 * gradient_acc_steps
+
+# 5. Get number of steps for scheduler
+steps_config = calculate_steps(len(train_dataset), epochs, batch_size, warmup_ratio=0.05, verbose=True)
+steps_per_epoch, total_steps, warmup_steps = steps_config['epoch'], steps_config['total'], steps_config['warmup']
+
+# 6. Freeze memory cross-attention layers
+encoder.freeze_memory()
+
+# 7. Select directory for TensorBoard logs
+logs_dir = './micro/tensorboard_logs/encoder-plus-sft'
+
+# 8. Basic callbacks - print loss, accuracy and number of processed tokens
+print_cb = PrintLossCallback(batches_per_epoch=steps_per_epoch)
+count_cb = TokenCounterCallback(3_000_000_000)
+acc_cb = PrintAccuracyCallback()
+
+# 9. Joint model save callback - used to save encoder and MLM head, and push them to HuggingFace Hub 
+save_cb = JointModelSaveCallback(
+  './micro/encoder-plus-sft',
+  push_to_hub=True,
+  hub_model_decoder=None,
+  hub_model_encoder='Your encoder model id',
+  hub_model_head='Your mlm model id',
+  push_checkpoint_weights=True, # push epoch checkpoints to hub
+  final_commit_message='Final commit message',
+  private_repo=False, # use HF private repository
+  save_checkpoint_after_n_batches=1000, # save model after N batches in epoch (batch checkpoint)
+  push_batch_checkpoint=True, # push batch checkpoints to HF Hub
+  mlm_mode=True, # use MLM mode
+  hf_token='HF_TOKEN',
+  use_ddp=False, # use distributed training mode
+)
+
+# 10. Init training model - encoder + head
+model = MLMTrainingModel(encoder, head)
+
+# 11. Init MLM Trainer
+trainer = MLMTrainer(
+  model,
+  device,
+  dataset=train_dataset,
+  validation_dataset=valid_dataset,
+  vocab_size=vocab_size,
+  callbacks=[print_cb, acc_cb, count_cb, save_cb],
+  use_amp=True, # use autocast
+  dtype=torch.bfloat16, # data type for training
+  log_dir=logs_dir,
+  use_ddp=False, # use distributed training mode
+)
+
+# 12. Init optimizer and cosine annealing scheduler
+optimizer = torch.optim.AdamW(model.parameters(), lr=peak_lr, weight_decay=0.02)
+scheduler = get_transformer_lr_scheduler(
+    optimizer,
+    warmup_steps=warmup_steps,
+    num_training_steps=total_steps
+)
+
+# 13. Run the training for the selected number of epochs
+trainer(epochs=epochs, batch_size=batch_size, optimizer=optimizer, scheduler=scheduler)
+```
+After the encoder's training, we have to train decoder:
+```python
+# 1. Load datasets
+load_kwargs = {
+    'trust_remote_code': True
+}
+
+train_dataset = AutoregressiveLMDataset.from_hf_hub('roneneldan/TinyStories', load_kwargs=load_kwargs, tokenizer=tokenizer, max_seq_len=seq_len)
+valid_dataset = AutoregressiveLMDataset.from_hf_hub('roneneldan/TinyStories', split="validation", load_kwargs=load_kwargs, tokenizer=tokenizer, max_seq_len=seq_len)
+
+# 2. Load shared embedding and memory, then freeze embedding and memory cross-attention
+decoder.load_shared_embedding(encoder.model.embedding)
+decoder.load_shared_memory(encoder.model.stm)
+
+decoder.model.embedding.requires_grad_(False)
+decoder.freeze_memory()
+
+# 3. Clean GPU cache (optional)
+cache_clean()
+
+# 4. Set training config variables
+batch_size = 256
+epochs = 8
+gradient_acc_steps = 1
+peak_lr = 1e-3 * gradient_acc_steps
+
+# 5. Get number of steps for scheduler
+steps_config = calculate_steps(len(train_dataset), epochs, batch_size, warmup_ratio=0.05, verbose=True)
+steps_per_epoch, total_steps, warmup_steps = steps_config['epoch'], steps_config['total'], steps_config['warmup']
+
+# 6. Select directory for TensorBoard logs
+logs_dir = './micro/tensorboard_logs/decoder-plus-sft'
+
+# 7. Basic callbacks - print loss, accuracy and number of processed tokens
+print_cb = PrintLossCallback(batches_per_epoch=steps_per_epoch)
+count_cb = TokenCounterCallback(5_000_000_000)
+acc_cb = PrintAccuracyCallback()
+
+# 8. Model save callback - used to save decoder and push it to HuggingFace Hub 
+save_cb = ModelSaveCallback(
+  './micro/decoder-plus-sft',
+  push_to_hub=True,
+  hub_model_id='Your decoder model id',
+  push_checkpoint_weights=True, # push epoch checkpoints to hub
+  final_commit_message='Final commit message',
+  private_repo=False, # use HF private repository
+  save_checkpoint_after_n_batches=1000, # save model after N batches in epoch (batch checkpoint)
+  push_batch_checkpoint=True, # push batch checkpoints to HF Hub
+  hf_token='HF_TOKEN',
+  use_ddp=False, # use distributed training mode
+)
+
+# 9. Init Autoregressive Trainer
+trainer = AutoregressiveTrainer(
+  decoder,
+  device,
+  dataset=train_dataset,
+  validation_dataset=valid_dataset,
+  vocab_size=vocab_size,
+  callbacks=[print_cb, acc_cb, count_cb, save_cb],
+  use_amp=True,
+  dtype=torch.bfloat16,
+  log_dir=logs_dir,
+  use_moe_aux_loss=True, # Add MoE Router auxiliary loss to main loss
+  moe_aux_loss_scale=0.02, # MoE Router aux loss scale
+  use_ddp=False, # use distributed training mode
+)
+
+# 10. Init optimizer and cosine annealing scheduler
+optimizer = torch.optim.AdamW(decoder.parameters(), lr=peak_lr, weight_decay=0.02)
+scheduler = get_transformer_lr_scheduler(
+    optimizer,
+    warmup_steps=warmup_steps,
+    num_training_steps=total_steps
+)
+
+# 11. Run the training for the selected number of epochs
+trainer(epochs=epochs, batch_size=batch_size, optimizer=optimizer, scheduler=scheduler)
+```
+
+##### Fine-tuning
+For _**Interaction Supervised Fine-Tuning**_, the code is almost the same as for pre-training, with some small changes.
+
+First, we have to load pre-trained models, instead of initializing them with configs:
+```python
+encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder', token='HF_TOKEN')
+decoder = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder', token='HF_TOKEN')
+head = MLMHead.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-MLM', token='HF_TOKEN')
+```
+
+Then, we have to change the datasets loading part. For encoder:
+```python
+# 1. Load datasets
+train_dataset = EncoderSftDataset.from_hf_hub('ReactiveAI/TinyStories-Plus-Interaction-SFT', tokenizer=tokenizer, max_seq_len=seq_len)
+valid_dataset = EncoderSftDataset.from_hf_hub('ReactiveAI/TinyStories-Plus-Interaction-SFT', split="validation", tokenizer=tokenizer, max_seq_len=seq_len)
+
+# 2. Pre-tokenize dataset with verbose logging (optional)
+train_dataset.pre_tokenize(verbose=True, log_interval=5000)
+valid_dataset.pre_tokenize(verbose=True, log_interval=1000)
+```
+And the same for decoder:
+```python
+# 1. Load datasets
+train_dataset = DecoderSftDataset.from_hf_hub('ReactiveAI/TinyStories-Plus-Interaction-SFT', tokenizer=tokenizer, max_seq_len=seq_len)
+valid_dataset = DecoderSftDataset.from_hf_hub('ReactiveAI/TinyStories-Plus-Interaction-SFT', split="validation", tokenizer=tokenizer, max_seq_len=seq_len)
+
+# 2. Pre-tokenize dataset with verbose logging (optional)
+train_dataset.pre_tokenize(verbose=True, log_interval=5000)
+valid_dataset.pre_tokenize(verbose=True, log_interval=1000)
+```
+
+We could also add early stoppage callback:
+```python
+from rxnn.training.callbacks import EarlyStoppageCallback
+
+stop_cb = EarlyStoppageCallback(num_plateau_epochs=5)
+```
+
+Additionally, in fine-tuning we will rather use different config for number of epochs, steps, learning rate, etc.
+
+> #### Classic Transformer Training
+> The same code could be used also to train classic decoder-only or encoder-only transformers, the only difference is
+> that they don't require memory cross-attention freezing.
+
+##### Joint Training
+There are also `JointLMDataset` and `JointLMTrainer` classes to train encoder and decoder at once. In that case, embeddings
+are updated from both encoder and decoder optimization. However, I noticed some issues with balancing training in that mode,
+so it's **not recommended** now, until it will be tested and fixed
+
+#### Memory Reinforcement Learning
+**Memory Reinforcement Learning (MRL)** is the most important training stage for reactive model's **Attention-Based Memory System**.
+In this stage we are training model to remember information between multiple interactions, with different curriculum stage
+configs. Theoretical foundations are described in [research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/mrl.md).
+
+> **MRL** algorithm is currently in tests and still a lot of things could be changed!
+
+In practice, algorithm has over 50 hyperparams, so it require careful handling. We start from importing modules, loading
+pre-trained models from SFT stage, initializing new Memory Attention, and actor and critic models:
+```python
+import torch
+from rxnn.rxt.models import RxTAlphaDecoder, RxTAlphaEncoder, RxTAlphaMemoryAttention
+from rxnn.training.tokenizer import load_tokenizer_from_hf_hub
+from rxnn.training.dataset import MrlDatasets
+from rxnn.training.models import MrlActorModel, MrlCriticModel
+from rxnn.training.reward import MrlRewardModel
+from rxnn.training.mrl import MRLTrainer, CurriculumConfig, MrlStrategy, MrlConfig
+from rxnn.training.rl import PPOAlgorithm, PPOConfig
+from rxnn.training.callbacks import MrlPrintCallback, MrlEarlyStoppageCallback, MrlModelSaveCallback, MrlGeneratedTokensCallback
+from rxnn.utils import set_random_seed
+
+# 1. Set random seed, batch size and embed dim
+set_random_seed(42)
+batch_size = 64
+embed_dim = 128
+
+# 2. Get pre-trained microscale PoC models
+decoder = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT', token='HF_TOKEN')
+encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
+# 3. Init Memory Attention Network
+mem_attn = RxTAlphaMemoryAttention(
+    num_layers=10,
+    embed_dim=embed_dim,
+    att_heads=8,
+    seq_len=256,
+    stm_size=256,
+    use_flash_attention=False,
+    norm_type='classic-rms',
+    att_groups=4,
+    att_type='sqa',
+    att_query_groups=4,
+)
+
+# 4. Load shared embedding and memory from encoder to other models
+decoder.load_shared_embedding(encoder.model.embedding)
+encoder.model.stm.batched_memory(batch_size=batch_size, init_type='standard')
+decoder.load_shared_memory(encoder.model.stm)
+mem_attn.load_shared_memory(encoder.model.stm)
+
+# 5. Init Actor model
+actor = MrlActorModel(encoder, decoder, mem_attn)
+
+# 6. Get pre-trained encoder, extend its context size, freeze memory and use as a body for Critic model
+critic_encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
+
+critic_encoder.update_max_len(512)
+critic_encoder.freeze_memory()
+# 7. Init Critic model
+critic = MrlCriticModel(critic_encoder, embed_dim)
+```
+
+Then, we have to load tokenizer and MRL Datasets, and create _curriculum config_:
+```python
+# 1. Load tokenizer
+tokenizer = load_tokenizer_from_hf_hub('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder', token='HF_TOKEN')
+
+# 2. Load PoC TinyStories based MRL Dataset, starting from 4 steps to 16 in long range
+mrl_datasets = MrlDatasets.from_hf_hub(
+    'ReactiveAI/TinyStories-MRL',
+    tokenizer,
+    mrl_curriculum_steps=[
+        { 'subset_name': 'steps-4', 'steps': 4, 'is_long_range': False },
+        { 'subset_name': 'steps-6', 'steps': 6, 'is_long_range': False },
+        { 'subset_name': 'steps-8', 'steps': 8, 'is_long_range': False },
+        { 'subset_name': 'steps-8-lr', 'steps': 8, 'is_long_range': True },
+        { 'subset_name': 'steps-12', 'steps': 12, 'is_long_range': True },
+        { 'subset_name': 'steps-16', 'steps': 16, 'is_long_range': True },
+    ],
+    eval_split='validation',
+    max_seq_len=256,
+)
+
+# 3. Create curriculum stages config
+curriculum_stages = [CurriculumConfig(
+    steps=item['steps'],
+    epochs=10 if item['steps'] == 4 else 8 if item['steps'] == 8 and item['is_long_range'] else 5,
+    dataset=item['dataset'],
+    eval_dataset=item['eval_dataset'],
+    callbacks=[
+        MrlPrintCallback(),
+        MrlModelSaveCallback(
+            './models', push_to_hub=True, hub_model_critic='ReactiveAI/RxT-Alpha-Micro-Critic-MRL',
+            hub_model_decoder='ReactiveAI/RxT-Alpha-Micro-Decoder-MRL', hub_model_encoder='ReactiveAI/RxT-Alpha-Micro-Encoder-MRL',
+            hub_model_memory_attention='ReactiveAI/RxT-Alpha-Micro-MemAtt-MRL', private_repo=True,
+            hf_token='HF_TOKEN', final_commit_message=f"MRL steps: {item['steps']} {'lr' if item['is_long_range'] else ''}",
+            push_checkpoint_weights=True,
+        )
+    ],
+    strategy=MrlStrategy.LONG_RANGE_STRATEGY if item['is_long_range'] else MrlStrategy.MULTI_STEP_STRATEGY,
+    unfreeze_epoch=((2, 2e-5), (4, 8e-5), (6, 1e-5), 8) if item['steps'] == 4 else (0, 1, (2, 1e-6), 4),
+    random_resets=item['steps'] > 4,
+    random_resets_from=2,
+    random_resets_ratio=0.4 if item['steps'] != 4 else None,
+    separate_memory_lr=True,
+    memory_lr=6e-4 if item['steps'] == 4 else 4e-4 if item['steps'] == 8 and item['is_long_range'] else None,
+    lr=3e-4 if item['steps'] == 4 else 2e-4 if item['steps'] == 8 and item['is_long_range'] else None,
+    critic_lr=4e-4 if item['steps'] == 4 else None,
+    critic_encoder_lr=2e-4  if item['steps'] == 4 else None,
+    teacher_forcing=True if item['steps'] <= 8 else False,
+) for item in mrl_datasets]
+```
+
+After that, we have to configure reward model. It's based on BLEU scores and cosine similarity between generated answers
+and saved data from previous steps and reference answers from dataset. Cosine similarity is also calculated from running
+mean embedding of previous steps. Reward model also includes optional length reward. It's config includes a lot of option
+to set different factors for different reward parts.
+```python
+# 1. Init GPU device
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+# 2. Create reward model
+reward_model = MrlRewardModel(
+    encoder.model.embedding,
+    device,
+    bleu_with_saved_data=True,
+    reward_len=True,
+    neg_reward_len=True,
+    target_len_as_ref=True,
+    bleu_factor=0.4,
+    cos_factor=0.5,
+    len_factor=0.1,
+    bleu_ref_factor=0.4,
+    bleu_saved_factor=0.6,
+    cos_ref_factor=0.35,
+    cos_saved_factor=0.65,
+    neg_bleu_factor=0.45,
+    neg_cos_factor=0.45,
+    neg_cos_ref_factor=0.3,
+    neg_cos_saved_factor=0.7,
+    neg_bleu_ref_factor=0.3,
+    neg_bleu_saved_factor=0.7,
+    multi_cos_ref_factor=0.3,
+    multi_cos_saved_factor= 0.5,
+    multi_cos_running_mean_factor = 0.2,
+    bleu_ref_weights=(0.2, 0.2, 0.3, 0.3),
+    bleu_saved_weights=(0.2, 0.2, 0.3, 0.3),
+    tanh_reward_scale=False,
+    rewards_scale=1.0,
+)
+```
+
+And finally, we could create the MRL Trainer with RL algorithm (currently only PPO available) and start the training:
+```python
+# 1. Init PPO Algorithm
+algorithm = PPOAlgorithm(
+  PPOConfig(clip_eps=0.2, gae_lambda=0.95, gae_gamma=0.99, entropy_coef=0.01, critic_value_clip=50.0)
+)
+
+# 2. Create config for MRLTrainer
+mrl_config = MrlConfig(
+    lr=1e-4,
+    critic_lr=2e-4,
+    critic_encoder_lr=1e-4,
+    separate_memory_lr=True,
+    memory_lr=3e-4,
+    max_seq_len=256,
+    critic_max_len=512,
+    weight_decay=0.01,
+    critic_weight_decay=0.01,
+    update_epochs=10,
+    pad_token_id=0,
+    end_token_id=3,
+    use_moe_aux_loss=True,
+    embedding_lr=5e-6,
+    use_memory_warmup=False,
+)
+
+# 3. Initialize MRL Trainer
+trainer = MRLTrainer(actor, critic, reward_model, device, mrl_config, algorithm, use_amp=True, dtype=torch.bfloat16)
+
+# 4. Train with curriculum stages config
+trainer(curriculum_stages, batch_size=batch_size)
+```

@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "rxnn"
-version = "0.2.66"
+version = "0.2.67"
 description = "RxNN: Reactive Neural Networks Platform"
 
 license = "Apache-2.0"
