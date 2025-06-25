@@ -151,5 +151,9 @@ def get_gradient_norms(model: nn.Module):
         param_norm = p.grad.data.norm(2)
         total_norm += param_norm.item() ** 2
     total_norm = total_norm ** 0.5
-    mean_norm = total_norm / len(grad_params)
+    params_len = len(grad_params)
+    if params_len != 0:
+        mean_norm = total_norm / params_len
+    else:
+        mean_norm = 0.0
     return total_norm, mean_norm
