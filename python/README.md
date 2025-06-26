@@ -31,10 +31,10 @@ sequence, it has to process it and save it in memory, but it could be done in ba
 
 ## Release plan
 We are working on three new reactive architectures, that progressively advance from language models to awareness models:
-- Reactive Transformer: Reactive Language Model (RLM) with Short-Term Memory
-- Preactor: extending Reactive Transformer with additional Long-Term Memory, providing theoretically infinite context (only
+- **Reactive Transformer**: Reactive Language Model (RLM) with Short-Term Memory. [Research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)
+- **Preactor**: extending Reactive Transformer with additional Long-Term Memory, providing theoretically infinite context (only
   single message length is limited) and the ability to learn from interactions (Live Learning)
-- Reactor: AGI awareness model & Strong Reactive Neural Network, that's working in infinite reasoning loop and doesn't require explicit human commands
+- **Reactor**: AGI awareness model & Strong Reactive Neural Network, that's working in infinite reasoning loop and doesn't require explicit human commands
 
 Each new architecture is based on the previous one and adding new features/abilities. They will be progressively
 released with next versions of **RxNN** framework:
@@ -181,11 +181,57 @@ class YourReactiveTransformerDecoder(nn.Module, PyTorchModelHubMixin):
         return self.model(x, attention_mask=attention_mask)
 ```
 
-### Memory
-The _memory_ module includes **Short-Term Memory** and layers responsible for its update. In future versions it will also
-include **Long-Term Memory**.
+#### RxT-Alpha
+`RxTAlphaEncoder` and `RxTAlphaDecoder` are ready to use **Reactive Transformer** components, compatible with Hugging Face
+Hub (the above example is based on their code), so it could be used instead of creating custom class. Example usage could
+be found in [pre-training docs](#pre-training)
 
-The main `ShortTermMemory` class is located in `rxnn.memory.stm` module - the usage example is in Transformers module description.
+### Memory
+The _memory_ module includes **Short-Term Memory (STM)** and layers responsible for its update. In future versions it will also
+include **Long-Term Memory (LTM)**.
+
+#### Short Term Memory
+The main `ShortTermMemory` class is located in `rxnn.memory.stm` module. As described in [Reactive Transformer research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md),
+each transformer (encoder and decoder) layer has its own **STM** layer of shape `[batch_size, stm_size, embed_dim]`. Initially,
+for the first training stages (pre-training and supervised fine-tuning), **STM** is in "single/no batch" mode (`batch_size = 1`),
+because it's not used. For reinforcement learning stages (**MRL/RxRLHF/BRL**), we have to switch short-term memory to batch
+mode, because items in batches are independent. After training, we could switch back to "single/no batch" mode. Example:
+```python
+from rxnn.memory.stm import ShortTermMemory
+
+num_layers = 10
+stm_size = 256
+embed_dim = 128
+batch_size = 32
+
+# 1. Init STM
+stm = ShortTermMemory(
+  num_layers, embed_dim, stm_size,
+  init_type='normal' # memory init type, 'normal' is default and means normal distribution with 0.0 mean and 0.02 std
+)
+
+# 2. Set "batch" mode for MRL
+stm.batched_memory(
+  batch_size,
+  init_type='standard' # init type could be changed for batch mode, 'standard' is normal distribution with 0.0 mean and 1.0 std
+)
+
+# 3. Reset STM with optional init type change
+stm.reset(init_type='uniform') # init type could be also 'ones' or 'zeros', but it's not recommended
+
+# 4. Back to "single" mode for inference (optionally using mean value from batch)
+stm.single_memory(
+  init_type='standard', # we could change init type again
+  use_mean_from_batch=True # use mean values from batch as new memory
+)
+```
+
+> ##### Other utils
+> `ShortTermMemory` could be also resized with `stm.resize(new_stm_size, init_type)` method, detached and cloned
+> with `stm.clone_detach_reset()` (used in MRL), or could be made trainable (experimental option):
+> - could be initialized as trainable - `stm = ShortTermMemory(num_layers, embed_dim, stm_size, is_trainable=True)`
+> - could be switched to trainable - `stm.make_trainable()`
+> - and switched back to buffer - `stm.freeze()`
 
 #### Memory Attention Network
 **Memory Attention Network** is responsible for memory layers update. It includes memory attention layers, with normalization
@@ -273,6 +319,10 @@ class YourMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0")
 >
 > **Gated residual** is currently in tests - we are not sure if it will provide better results, so **it's not recommended**
 
+##### RxT-Alpha Memory Attention
+`RxTAlphaMemoryAttention` is ready to use Memory Attention network for **Reactive Transformer** Proof-of-Concept, that
+could be used instead of creating custom class. Example is in [Memory Reinforcement Learning docs](#memory-reinforcement-learning)
+
 ### Training
 Training module includes **Trainers** for different training stages of reactive models and shared training utils.
 
@@ -342,16 +392,17 @@ config = {
   'num_layers': 10,
   'vocab_size': vocab_size,
   'embed_dim': embed_dim,
-  'att_heads': 16,
-  'att_groups': 8,
+  'att_heads': 16, # attention heads, in SQA it's used only for dimension split
+  'att_groups': 8, # key/value groups for GQA/SQA
   'seq_len': seq_len,
   'stm_size': seq_len,
-  'use_flash_attention': False,
-  'use_gated': True,
+  'use_flash_attention': False, # explicitly use flash-attn function (otherwise it's used through PyTorch backend) - not recommended
+  'use_gated': True, # use Gated Linear Units in feed forward, True by default
+  'ff_activation': 'silu', # feed forward activation, 'silu' is default for SwiGLU layers
   'ff_dropout': 0.1,
-  'self_att_type': 'sqa',
-  'cross_att_type': 'sqa',
-  'att_query_groups': 8,
+  'self_att_type': 'sqa', # self attention could be 'sqa', 'gqa', 'mqa' or 'mha'
+  'cross_att_type': 'sqa', # self attention could be 'sqa', 'gqa', 'mqa' or 'mha'
+  'att_query_groups': 8, # query groups for SQA
 }
 
 encoder_config = {
@@ -361,9 +412,9 @@ encoder_config = {
 
 decoder_config = {
   'ff_dim': 256,
-  'use_moe': True,
-  'num_experts': 20,
-  'moe_top_k': 4,
+  'use_moe': True, # use Mixture-of-Experts feed forward
+  'num_experts': 20, # number of experts
+  'moe_top_k': 4, # number of activated experts (per token)
   **config
 }
 
@@ -621,11 +672,11 @@ mem_attn = RxTAlphaMemoryAttention(
     att_heads=8,
     seq_len=256,
     stm_size=256,
-    use_flash_attention=False,
-    norm_type='classic-rms',
-    att_groups=4,
-    att_type='sqa',
-    att_query_groups=4,
+    use_flash_attention=False, # explicitly use flash-attn function (otherwise it's used through PyTorch backend)
+    norm_type='classic-rms', # memory norm type
+    att_groups=4, # key/value groups for SQA/GQA
+    att_type='sqa', # attention type, could be 'sqa', 'gqa', 'mqa' or 'mha'
+    att_query_groups=4, # query groups for SQA
 )
 
 # 4. Load shared embedding and memory from encoder to other models
@@ -651,7 +702,7 @@ Then, we have to load tokenizer and MRL Datasets, and create _curriculum config_
 # 1. Load tokenizer
 tokenizer = load_tokenizer_from_hf_hub('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder', token='HF_TOKEN')
 
-# 2. Load PoC TinyStories based MRL Dataset, starting from 4 steps to 16 in long range
+# 2. Load PoC TinyStories based MRL Dataset, starting from 4 steps to 16 in long range, and pre-tokenize it
 mrl_datasets = MrlDatasets.from_hf_hub(
     'ReactiveAI/TinyStories-MRL',
     tokenizer,
@@ -667,33 +718,40 @@ mrl_datasets = MrlDatasets.from_hf_hub(
     max_seq_len=256,
 )
 
+mrl_datasets.pre_tokenize(verbose=True, log_interval=100)
+
 # 3. Create curriculum stages config
 curriculum_stages = [CurriculumConfig(
-    steps=item['steps'],
-    epochs=10 if item['steps'] == 4 else 8 if item['steps'] == 8 and item['is_long_range'] else 5,
+    steps=item['steps'], # number of steps in curriculum stage
+    epochs=10 if item['steps'] == 4 else 5, # number of epochs in curriculum stage 
     dataset=item['dataset'],
     eval_dataset=item['eval_dataset'],
     callbacks=[
-        MrlPrintCallback(),
+        MrlPrintCallback(), # Print loss/reward callback
         MrlModelSaveCallback(
-            './models', push_to_hub=True, hub_model_critic='ReactiveAI/RxT-Alpha-Micro-Critic-MRL',
-            hub_model_decoder='ReactiveAI/RxT-Alpha-Micro-Decoder-MRL', hub_model_encoder='ReactiveAI/RxT-Alpha-Micro-Encoder-MRL',
-            hub_model_memory_attention='ReactiveAI/RxT-Alpha-Micro-MemAtt-MRL', private_repo=True,
-            hf_token='HF_TOKEN', final_commit_message=f"MRL steps: {item['steps']} {'lr' if item['is_long_range'] else ''}",
+            './models',
+            push_to_hub=True,
+            hub_model_critic='Your critic model hub id',
+            hub_model_decoder='Your MRL decoder model hub id',
+            hub_model_encoder='Your MRL encoder model hub id',
+            hub_model_memory_attention='Your memory-attention model hub id',
+            private_repo=True,
+            hf_token='HF_TOKEN',
+            final_commit_message=f"MRL steps: {item['steps']} {'lr' if item['is_long_range'] else ''}",
             push_checkpoint_weights=True,
-        )
+        ) # MRL Model save callback - save and push to hub critic model and actor components
     ],
-    strategy=MrlStrategy.LONG_RANGE_STRATEGY if item['is_long_range'] else MrlStrategy.MULTI_STEP_STRATEGY,
-    unfreeze_epoch=((2, 2e-5), (4, 8e-5), (6, 1e-5), 8) if item['steps'] == 4 else (0, 1, (2, 1e-6), 4),
-    random_resets=item['steps'] > 4,
-    random_resets_from=2,
-    random_resets_ratio=0.4 if item['steps'] != 4 else None,
-    separate_memory_lr=True,
-    memory_lr=6e-4 if item['steps'] == 4 else 4e-4 if item['steps'] == 8 and item['is_long_range'] else None,
-    lr=3e-4 if item['steps'] == 4 else 2e-4 if item['steps'] == 8 and item['is_long_range'] else None,
-    critic_lr=4e-4 if item['steps'] == 4 else None,
-    critic_encoder_lr=2e-4  if item['steps'] == 4 else None,
-    teacher_forcing=True if item['steps'] <= 8 else False,
+    strategy=MrlStrategy.LONG_RANGE_STRATEGY if item['is_long_range'] else MrlStrategy.MULTI_STEP_STRATEGY, # strategy for curriculum stage
+    unfreeze_epoch=((2, 2e-5), (4, 8e-5), (6, 1e-5), 8) if item['steps'] == 4 else (0, 1, (2, 1e-6), 4), # unfreeze strategy config
+    random_resets=item['steps'] > 4, # enable random memory resets
+    random_resets_from=2, # epoch when random resets starts
+    random_resets_ratio=0.4 if item['steps'] != 4 else None, # probability of STM reset before episode
+    separate_memory_lr=True, # use separate memory LR in current curriculum stage
+    memory_lr=6e-4 if item['steps'] == 4 else None, # memory LR for curriculum stage, if None, use global config
+    lr=3e-4 if item['steps'] == 4 else None, # model LR for curriculum stage, if None, use global config
+    critic_lr=4e-4 if item['steps'] == 4 else None, # critic (head) LR for curriculum stage, if None, use global config
+    critic_encoder_lr=2e-4  if item['steps'] == 4 else None, # critic (encoder) LR for curriculum stage, if None, use global config
+    teacher_forcing=item['steps'] <= 8, # use teacher forcing - save reference answers from dataset in memory instead of generated ones
 ) for item in mrl_datasets]
 ```
 
@@ -709,30 +767,33 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 reward_model = MrlRewardModel(
     encoder.model.embedding,
     device,
-    bleu_with_saved_data=True,
-    reward_len=True,
-    neg_reward_len=True,
-    target_len_as_ref=True,
-    bleu_factor=0.4,
-    cos_factor=0.5,
-    len_factor=0.1,
-    bleu_ref_factor=0.4,
-    bleu_saved_factor=0.6,
-    cos_ref_factor=0.35,
-    cos_saved_factor=0.65,
-    neg_bleu_factor=0.45,
-    neg_cos_factor=0.45,
-    neg_cos_ref_factor=0.3,
-    neg_cos_saved_factor=0.7,
-    neg_bleu_ref_factor=0.3,
-    neg_bleu_saved_factor=0.7,
-    multi_cos_ref_factor=0.3,
-    multi_cos_saved_factor= 0.5,
-    multi_cos_running_mean_factor = 0.2,
-    bleu_ref_weights=(0.2, 0.2, 0.3, 0.3),
-    bleu_saved_weights=(0.2, 0.2, 0.3, 0.3),
-    tanh_reward_scale=False,
-    rewards_scale=1.0,
+    bleu_with_saved_data=True, # use saved data (previous or first interaction) in BLEU calculation
+    reward_len=True, # use length reward in calculation (answer_len / target_len)
+    max_rewarded_len=None, # target length awarded as 1.0
+    neg_reward_len=True, # negative length reward - lower reward when answer is too long (target_len / answer_len)
+    target_len_as_ref=True, # use reference answer len as target
+    use_running_mean=True, # use running mean embedding of all previous answers in cosine similarity calculation
+    allow_not_summing_factors=False, # if True sum of reward factors could be different from 1.0, it's False by default
+    bleu_factor=0.4, # factor for BLEU score in standard reward
+    cos_factor=0.5, # factor for cosine similarity score in standard reward
+    len_factor=0.1, # factor for length reward score in standard reward
+    bleu_ref_factor=0.4, # factor for reference answer score in BLEU calculation (standard mode)
+    bleu_saved_factor=0.6, # factor for saved data score in BLEU calculation (standard mode)
+    cos_ref_factor=0.35, # factor for reference answer score in cosine sim calculation (standard mode)
+    cos_saved_factor=0.65, # factor for saved data score in cosine sim calculation (standard mode)
+    multi_cos_ref_factor=0.3, # factor for reference answer in multi-step cosine sim calculation
+    multi_cos_saved_factor= 0.5, # factor for saved data in multi-step cosine sim calculation
+    multi_cos_running_mean_factor = 0.2, # factor for previous answers running mean in multi-step cosine sim calculation
+    neg_bleu_factor=0.45, # factor for BLEU score in negative reward
+    neg_cos_factor=0.45, # factor for cosine similarity score in negative reward
+    neg_bleu_ref_factor=0.3, # factor for reference answer score in BLEU calculation (negative mode)
+    neg_bleu_saved_factor=0.7, # factor for saved data score in BLEU calculation (negative mode)
+    neg_cos_ref_factor=0.3, # factor for reference answer score in cosine sim calculation (negative mode)
+    neg_cos_saved_factor=0.7, # factor for saved data score in cosine sim calculation (negative mode)
+    bleu_ref_weights=(0.2, 0.2, 0.3, 0.3), # weights for n-grams in NLTK BLEU calculation for reference answers
+    bleu_saved_weights=(0.2, 0.2, 0.3, 0.3), # weights for n-grams in NLTK BLEU calculation for saved data
+    tanh_reward_scale=False, # scale rewards to -1.0 to 1.0 range, instead of standard 0.0-1.0
+    rewards_scale=1.0, # rewards scaling factor (reward * rewards_scale)
 )
 ```
 
@@ -743,28 +804,70 @@ algorithm = PPOAlgorithm(
   PPOConfig(clip_eps=0.2, gae_lambda=0.95, gae_gamma=0.99, entropy_coef=0.01, critic_value_clip=50.0)
 )
 
-# 2. Create config for MRLTrainer
+# 2. Create config for MRLTrainer (most of MrlConfig fields could be overwritten in each curriculum stage)
 mrl_config = MrlConfig(
-    lr=1e-4,
-    critic_lr=2e-4,
-    critic_encoder_lr=1e-4,
-    separate_memory_lr=True,
-    memory_lr=3e-4,
-    max_seq_len=256,
-    critic_max_len=512,
-    weight_decay=0.01,
-    critic_weight_decay=0.01,
-    update_epochs=10,
-    pad_token_id=0,
-    end_token_id=3,
-    use_moe_aux_loss=True,
-    embedding_lr=5e-6,
-    use_memory_warmup=False,
+    lr=1e-4, # main LR, used for decoder layers
+    encoder_lr=2e-4, # encoder LR, used for encoder layers (if None, lr is used)
+    critic_lr=2e-4, # critic LR, used for critic value head
+    critic_encoder_lr=1e-4, # critic encoder LR (if not set, critic_lr is used)
+    separate_memory_lr=True, # use separate LR for memory attention and memory cross-attention
+    encoder_memory_lr=5e-4, # LR for encoder memory cross-attention (if None, memory_lr is used)
+    memory_lr=3e-4, # memory LR, used for decoder memory cross-attention
+    memory_attn_lr=5e-4, # memory attention LR (if None, memory_lr is used)
+    max_seq_len=256, # maximum length of single interaction
+    critic_max_len=512, # maximum length of critic sequence (have to be longer than actor's context)
+    weight_decay=0.01, # weight decay for actor AdamW optimizer
+    critic_weight_decay=0.01, # weight decay for critic AdamW optimizer
+    update_epochs=10, # inner PPO update epochs
+    pad_token_id=0, # tokenizer padding token id
+    end_token_id=3, # tokenizer EOS token id
+    use_moe_aux_loss=True, # add Mixture-of-Experts Router auxiliary loss to policy loss
+    freeze_embeddings=False, # freeze pre-trained embeddings for MRL training
+    embedding_lr=5e-6, # LR for embeddings, if not frozen (if None, lr is used)
+    use_memory_warmup=False, # memory warmup - update memory with first interaction in no grad mode, before episode, for better initialization
 )
 
 # 3. Initialize MRL Trainer
-trainer = MRLTrainer(actor, critic, reward_model, device, mrl_config, algorithm, use_amp=True, dtype=torch.bfloat16)
+trainer = MRLTrainer(
+    actor, critic, reward_model, device, mrl_config, algorithm,
+    use_amp=True, # use autocast in MRL Training
+    dtype=torch.bfloat16, # data type for MRL
+    use_ddp=False, # use distributed training with DDP
+)
 
 # 4. Train with curriculum stages config
 trainer(curriculum_stages, batch_size=batch_size)
 ```
+
+## Experimental attention layers
+While working on reactive architectures, we also developed several new types of attention layers, some of which achieve
+very promising results. Even considering that reactive models, processing single interactions, have much lower computational
+requirements, we need the most efficient attention mechanisms, consistent with memory requirements. Since memory is not a
+sequence but a set, spatial sparsity is probably not a good solution here, so we were looking for an efficient alternative
+to Flex Attention with full access to all memory positions. New attention layers are implemented in `rxnn.experimental.attention`
+module:
+- **Grouped Mixture-of-Experts Attention (GMA)** - use MoE routing to dynamically select K active key/value heads for each token, instead
+  of using static selection in **GQA**. While it's theoretically interesting, in practice, it achieved worse results than **GQA**,
+  and even **MQA**, in all test, and is a lot slower because of routing overhead, so we abandoned further research. More details
+  in [research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/moe_attention.md)
+- **Deep Mixture-of-Experts Attention (DMA)** - extends **GMA** with the same MoE routing for query heads. Like **GMA**,
+  it gives even worse results, and all the computational performance benefits from the sparse query heads (like in
+  **SQA**) are lost by routing overhead (lack of specialized kernels for heads selection), so the further research is also
+  abandoned. [Research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/moe_attention.md)
+- **Hierarchical MoE Attention (HMA)** - extends **DMA/GMA**, using different number of query/key/value heads for tokens with
+  different priority. It's only the idea and is not implemented, because of poor results of GMA/DMA. [More info](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/hierarchical_moe_attention.md)
+- **Sparse Query Attention (SQA)** - the most trivial extension to GQA, reducing not only the number of key/value heads, but
+  also the number of query heads. It results in even 2-3x faster model (for 32k/131k tokens). **SQA** is the fastest attention
+  mechanism for 0-131k sequence length, for longer sequences **Flex Attention** becomes faster. That's ideal for reactive models,
+  that doesn't need a million token context for single interaction processing. In tested cases **SQA** models results (loss/accuracy)
+  were close to GQA, differences were almost unnoticeable, but it still requires more tests. [Research docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/sparse_query_attention.md)
+- **Flex Sparse Query Attention (Flex-SQA)** - **Flex Attention** combined with **SQA** - enable handling 4-8x longer sliding
+  windows, in shorter time, than base **Flex**, so it should result in better results. **Flex-SQA** should be the fastest
+  attention mechanism for sequences longer than 131k tokens and is made for classic transformers, or potentially self-attention
+  in bigger reactive models. Currently, it's viable only with symmetric variants of **SQA** (same number of used query
+  and key/value heads), because kernels aren't compatible with GQA in sliding windows and not symmetric variants is 2x slower,
+  than it should be. Docs and tests in progress
+
+### Test usage
+Experimental attention layers could be tested with `ExperimentalAttentionTransformer` model from `rxnn.experimental.models`,
+Usage example could be found in our notebooks repository - [RxNN Notebooks](https://github.com/RxAI-dev/rxnn-notebooks)
