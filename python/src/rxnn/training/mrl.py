@@ -41,6 +41,7 @@ class MrlConfig(TypedDict):
     use_memory_warmup: Optional[bool]
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
+    clamp_logits: Optional[bool]
 
 
 class MrlStrategy(Enum):
@@ -152,6 +153,7 @@ class MRLTrainer:
         self.use_memory_warmup = config.get('use_memory_warmup', False)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
+        self.clamp_logits = config.get('clamp_logits', False)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -594,7 +596,9 @@ class MRLTrainer:
         else:
             return main_loss
 
-    def _log_gradients(self):
+    def _log_gradients(self, logits: torch.Tensor):
+        print(
+            f"Returned logits stats: min={logits.min().item():.4f}, max={logits.max().item():.4f}")
         encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder)
         decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder)
         mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention)
@@ -633,6 +637,8 @@ class MRLTrainer:
                                       pad_token_id=self.pad_token_id)
                 logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                     action=MrlActorAction.DECODE)
+                if self.clamp_logits:
+                    logits = logits.clamp(min=-20.0, max=20.0)
                 # 4.2 Calculate policy loss with selected algorithm
                 policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
                                                             advantages)
@@ -645,7 +651,7 @@ class MRLTrainer:
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
-                self._log_gradients()
+                self._log_gradients(logits)
             # 4.5 Run scaled optimization step
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -655,6 +661,8 @@ class MRLTrainer:
                                   pad_token_id=self.pad_token_id)
             logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                 action=MrlActorAction.DECODE)
+            if self.clamp_logits:
+                logits = logits.clamp(min=-20.0, max=20.0)
             # 4.2 Calculate policy loss with selected algorithm
             policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
             policy_loss = self._moe_aux_loss(policy_loss)
@@ -664,7 +672,7 @@ class MRLTrainer:
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
                                            error_if_nonfinite=False)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
-                self._log_gradients()
+                self._log_gradients(logits)
             # 4.5 Run scaled optimization step
             self.optimizer.step()
         # 5. Get float loss value for callbacks/writer
