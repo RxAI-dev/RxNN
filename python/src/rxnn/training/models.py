@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from enum import Enum
-from typing import Literal, Iterator
+from typing import Literal, Iterator, Optional
 from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
 from ..transformers.ff import GatedLinearUnit, get_activation_layer
@@ -188,7 +188,7 @@ class MrlActorModel(nn.Module):
                 list(self.memory_attention_parameters())
             ))
 
-    def moe_router_loss(self):
+    def moe_router_loss(self) -> Optional[torch.Tensor]:
         if self.encoder.model.use_moe and self.decoder.model.use_moe:
             return (self.encoder.model.moe_router_loss() + self.decoder.model.moe_router_loss()) / 2
         elif self.encoder.model.use_moe:

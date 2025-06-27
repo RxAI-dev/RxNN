@@ -4,7 +4,7 @@ from datasets import Dataset as HfDataset, load_dataset, concatenate_datasets
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from .tokenizer import load_tokenizer_from_hf_hub
 
-from typing import Union, TypedDict, Optional, TypeAlias, Any
+from typing import Union, TypedDict, Optional, TypeAlias, Any, Literal
 
 
 class BaseDataset(Dataset):
@@ -854,8 +854,8 @@ class EncoderSftDataset(BaseInteractionDataset):
             'labels': labels
         }
 
-
-MrlDataItem: TypeAlias = dict[str, Union[dict[str, torch.Tensor], list[dict[str, dict[str, torch.Tensor]]]]]
+ItemFields: TypeAlias = Literal['input_ids', 'attention_mask']
+MrlDataItem: TypeAlias = dict[str, Union[dict[ItemFields, torch.Tensor], list[dict[str, dict[ItemFields, torch.Tensor]]]]]
 
 
 class MrlCurriculumDataset(Dataset):
@@ -1031,7 +1031,7 @@ class MrlCurriculumDataset(Dataset):
         """Collate function for MRL curriculum dataset with nested interactions"""
 
         def collate_interaction_batch(interaction_batch: Union[list[dict[str, dict[str, torch.Tensor]]], tuple[Any]]) -> \
-        dict[str, dict[str, torch.Tensor]]:
+        dict[str, dict[ItemFields, torch.Tensor]]:
             """Helper to collate a batch of interactions"""
             return {
                 'query': {
@@ -1047,12 +1047,21 @@ class MrlCurriculumDataset(Dataset):
         batch_interactions = [x['interactions'] for x in batch]
         transposed_interactions = list(zip(*batch_interactions))
 
-        return {
+        def has_nans(tensor: dict[ItemFields, torch.Tensor]) -> bool:
+            return torch.isnan(tensor['input_ids']).any().item() or torch.isnan(tensor['attention_mask']).any().item()
+
+        results: MrlDataItem = {
             **collate_interaction_batch(batch),  # Collate initial query and answer
             'interactions': [
                 collate_interaction_batch(step_batch) for step_batch in transposed_interactions
             ]
         }
+
+        assert not has_nans(results['query']), "NaN in query"
+        assert not has_nans(results['answer']), "NaN in answer"
+        assert not any([(has_nans(item['query']) or has_nans(item['answer'])) for item in results['interactions']]), "NaN in interactions"
+
+        return results
 
 
 class MrlDatasetItem(TypedDict):

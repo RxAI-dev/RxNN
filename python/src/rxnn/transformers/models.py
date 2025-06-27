@@ -58,6 +58,15 @@ class ReactiveTransformerBase(nn.Module):
         else:
             return None
 
+    def _handle_layer(self, i: int, x: torch.Tensor, mask: torch.Tensor = None, is_shared: bool = False):
+        stm_layer_idx = i if is_shared else i + self.num_shared_layers
+        layer_stm = self.stm(stm_layer_idx)
+        # expand layer STM to batch size, if it's not in batch mode
+        if layer_stm.size(0) == 1:
+            layer_stm = layer_stm.expand(x.size(0), -1, -1)
+        layer = self.shared_layers[i] if is_shared else self.layers[i]
+        return layer(x, layer_stm, mask=mask)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
         x = self.embedding(x)
@@ -84,6 +93,8 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
+        if torch.isnan(x).any():
+            print("NaN detected in decoder embedding output")
         seq_len = x.size(1)
         if not self.use_flash_attention and self.use_relative_embedding:
             mask = create_causal_mask(seq_len, device=x.device)
@@ -96,18 +107,12 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                layer_stm = self.stm(i)
-                # expand layer STM to batch size, if it's not in batch mode
-                if layer_stm.size(0) == 1:
-                    layer_stm = layer_stm.expand(x.size(0), -1, -1)
-                x = self.shared_layers[i](x, layer_stm, mask=mask)
+                x = self._handle_layer(i, x, mask=mask, is_shared=True)
         # Process own layers
         for i in range(self.num_own_layers):
-            layer_stm = self.stm(i)
-            # expand layer STM to batch size, if it's not in batch mode
-            if layer_stm.size(0) == 1:
-                layer_stm = layer_stm.expand(x.size(0), -1, -1)
-            x = self.layers[i](x, layer_stm, mask=mask)
+            x = self._handle_layer(i, x, mask=mask)
+            if torch.isnan(x).any():
+                print(f"NaN detected in {i}. decoder layer output")
         return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 
@@ -116,6 +121,8 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         x = super().forward(x)  # apply embeddings
+        if torch.isnan(x).any():
+            print("NaN detected in encoder embedding output")
         if attention_mask is not None:
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
 
@@ -123,19 +130,13 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                layer_stm = self.stm(i)
-                # expand layer STM to batch size, if it's not in batch mode
-                if layer_stm.size(0) == 1:
-                    layer_stm = layer_stm.expand(x.size(0), -1, -1)
-                x = self.shared_layers[i](x, layer_stm, mask=attention_mask)
+                x = self._handle_layer(i, x, mask=attention_mask, is_shared=True)
                 hidden_states.append(x)
         # Process own layers
         for i in range(self.num_own_layers):
-            layer_stm = self.stm(i)
-            # expand layer STM to batch size, if it's not in batch mode
-            if layer_stm.size(0) == 1:
-                layer_stm = layer_stm.expand(x.size(0), -1, -1)
-            x = self.layers[i](x, layer_stm, mask=attention_mask)
+            x = self._handle_layer(i, x, mask=attention_mask)
+            if torch.isnan(x).any():
+                print(f"NaN detected in {i}. encoder layer output")
             hidden_states.append(x)
         return x, torch.stack(hidden_states)
 

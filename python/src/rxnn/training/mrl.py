@@ -591,6 +591,8 @@ class MRLTrainer:
         actor = next(self.actor.children()) if isinstance(self.actor, DistributedDataParallel) else self.actor
 
         router_loss = actor.moe_router_loss()
+        if torch.isnan(router_loss).any():
+            print("NaN detected in router loss")
         if router_loss is not None:
             return main_loss + self.moe_aux_loss_scale * router_loss
         else:
@@ -605,18 +607,38 @@ class MRLTrainer:
         print(f"Encoder grad norm - total: {encoder_total:.6f}, mean: {encoder_mean:.6f}")
         print(f"Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
         print(f"Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
-        # decoder's cross att
+
         dec_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in self.actor.decoder.model.layers]
-        print(f"Decoder cross-att mean norm: {(sum(dec_x_att_norms) / len(dec_x_att_norms)):.6f}, all: {dec_x_att_norms}")
-
         mem_att_norms = [get_gradient_norms(layer)[1] for layer in self.actor.memory_attention.model.attention_layers]
-        print(f"Memory attention layers mean norm: {(sum(mem_att_norms) / len(mem_att_norms)):.6f}, all: {mem_att_norms}")
-
         enc_ff_norms = [get_gradient_norms(layer.ff)[1] for layer in self.actor.encoder.model.layers]
-        print(f"Encoder ff mean norm: {(sum(enc_ff_norms) / len(enc_ff_norms)):.6f}, all: {enc_ff_norms}")
+        enc_self_att_norms = [get_gradient_norms(layer.attention)[1] for layer in self.actor.encoder.model.layers]
+        enc_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in
+                         self.actor.encoder.model.layers]
 
-        enc_ff_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in self.actor.encoder.model.layers]
-        print(f"Encoder cross-att mean norm: {(sum(enc_ff_norms) / len(enc_ff_norms)):.6f}, all: {enc_ff_norms}")
+        calc_mean = lambda x: sum(x) / len(x)
+
+        dec_x_att_norms_mean = calc_mean(dec_x_att_norms)
+        mem_att_norms_mean = calc_mean(mem_att_norms)
+        enc_ff_norms_mean = calc_mean(enc_ff_norms)
+        enc_self_att_norms_mean = calc_mean(enc_self_att_norms)
+        enc_x_att_norms_mean = calc_mean(enc_x_att_norms)
+
+        print(f"Decoder cross-att mean norm: {dec_x_att_norms_mean:.6f}, all: {dec_x_att_norms}")
+        print(f"Memory attention layers mean norm: {mem_att_norms_mean:.6f}, all: {mem_att_norms}")
+        print(f"Encoder ff mean norm: {enc_ff_norms_mean:.6f}, all: {enc_ff_norms}")
+        print(f"Encoder self-att mean norm: {enc_self_att_norms_mean:.6f}, all: {enc_self_att_norms}")
+        print(f"Encoder cross-att mean norm: {enc_x_att_norms_mean:.6f}, all: {enc_x_att_norms}")
+
+        if self.writer is not None:
+            self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder', decoder_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/mem-att', mem_att_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder x-att', dec_x_att_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/mem-att layers', mem_att_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder ff', enc_ff_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder self-att', enc_self_att_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder x-att', enc_x_att_norms_mean, self.global_step['train'])
+
 
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
                      advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
@@ -649,7 +671,7 @@ class MRLTrainer:
             # 4.4 Unscale and clip gradient norms
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=False)
+                                           error_if_nonfinite=self.debug_mode)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step
@@ -670,7 +692,7 @@ class MRLTrainer:
             policy_loss.backward(retain_graph=True)
             # 4.4 Clip gradient norms
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=False)
+                                           error_if_nonfinite=self.debug_mode)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step
