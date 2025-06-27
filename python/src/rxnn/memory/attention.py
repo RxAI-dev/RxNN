@@ -65,7 +65,7 @@ class StmMemoryAttention(nn.Module):
             encoded_layer_data = x[i]
             normalized_layer_stm = self.memory_norm_layers[i](layer_stm)
             if torch.isnan(normalized_layer_stm).any():
-                print(f"NaN detected in {i} layer memory norm output")
+                print(f"!!!!!!!!!!!!!!!!!!!!!!         NaN detected in {i} layer memory norm output")
 
             if self.debug_mode and self.training:
                 if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
@@ -75,11 +75,11 @@ class StmMemoryAttention(nn.Module):
                     self.debug_step += 1
 
             if torch.isnan(encoded_layer_data).any():
-                print(f"NaN detected in {i} layer encoded data input")
+                print(f"!!!!!!!!!!!!!!!!!!!!!!         NaN detected in {i} layer encoded data input")
 
             new_layer_stm = self.attention_layers[i](normalized_layer_stm, encoded_layer_data, encoded_layer_data, mask=attention_mask)
             if torch.isnan(new_layer_stm).any():
-                print(f"NaN detected in {i} layer memory attention output")
+                print(f"!!!!!!!!!!!!!!!!!!!!!!         NaN detected in {i} layer memory attention output")
 
             if self.use_gated_residual:
                 new_stm[i] = self._residual_gate(self.gate[i], layer_stm, new_layer_stm) # gated residual

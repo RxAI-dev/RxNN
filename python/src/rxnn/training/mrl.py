@@ -592,7 +592,7 @@ class MRLTrainer:
 
         router_loss = actor.moe_router_loss()
         if torch.isnan(router_loss).any():
-            print("NaN detected in router loss")
+            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in router loss")
         if router_loss is not None:
             return main_loss + self.moe_aux_loss_scale * router_loss
         else:
@@ -671,7 +671,7 @@ class MRLTrainer:
             # 4.4 Unscale and clip gradient norms
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=self.debug_mode)
+                                           error_if_nonfinite=False)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step
@@ -692,7 +692,7 @@ class MRLTrainer:
             policy_loss.backward(retain_graph=True)
             # 4.4 Clip gradient norms
             torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=self.debug_mode)
+                                           error_if_nonfinite=False)
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step

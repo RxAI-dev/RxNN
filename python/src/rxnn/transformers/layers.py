@@ -103,10 +103,10 @@ class ReactiveTransformerLayer(nn.Module):
         if not self.use_post_norm:
             x = self.norm1(x)
             if torch.isnan(x).any():
-                print("NaN detected in pre-norm (self-attention) output")
+                print("!!!!!!!!!!!!!!!!!!!!!!         !!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (self-attention) output")
         x = self.attention(x, x, x, mask=mask)
         if torch.isnan(x).any():
-            print("NaN detected in self-attention output")
+            print("!!!!!!!!!!!!!!!!!!!!!!         !!!!!!!!!!!!!!!!!!!!!!         NaN detected in self-attention output")
         x = residual + x
         if self.use_post_norm:
             x = self.norm1(x)
@@ -115,17 +115,17 @@ class ReactiveTransformerLayer(nn.Module):
         if not self.use_post_norm:
             x = self.norm2(x)
             if torch.isnan(x).any():
-                print("NaN detected in pre-norm (cross-attention) output")
+                print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (cross-attention) output")
 
         mem_mask = mask.squeeze(1).unsqueeze(-1).expand(-1, -1, -1, stm.size(1)) \
             if mask is not None else None
 
         if torch.isnan(stm).any():
-            print("NaN detected in STM cross-attention input")
+            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in STM cross-attention input")
 
         x = self.memory_cross_attention(x, stm, stm, mask=mem_mask)
         if torch.isnan(x).any():
-            print("NaN detected in cross-attention output")
+            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in cross-attention output")
         x = residual + x
         if self.use_post_norm:
             x = self.norm2(x)
@@ -135,10 +135,10 @@ class ReactiveTransformerLayer(nn.Module):
         if not self.use_post_norm:
             x = self.norm3(x)
             if torch.isnan(x).any():
-                print("NaN detected in pre-norm (ff) output")
+                print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (ff) output")
         x = self.ff(x)
         if torch.isnan(x).any():
-            print("NaN detected in ff output")
+            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in ff output")
         x = residual + x
         if self.use_post_norm:
             x = self.norm3(x)
