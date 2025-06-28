@@ -42,6 +42,7 @@ class MrlConfig(TypedDict):
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
     clamp_logits: Optional[bool]
+    max_grad_norm: Optional[float]
 
 
 class MrlStrategy(Enum):
@@ -154,6 +155,7 @@ class MRLTrainer:
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
         self.clamp_logits = config.get('clamp_logits', False)
+        self.max_grad_norm = config.get('max_grad_norm', 1.0)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -591,12 +593,27 @@ class MRLTrainer:
         actor = next(self.actor.children()) if isinstance(self.actor, DistributedDataParallel) else self.actor
 
         router_loss = actor.moe_router_loss()
-        if torch.isnan(router_loss).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in router loss")
         if router_loss is not None:
             return main_loss + self.moe_aux_loss_scale * router_loss
         else:
             return main_loss
+
+    def _clip_actor_grad_norms(self):
+        # Encoder with embedding
+        torch.nn.utils.clip_grad_norm_(
+            self.actor.encoder.parameters(),
+            max_norm=self.max_grad_norm, error_if_nonfinite=False
+        )
+        # Decoder
+        torch.nn.utils.clip_grad_norm_(
+            self.actor.decoder.memory_parameters() + self.actor.decoder.not_memory_parameters(),
+            max_norm=self.max_grad_norm, error_if_nonfinite=False
+        )
+        # Memory attention
+        torch.nn.utils.clip_grad_norm_(
+            self.actor.memory_attention.parameters(),
+            max_norm=self.max_grad_norm, error_if_nonfinite=False
+        )
 
     def _log_gradients(self, logits: torch.Tensor):
         print(
@@ -608,8 +625,13 @@ class MRLTrainer:
         print(f"Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
         print(f"Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
 
+        dec_ff_norms = [get_gradient_norms(layer.ff)[1] for layer in self.actor.decoder.model.layers]
+        dec_self_att_norms = [get_gradient_norms(layer.attention)[1] for layer in self.actor.decoder.model.layers]
         dec_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in self.actor.decoder.model.layers]
+
+
         mem_att_norms = [get_gradient_norms(layer)[1] for layer in self.actor.memory_attention.model.attention_layers]
+
         enc_ff_norms = [get_gradient_norms(layer.ff)[1] for layer in self.actor.encoder.model.layers]
         enc_self_att_norms = [get_gradient_norms(layer.attention)[1] for layer in self.actor.encoder.model.layers]
         enc_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in
@@ -617,22 +639,28 @@ class MRLTrainer:
 
         calc_mean = lambda x: sum(x) / len(x)
 
+        dec_ff_norms_mean = calc_mean(dec_ff_norms)
+        dec_self_att_norms_mean = calc_mean(dec_self_att_norms)
         dec_x_att_norms_mean = calc_mean(dec_x_att_norms)
         mem_att_norms_mean = calc_mean(mem_att_norms)
         enc_ff_norms_mean = calc_mean(enc_ff_norms)
         enc_self_att_norms_mean = calc_mean(enc_self_att_norms)
         enc_x_att_norms_mean = calc_mean(enc_x_att_norms)
 
+        print(f"Decoder ff mean norm: {dec_ff_norms_mean:.6f}, all: {dec_ff_norms}")
+        print(f"Decoder self-att mean norm: {dec_self_att_norms_mean:.6f}, all: {dec_self_att_norms}")
         print(f"Decoder cross-att mean norm: {dec_x_att_norms_mean:.6f}, all: {dec_x_att_norms}")
-        print(f"Memory attention layers mean norm: {mem_att_norms_mean:.6f}, all: {mem_att_norms}")
         print(f"Encoder ff mean norm: {enc_ff_norms_mean:.6f}, all: {enc_ff_norms}")
         print(f"Encoder self-att mean norm: {enc_self_att_norms_mean:.6f}, all: {enc_self_att_norms}")
         print(f"Encoder cross-att mean norm: {enc_x_att_norms_mean:.6f}, all: {enc_x_att_norms}")
+        print(f"Memory attention layers mean norm: {mem_att_norms_mean:.6f}, all: {mem_att_norms}")
 
         if self.writer is not None:
             self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder', decoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/mem-att', mem_att_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder ff', dec_ff_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder self-att', dec_self_att_norms_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder x-att', dec_x_att_norms_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/mem-att layers', mem_att_norms_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/encoder ff', enc_ff_norms_mean, self.global_step['train'])
@@ -670,8 +698,7 @@ class MRLTrainer:
             self.scaler.scale(policy_loss).backward(retain_graph=True)
             # 4.4 Unscale and clip gradient norms
             self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=False)
+            self._clip_actor_grad_norms()
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step
@@ -691,8 +718,7 @@ class MRLTrainer:
             # 4.3 Run backpropagation
             policy_loss.backward(retain_graph=True)
             # 4.4 Clip gradient norms
-            torch.nn.utils.clip_grad_norm_(self.actor.unique_parameters(), max_norm=1.0,
-                                           error_if_nonfinite=False)
+            self._clip_actor_grad_norms()
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
             # 4.5 Run scaled optimization step

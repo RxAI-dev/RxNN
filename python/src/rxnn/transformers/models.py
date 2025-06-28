@@ -93,8 +93,6 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
-        if torch.isnan(x).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in decoder embedding output")
         seq_len = x.size(1)
         if not self.use_flash_attention and self.use_relative_embedding:
             mask = create_causal_mask(seq_len, device=x.device)
@@ -111,8 +109,6 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         # Process own layers
         for i in range(self.num_own_layers):
             x = self._handle_layer(i, x, mask=mask)
-            if torch.isnan(x).any():
-                print(f"!!!!!!!!!!!!!!!!!!!!!!         NaN detected in {i}. decoder layer output")
         return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 
@@ -121,8 +117,6 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
 
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
         x = super().forward(x)  # apply embeddings
-        if torch.isnan(x).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in encoder embedding output")
         if attention_mask is not None:
             attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
 
@@ -135,8 +129,6 @@ class ReactiveTransformerEncoder(ReactiveTransformerBase):
         # Process own layers
         for i in range(self.num_own_layers):
             x = self._handle_layer(i, x, mask=attention_mask)
-            if torch.isnan(x).any():
-                print(f"!!!!!!!!!!!!!!!!!!!!!!         NaN detected in {i}. encoder layer output")
             hidden_states.append(x)
         return x, torch.stack(hidden_states)
 
