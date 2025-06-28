@@ -49,10 +49,12 @@ class ReactiveTransformerLayer(nn.Module):
             self.norm1 = nn.RMSNorm(embed_dim)
             self.norm2 = nn.RMSNorm(embed_dim)
             self.norm3 = nn.RMSNorm(embed_dim)
+            self.stm_norm = nn.RMSNorm(embed_dim)
         else:
             self.norm1 = nn.LayerNorm(embed_dim)
             self.norm2 = nn.LayerNorm(embed_dim)
             self.norm3 = nn.LayerNorm(embed_dim)
+            self.stm_norm = nn.LayerNorm(embed_dim)
         self.use_post_norm = use_post_norm
         self.use_moe = use_moe
         self.use_moe_att = use_moe_att
@@ -63,9 +65,11 @@ class ReactiveTransformerLayer(nn.Module):
         if with_norms:
             for param in self.norm2.parameters():
                 param.requires_grad_(is_trainable)
+            for param in self.stm_norm.parameters():
+                param.requires_grad_(is_trainable)
 
     def memory_parameters(self) -> list[nn.Parameter]:
-        return list(self.memory_cross_attention.parameters()) + list(self.norm2.parameters())
+        return list(self.memory_cross_attention.parameters()) + list(self.norm2.parameters()) + list(self.stm_norm.parameters())
 
     def not_memory_parameters(self) -> list[nn.Parameter]:
         return (list(self.attention.parameters()) + list(self.norm1.parameters()) +
@@ -102,11 +106,8 @@ class ReactiveTransformerLayer(nn.Module):
         residual = x
         if not self.use_post_norm:
             x = self.norm1(x)
-            if torch.isnan(x).any():
-                print("!!!!!!!!!!!!!!!!!!!!!!         !!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (self-attention) output")
         x = self.attention(x, x, x, mask=mask)
-        if torch.isnan(x).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         !!!!!!!!!!!!!!!!!!!!!!         NaN detected in self-attention output")
+
         x = residual + x
         if self.use_post_norm:
             x = self.norm1(x)
@@ -114,18 +115,13 @@ class ReactiveTransformerLayer(nn.Module):
         residual = x
         if not self.use_post_norm:
             x = self.norm2(x)
-            if torch.isnan(x).any():
-                print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (cross-attention) output")
 
+        # normalize STM and prepare STM mask
+        stm = self.stm_norm(stm)
         mem_mask = mask.squeeze(1).unsqueeze(-1).expand(-1, -1, -1, stm.size(1)) \
             if mask is not None else None
 
-        if torch.isnan(stm).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in STM cross-attention input")
-
         x = self.memory_cross_attention(x, stm, stm, mask=mem_mask)
-        if torch.isnan(x).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in cross-attention output")
         x = residual + x
         if self.use_post_norm:
             x = self.norm2(x)
@@ -134,11 +130,7 @@ class ReactiveTransformerLayer(nn.Module):
         residual = x
         if not self.use_post_norm:
             x = self.norm3(x)
-            if torch.isnan(x).any():
-                print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in pre-norm (ff) output")
         x = self.ff(x)
-        if torch.isnan(x).any():
-            print("!!!!!!!!!!!!!!!!!!!!!!         NaN detected in ff output")
         x = residual + x
         if self.use_post_norm:
             x = self.norm3(x)
