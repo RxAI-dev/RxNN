@@ -41,7 +41,7 @@ class MrlConfig(TypedDict):
     use_memory_warmup: Optional[bool]
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
-    clamp_logits: Optional[bool]
+    clamp_logits: Optional[float]
     max_grad_norm: Optional[float]
 
 
@@ -154,7 +154,7 @@ class MRLTrainer:
         self.use_memory_warmup = config.get('use_memory_warmup', False)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
-        self.clamp_logits = config.get('clamp_logits', False)
+        self.clamp_logits = config.get('clamp_logits', None)
         self.max_grad_norm = config.get('max_grad_norm', 1.0)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
@@ -618,54 +618,31 @@ class MRLTrainer:
     def _log_gradients(self, logits: torch.Tensor):
         print(
             f"Returned logits stats: min={logits.min().item():.4f}, max={logits.max().item():.4f}")
-        encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder)
-        decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder)
-        mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention)
+        encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder.parameters())
+        decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder.parameters())
+        mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention.parameters())
         print(f"Encoder grad norm - total: {encoder_total:.6f}, mean: {encoder_mean:.6f}")
         print(f"Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
         print(f"Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
 
-        dec_ff_norms = [get_gradient_norms(layer.ff)[1] for layer in self.actor.decoder.model.layers]
-        dec_self_att_norms = [get_gradient_norms(layer.attention)[1] for layer in self.actor.decoder.model.layers]
-        dec_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in self.actor.decoder.model.layers]
+        enc_mem_total, enc_mem_mean = get_gradient_norms(self.actor.encoder.memory_parameters())
+        enc_not_mem_total, enc_not_mem_mean = get_gradient_norms(self.actor.encoder.not_memory_parameters())
+        dec_mem_total, dec_mem_mean = get_gradient_norms(self.actor.decoder.memory_parameters())
+        dec_not_mem_total, dec_not_mem_mean = get_gradient_norms(self.actor.decoder.not_memory_parameters())
 
-
-        mem_att_norms = [get_gradient_norms(layer)[1] for layer in self.actor.memory_attention.model.attention_layers]
-
-        enc_ff_norms = [get_gradient_norms(layer.ff)[1] for layer in self.actor.encoder.model.layers]
-        enc_self_att_norms = [get_gradient_norms(layer.attention)[1] for layer in self.actor.encoder.model.layers]
-        enc_x_att_norms = [get_gradient_norms(layer.memory_cross_attention)[1] for layer in
-                         self.actor.encoder.model.layers]
-
-        calc_mean = lambda x: sum(x) / len(x)
-
-        dec_ff_norms_mean = calc_mean(dec_ff_norms)
-        dec_self_att_norms_mean = calc_mean(dec_self_att_norms)
-        dec_x_att_norms_mean = calc_mean(dec_x_att_norms)
-        mem_att_norms_mean = calc_mean(mem_att_norms)
-        enc_ff_norms_mean = calc_mean(enc_ff_norms)
-        enc_self_att_norms_mean = calc_mean(enc_self_att_norms)
-        enc_x_att_norms_mean = calc_mean(enc_x_att_norms)
-
-        print(f"Decoder ff mean norm: {dec_ff_norms_mean:.6f}, all: {dec_ff_norms}")
-        print(f"Decoder self-att mean norm: {dec_self_att_norms_mean:.6f}, all: {dec_self_att_norms}")
-        print(f"Decoder cross-att mean norm: {dec_x_att_norms_mean:.6f}, all: {dec_x_att_norms}")
-        print(f"Encoder ff mean norm: {enc_ff_norms_mean:.6f}, all: {enc_ff_norms}")
-        print(f"Encoder self-att mean norm: {enc_self_att_norms_mean:.6f}, all: {enc_self_att_norms}")
-        print(f"Encoder cross-att mean norm: {enc_x_att_norms_mean:.6f}, all: {enc_x_att_norms}")
-        print(f"Memory attention layers mean norm: {mem_att_norms_mean:.6f}, all: {mem_att_norms}")
+        print(f"Decoder memory params grad norm - total: {dec_mem_total:.6f}, mean: {dec_mem_mean:.6f}")
+        print(f"Decoder not memory params grad norm - total: {dec_not_mem_total:.6f}, mean: {dec_not_mem_mean:.6f}")
+        print(f"Encoder memory params grad norm - total: {enc_mem_total:.6f}, mean: {enc_mem_mean:.6f}")
+        print(f"Encoder not memory params grad norm - total: {enc_not_mem_total:.6f}, mean: {enc_not_mem_mean:.6f}")
 
         if self.writer is not None:
             self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder', decoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/mem-att', mem_att_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/decoder ff', dec_ff_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/decoder self-att', dec_self_att_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/decoder x-att', dec_x_att_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/mem-att layers', mem_att_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder ff', enc_ff_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder self-att', enc_self_att_norms_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder x-att', enc_x_att_norms_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder memory', enc_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder not memory', enc_not_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder memory', dec_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder not memory', dec_not_mem_mean, self.global_step['train'])
 
 
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
@@ -687,8 +664,8 @@ class MRLTrainer:
                                       pad_token_id=self.pad_token_id)
                 logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                     action=MrlActorAction.DECODE)
-                if self.clamp_logits:
-                    logits = logits.clamp(min=-20.0, max=20.0)
+                if self.clamp_logits is not None:
+                    logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
                 # 4.2 Calculate policy loss with selected algorithm
                 policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
                                                             advantages)
@@ -710,8 +687,8 @@ class MRLTrainer:
                                   pad_token_id=self.pad_token_id)
             logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
                                 action=MrlActorAction.DECODE)
-            if self.clamp_logits:
-                logits = logits.clamp(min=-20.0, max=20.0)
+            if self.clamp_logits is not None:
+                logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
             # 4.2 Calculate policy loss with selected algorithm
             policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
             policy_loss = self._moe_aux_loss(policy_loss)

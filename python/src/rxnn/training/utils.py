@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import TypedDict
+from typing import TypedDict, Iterator, Union
 
 
 class TokenizedDict(TypedDict):
@@ -144,9 +144,9 @@ def smart_concat(query: TokenizedDict, answer: TokenizedDict, max_length: int, p
         'attention_mask': combined_mask
     }
 
-def get_gradient_norms(model: nn.Module):
+def get_gradient_norms(params: Iterator[nn.Parameter]):
     total_norm = 0
-    grad_params = list(filter(lambda p: p.requires_grad and p.grad is not None, model.parameters()))
+    grad_params = list(filter(lambda p: p.requires_grad and p.grad is not None, params))
     for p in grad_params:
         param_norm = p.grad.data.norm(2)
         total_norm += param_norm.item() ** 2

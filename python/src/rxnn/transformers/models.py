@@ -91,6 +91,13 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         else:
             self.head_norm = None
 
+    def not_memory_parameters(self) -> list[nn.Parameter]:
+        layer_params = super().not_memory_parameters()
+        head_params = list(self.head.parameters())
+        if self.use_head_norm:
+            head_params += list(self.head_norm.parameters())
+        return layer_params + head_params
+
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
         seq_len = x.size(1)
