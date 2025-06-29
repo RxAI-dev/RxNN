@@ -639,10 +639,10 @@ class MRLTrainer:
             self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder', decoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/mem-att', mem_att_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/decoder memory', enc_mem_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/decoder not memory', enc_not_mem_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder memory', dec_mem_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder not memory', dec_not_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder memory', enc_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/encoder not memory', enc_not_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder memory', dec_mem_mean, self.global_step['train'])
+            self.writer.add_scalar('Gradient/decoder not memory', dec_not_mem_mean, self.global_step['train'])
 
 
     def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
