@@ -32,6 +32,7 @@ class MrlConfig(TypedDict):
     update_epochs: int
     pad_token_id: int
     end_token_id: int
+    answer_token_id: int
     callbacks: Optional[list[MrlTrainerCallback]]
     memory_aware_critic: Optional[bool]
     use_moe_aux_loss: Optional[bool]
@@ -178,6 +179,7 @@ class MRLTrainer:
 
         self.pad_token_id = config.get('pad_token_id', 0)
         self.end_token_id = config.get('end_token_id', 3)
+        self.answer_token_id = config.get('answer_token_id', 6)
 
         self.use_ddp = use_ddp
         self.use_amp = use_amp
@@ -1169,7 +1171,7 @@ class MRLTrainer:
             self.critic = DistributedDataParallel(self.critic, device_ids=[self.device.index])
 
         # 2. Init BatchSampler with actor model (we have to run it after DDP init)
-        self.generator = BatchSampler(self.actor, self.device, end_token_id=self.end_token_id)
+        self.generator = BatchSampler(self.actor, self.device, end_token_id=self.end_token_id, answer_token_id=self.answer_token_id)
 
         # 3. Run each curriculum step based on config
         for current_curriculum_step in curriculum_config:
