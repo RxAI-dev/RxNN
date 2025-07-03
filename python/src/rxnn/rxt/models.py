@@ -10,7 +10,7 @@ from ..transformers.ff import get_activation_layer
 from ..memory.stm import ShortTermMemory
 from ..memory.norm import init_memory_norm
 from ..memory.attention import StmMemoryAttention, InterlayerStmMemoryAttention
-from ..memory.gate import ResidualGate, ResidualGateType
+from ..memory.gate import ResidualGate, ResidualGateType, SlotStatusType
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
 
@@ -269,6 +269,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             residual_per_slot_gate: bool = True,
             residual_gate_init: float = 3.0,
             residual_gate_type: ResidualGateType = 'static',
+            residual_gate_slot_status_type: SlotStatusType = 'mean',
             use_tanh_residual_gate: bool = True,
             debug_mode: bool = False,
             debug_interval: int = 10,
@@ -301,8 +302,10 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
         residual_gates = nn.ModuleList([
             ResidualGate(
-                stm_size, use_gate=use_gated_residual, gate_type=residual_gate_type, per_slot_gate=residual_per_slot_gate,
-                init_gate=residual_gate_init, use_tanh_gate=use_tanh_residual_gate
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
             ) for _ in range(num_layers)
         ])
 
@@ -367,6 +370,7 @@ class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license
             residual_per_slot_gate: bool = True,
             residual_gate_init: float = 3.0,
             residual_gate_type: ResidualGateType = 'static',
+            residual_gate_slot_status_type: SlotStatusType = 'mean',
             use_tanh_residual_gate: bool = True,
             debug_mode: bool = False,
             debug_interval: int = 10,
@@ -402,9 +406,10 @@ class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license
         attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
         residual_gates = nn.ModuleList([
             ResidualGate(
-                stm_size, use_gate=use_gated_residual, gate_type=residual_gate_type,
-                per_slot_gate=residual_per_slot_gate,
-                init_gate=residual_gate_init, use_tanh_gate=use_tanh_residual_gate
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
             ) for _ in range(num_layers)
         ])
 
@@ -434,9 +439,10 @@ class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license
 
         mean_residual_gates = nn.ModuleList([
             ResidualGate(
-                stm_size, use_gate=use_gated_residual, gate_type=residual_gate_type,
-                per_slot_gate=residual_per_slot_gate,
-                init_gate=residual_gate_init, use_tanh_gate=use_tanh_residual_gate
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
             ) for _ in range(num_layers)
         ])
 

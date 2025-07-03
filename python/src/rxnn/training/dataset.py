@@ -1047,21 +1047,12 @@ class MrlCurriculumDataset(Dataset):
         batch_interactions = [x['interactions'] for x in batch]
         transposed_interactions = list(zip(*batch_interactions))
 
-        def has_nans(tensor: dict[ItemFields, torch.Tensor]) -> bool:
-            return torch.isnan(tensor['input_ids']).any().item() or torch.isnan(tensor['attention_mask']).any().item()
-
-        results: MrlDataItem = {
+        return {
             **collate_interaction_batch(batch),  # Collate initial query and answer
             'interactions': [
                 collate_interaction_batch(step_batch) for step_batch in transposed_interactions
             ]
         }
-
-        assert not has_nans(results['query']), "NaN in query"
-        assert not has_nans(results['answer']), "NaN in answer"
-        assert not any([(has_nans(item['query']) or has_nans(item['answer'])) for item in results['interactions']]), "NaN in interactions"
-
-        return results
 
 
 class MrlDatasetItem(TypedDict):

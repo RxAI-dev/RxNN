@@ -3,17 +3,19 @@ import torch.nn as nn
 from typing import TypeAlias, Literal
 
 ResidualGateType: TypeAlias = Literal['static', 'elementwise', 'linear']
-
+SlotStatusType: TypeAlias = Literal['mean', 'linear']
 
 class ResidualGate(nn.Module):
     def __init__(
             self,
             stm_size: int,
+            embed_dim: int,
             use_gate: bool = False,
             gate_type: ResidualGateType = 'static',
             per_slot_gate: bool = True,
             init_gate: float = 0.0,
             use_tanh_gate: bool = True,
+            slot_status_type: SlotStatusType = 'mean',
             **kwargs,
     ):
         super(ResidualGate, self).__init__(**kwargs)
@@ -21,6 +23,7 @@ class ResidualGate(nn.Module):
         self.per_slot_gate = per_slot_gate
         self.gate_type = gate_type
         self.use_tanh_gate = use_tanh_gate
+        self.slot_status_type = slot_status_type
 
         if self.use_gate:
             if self.gate_type == 'linear':
@@ -33,13 +36,32 @@ class ResidualGate(nn.Module):
 
         self.gate_activation = nn.Tanh() if self.use_tanh_gate else nn.Sigmoid()
 
+        if self.slot_status_type == 'linear':
+            assert self.gate_type != 'linear' and self.per_slot_gate == True, \
+                'Cannot use linear slot status with not per-slot elementwise gate'
+            self.slot_status = nn.Linear(embed_dim, 1)
+        else:
+            self.slot_status = None
+
+    def _slot_statuses(self, updated_stm: torch.Tensor):
+        if self.gate_type == 'linear':
+            if self.slot_status_type == 'linear':
+                return self.slot_status(updated_stm).squeeze(-1)
+            else:
+                return updated_stm.mean(dim=-1)
+        else:
+            if self.per_slot_gate and self.slot_status_type == 'linear':
+                return self.slot_status(updated_stm)
+            else:
+                mean_dim = -1 if self.per_slot_gate else [1, 2]
+                return updated_stm.mean(dim=mean_dim, keepdim=True)
+
     def _dynamic_gate(self, old_value: torch.Tensor, new_value: torch.Tensor):
         if self.gate_type == 'linear':
-            mean_residual = (new_value + old_value).mean(dim=-1)
-            gate_input = self.gate(mean_residual).unsqueeze(-1)
+            statuses = self._slot_statuses(new_value + old_value)
+            gate_input = self.gate(statuses).unsqueeze(-1)
         else:
-            mean_dim = -1 if self.per_slot_gate else [1, 2]
-            gate_input = self.gate * (new_value + old_value).mean(dim=mean_dim, keepdim=True)
+            gate_input = self.gate * self._slot_statuses(new_value + old_value)
         return self.gate_activation(gate_input)
 
     def _calculate_output(self, layer_gate: torch.Tensor, old_value: torch.Tensor, new_value: torch.Tensor) -> torch.Tensor:

@@ -307,4 +307,6 @@ different stages of dialog/conversation. They don't need to be connected, becaus
 Single record - interaction - could be a single text sequence in format `[Q] User's question [A] Model's answer` or it could
 be divided into two separate fields. First option is simpler, but the second is easier to customize, so it should be recommended.
 
-## Research in progress
+More for [Reinforcement Learning Stages](./mrl.md)
+
+[Memory Attention variants](./memory-attention.md)
