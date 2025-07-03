@@ -98,7 +98,7 @@ class PPOAlgorithm(RlAlgorithm):
         shifted_log_probs *= shifted_mask
 
         # 5. Calculate ratio
-        ratio = (new_log_probs - shifted_old_log_probs).exp()
+        ratio = (shifted_log_probs - shifted_old_log_probs).exp()
 
         advantages = advantages.unsqueeze(-1)
 
