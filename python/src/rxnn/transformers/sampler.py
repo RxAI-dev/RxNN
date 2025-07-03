@@ -217,9 +217,9 @@ def sample_batch(
 
     # Apply top-k filtering
     if top_k is not None and top_k > 0:
-        topk_values, _ = torch.topk(logits, top_k, dim=-1)
-        min_topk = topk_values[:, -1].unsqueeze(-1)
-        logits = torch.where(logits < min_topk, torch.tensor(-float('inf'), device=device), logits)
+        top_k_values, _ = torch.topk(logits, top_k, dim=-1)
+        min_top_k = top_k_values[:, -1].unsqueeze(-1)
+        logits = torch.where(logits < min_top_k, torch.tensor(-float('inf'), device=device), logits)
 
     # Apply top-p filtering
     if top_p is not None and 0 < top_p <= 1.0:
@@ -269,10 +269,11 @@ def sample_batch(
 
 
 class BatchSampler:
-    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int):
+    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int, answer_token_id: int):
         self.model = model.to(device)
         self.device = device
         self.end_token_id = end_token_id
+        self.answer_token_id = answer_token_id
 
     def __call__(
         self,
@@ -285,7 +286,13 @@ class BatchSampler:
         no_grad: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, max_seq_len = input_ids.shape
+
         initial_lens = attention_mask.sum(dim=1)
+        for i in range(batch_size):
+            input_ids[i, initial_lens[i]] = self.answer_token_id
+            attention_mask[i, initial_lens[i]] = 1
+
+        initial_lens += 1
         current_lens = initial_lens.clone()
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
         log_probs = torch.zeros((batch_size, max_gen_len), dtype=torch.float32, device=self.device)
@@ -335,12 +342,21 @@ class BatchSampler:
         for i in range(batch_size):
             start = initial_lens[i].item()
             end = current_lens[i].item()
-            gen_len = min(end - start, max_gen_len)
+            gen_len = min(end - start + 1, max_gen_len) # +1 for added [A] token
             if gen_len > 0:
-                generated_ids[i, :gen_len] = working_ids[i, start:end]
-                generated_mask[i, :gen_len] = working_mask[i, start:end]
+                generated_ids[i, :gen_len] = working_ids[i, start-1:end] # -1 to include [A] token
+                generated_mask[i, :gen_len] = working_mask[i, start-1:end] # -1 to include [A] token
 
-        return generated_ids, generated_mask, log_probs
+        # Add hardcoded (high probability) log probs for [A] token - it will be then removed from calculation in shift
+        prepended_log_probs = torch.cat([
+            torch.full(
+                (log_probs.size(0), 1), -1e-5,
+                device=log_probs.device, dtype=log_probs.dtype
+            ),
+            log_probs[:, :-1]
+        ], dim=-1)
+
+        return generated_ids, generated_mask, prepended_log_probs
 
 
 class BatchSampleDecoder:
