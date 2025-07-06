@@ -37,7 +37,7 @@ class ResidualGate(nn.Module):
         self.gate_activation = nn.Tanh() if self.use_tanh_gate else nn.Sigmoid()
 
         if self.slot_status_type == 'linear':
-            assert self.gate_type != 'linear' and self.per_slot_gate == True, \
+            assert self.gate_type == 'linear' or self.per_slot_gate == True, \
                 'Cannot use linear slot status with not per-slot elementwise gate'
             self.slot_status = nn.Linear(embed_dim, 1)
         else:

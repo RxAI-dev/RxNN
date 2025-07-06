@@ -1,4 +1,5 @@
 import torch
+from poetry.console.commands import self
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
@@ -755,6 +756,8 @@ class MRLTrainer:
                 if should_reset_stm and step_idx == 0:
                     self.memory_warmup(query, answer)
 
+                initial_stm = self.actor.memory_attention.stm.memory.clone().detach()
+
                 # 7. In memory aware critic version, encode and update STM before critic update, to include its gradients in critic loss too
                 if self.memory_aware_critic:
                     self.encode_and_update_stm(query, answer)
@@ -768,6 +771,13 @@ class MRLTrainer:
                 # 9. Update actor
                 policy_loss_item = self.update_actor((query, answer, next_query), action, step_advantages, log_probs,
                                                      epoch)
+
+                if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
+                    updated_stm = self.actor.memory_attention.stm.memory.clone().detach()
+                    stm_update_diff = (updated_stm - initial_stm).abs().mean().item()
+                    print(f'STM update diff: {stm_update_diff:.6f}')
+                    self.writer.add_scalar('STM/update diff', stm_update_diff, self.global_step['train'])
+
                 all_losses.append(policy_loss_item)
         # 10. Return mean losses for epoch callbacks
         return torch.mean(torch.tensor(all_losses)), torch.mean(torch.tensor(critic_losses))
