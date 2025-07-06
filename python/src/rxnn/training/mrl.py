@@ -1,5 +1,4 @@
 import torch
-from poetry.console.commands import self
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
@@ -756,7 +755,7 @@ class MRLTrainer:
                 if should_reset_stm and step_idx == 0:
                     self.memory_warmup(query, answer)
 
-                initial_stm = self.actor.memory_attention.stm.memory.clone().detach()
+                initial_stm = self.actor.memory_attention.model.stm.memory.clone().detach()
 
                 # 7. In memory aware critic version, encode and update STM before critic update, to include its gradients in critic loss too
                 if self.memory_aware_critic:
@@ -773,8 +772,8 @@ class MRLTrainer:
                                                      epoch)
 
                 if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
-                    updated_stm = self.actor.memory_attention.stm.memory.clone().detach()
-                    stm_update_diff = (updated_stm - initial_stm).abs().mean().item()
+                    updated_stm = self.actor.memory_attention.model.stm.memory.clone().detach()
+                    stm_update_diff = torch.sqrt(((updated_stm - initial_stm) ** 2).mean()).item()
                     print(f'STM update diff: {stm_update_diff:.6f}')
                     self.writer.add_scalar('STM/update diff', stm_update_diff, self.global_step['train'])
 
