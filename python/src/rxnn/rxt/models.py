@@ -508,6 +508,7 @@ class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apac
             residual_gate_type: ResidualGateType = 'static',
             residual_gate_slot_status_type: SlotStatusType = 'mean',
             use_tanh_residual_gate: bool = True,
+            use_gate_for_self_attention: bool = False,
             debug_mode: bool = False,
             debug_interval: int = 10,
             **kwargs,
@@ -571,7 +572,7 @@ class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apac
         self_residual_gates = nn.ModuleList([
             ResidualGate(
                 stm_size, embed_dim,
-                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                use_gate=use_gate_for_self_attention, gate_type=residual_gate_type,
                 per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
                 use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
             ) for _ in range(num_layers)

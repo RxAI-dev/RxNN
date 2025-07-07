@@ -1,4 +1,5 @@
 import torch
+import torch.nn as nn
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
@@ -44,6 +45,8 @@ class MrlConfig(TypedDict):
     debug_interval: Optional[int]
     clamp_logits: Optional[float]
     max_grad_norm: Optional[float]
+    use_memory_diff_penalty: Optional[bool]
+    memory_diff_scale: Optional[float]
 
 
 class MrlStrategy(Enum):
@@ -157,6 +160,9 @@ class MRLTrainer:
         self.debug_interval = config.get('debug_interval', 10)
         self.clamp_logits = config.get('clamp_logits', None)
         self.max_grad_norm = config.get('max_grad_norm', 1.0)
+        self.use_memory_diff_penalty = config.get('use_memory_diff_penalty', False)
+        self.memory_diff_scale = config.get('memory_diff_scale', 0.001)
+        self.memory_diff_loss = nn.MSELoss()
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -646,9 +652,34 @@ class MRLTrainer:
             self.writer.add_scalar('Gradient/decoder memory', dec_mem_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder not memory', dec_not_mem_mean, self.global_step['train'])
 
+    def _memory_diff_loss(self, policy_loss: torch.Tensor, initial_stm_state: torch.Tensor, step_idx: int) -> torch.Tensor:
+        if self.use_memory_diff_penalty or (self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0):
+            updated_stm = self.actor.memory_attention.model.stm.memory.clone().detach()
+            mem_diff_scale = (step_idx + 1) * self.memory_diff_scale
+            mem_diff_loss = self.memory_diff_loss(updated_stm, initial_stm_state)
 
-    def update_actor(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], action: TokenizedDict,
-                     advantages: torch.Tensor, old_log_probs: torch.Tensor, epoch: int) -> float:
+            if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
+                stm_update_diff = torch.sqrt(mem_diff_loss).item()
+                print(f'STM update diff in step {step_idx + 1}: {stm_update_diff:.6f}')
+                self.writer.add_scalar('STM/update diff (all)', stm_update_diff, self.global_step['train'])
+                self.writer.add_scalar(f'STM/memory diff (step {step_idx + 1})', stm_update_diff,
+                                       self.global_step['train'])
+
+            if self.use_memory_diff_penalty:
+                policy_loss += mem_diff_scale * mem_diff_loss
+
+        return policy_loss
+
+    def update_actor(
+            self,
+            state: tuple[TokenizedDict, TokenizedDict, TokenizedDict],
+            action: TokenizedDict,
+            advantages: torch.Tensor,
+            old_log_probs: torch.Tensor,
+            initial_stm_state: torch.Tensor,
+            epoch: int,
+            step_idx: int,
+    ) -> float:
         # 1. Reset actor gradients
         self.optimizer.zero_grad()
         # 2. Unpack state dicts
@@ -672,6 +703,7 @@ class MRLTrainer:
                 policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
                                                             advantages)
                 policy_loss = self._moe_aux_loss(policy_loss)
+                policy_loss = self._memory_diff_loss(policy_loss, initial_stm_state, step_idx)
 
             # 4.3 Run backpropagation with scaler
             self.scaler.scale(policy_loss).backward(retain_graph=True)
@@ -680,6 +712,7 @@ class MRLTrainer:
             self._clip_actor_grad_norms()
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
                 self._log_gradients(logits)
+
             # 4.5 Run scaled optimization step
             self.scaler.step(self.optimizer)
             self.scaler.update()
@@ -694,6 +727,7 @@ class MRLTrainer:
             # 4.2 Calculate policy loss with selected algorithm
             policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
             policy_loss = self._moe_aux_loss(policy_loss)
+            policy_loss = self._memory_diff_loss(policy_loss, initial_stm_state, step_idx)
             # 4.3 Run backpropagation
             policy_loss.backward(retain_graph=True)
             # 4.4 Clip gradient norms
@@ -768,14 +802,11 @@ class MRLTrainer:
                 critic_losses.append(critic_loss_item)
 
                 # 9. Update actor
-                policy_loss_item = self.update_actor((query, answer, next_query), action, step_advantages, log_probs,
-                                                     epoch)
-
-                if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
-                    updated_stm = self.actor.memory_attention.model.stm.memory.clone().detach()
-                    stm_update_diff = torch.sqrt(((updated_stm - initial_stm) ** 2).mean()).item()
-                    print(f'STM update diff: {stm_update_diff:.6f}')
-                    self.writer.add_scalar('STM/update diff', stm_update_diff, self.global_step['train'])
+                policy_loss_item = self.update_actor(
+                    (query, answer, next_query),
+                    action, step_advantages, log_probs,
+                    initial_stm, epoch, step_idx
+                )
 
                 all_losses.append(policy_loss_item)
         # 10. Return mean losses for epoch callbacks
