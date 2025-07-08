@@ -41,6 +41,7 @@ class MrlConfig(TypedDict):
     freeze_embeddings: Optional[bool]
     embedding_lr: Optional[float]
     use_memory_warmup: Optional[bool]
+    hard_warmup: Optional[bool]
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
     clamp_logits: Optional[float]
@@ -156,6 +157,7 @@ class MRLTrainer:
         self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
         self.freeze_embeddings = self.shared_freeze_embeddings
         self.use_memory_warmup = config.get('use_memory_warmup', False)
+        self.hard_warmup = config.get('hard_warmup', False)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
         self.clamp_logits = config.get('clamp_logits', None)
@@ -337,6 +339,24 @@ class MRLTrainer:
             # 3. Encode data and update STM
             self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.UPDATE)
 
+    def _hard_memory_warmup(self, query: TokenizedDict, answer: TokenizedDict):
+        # 1. Encode data and update memory - with autocast on/off
+        if self.use_amp:
+            with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                # 2. Concatenate batch of queries and answers (they are already on training device)
+                inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
+                # 3. Encode data and update STM
+                _, ed = self.actor.encoder(inputs['input_ids'], attention_mask=inputs['attention_mask'])
+                stm_initial_state = self.actor.memory_attention.model.stm.memory
+                self.actor.memory_attention.model.stm.update_all((ed + stm_initial_state) / 2)
+        else:
+            # 2. Concatenate batch of queries and answers (they are already on training device)
+            inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
+            # 3. Encode data and update STM
+            _, ed = self.actor.encoder(inputs['input_ids'], attention_mask=inputs['attention_mask'])
+            stm_initial_state = self.actor.memory_attention.model.stm.memory
+            self.actor.memory_attention.model.stm.update_all((ed + stm_initial_state) / 2)
+
     def generate_answer(self, query: TokenizedDict) -> tuple[TokenizedDict, torch.Tensor]:
         """Generate response using batch sampler with decoder."""
         # 1. Generate answer with BatchSampler - with autocast on/off
@@ -428,7 +448,10 @@ class MRLTrainer:
     def memory_warmup(self, query: TokenizedDict, answer: TokenizedDict):
         if self.use_memory_warmup:
             with torch.no_grad():
-                self.encode_and_update_stm(query, answer)
+                if self.hard_warmup:
+                    self._hard_memory_warmup(query, answer)
+                else:
+                    self.encode_and_update_stm(query, answer)
 
     def collect_trajectories(self, dataloader: DataLoader, epoch: int, batch_size: int) -> list[MrlTrajectoryEpisode]:
         """Collect trajectories for PPO for current curriculum step."""
@@ -654,8 +677,8 @@ class MRLTrainer:
 
     def _memory_diff_loss(self, policy_loss: torch.Tensor, initial_stm_state: torch.Tensor, step_idx: int) -> torch.Tensor:
         if self.use_memory_diff_penalty or (self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0):
-            updated_stm = self.actor.memory_attention.model.stm.memory.clone().detach()
-            mem_diff_scale = (step_idx + 1) * self.memory_diff_scale
+            updated_stm = self.actor.memory_attention.model.stm.memory.clone()
+            mem_diff_scale = torch.sqrt(torch.tensor(step_idx + 1).to(self.device)) * self.memory_diff_scale
             mem_diff_loss = self.memory_diff_loss(updated_stm, initial_stm_state)
 
             if self.debug_mode and self.epoch_step['train'] % self.debug_interval == 0:
