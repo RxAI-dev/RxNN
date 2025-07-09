@@ -101,7 +101,7 @@ class ReactiveTransformerLayer(nn.Module):
         else:
             return None
 
-    def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None) -> torch.Tensor:
         # First step, self-attention
         residual = x
         if not self.use_post_norm:
@@ -121,7 +121,7 @@ class ReactiveTransformerLayer(nn.Module):
         mem_mask = mask.squeeze(1).unsqueeze(-1).expand(-1, -1, -1, stm.size(1)) \
             if mask is not None else None
 
-        x = self.memory_cross_attention(x, stm, stm, mask=mem_mask)
+        x = self.memory_cross_attention(x, stm, stm, mask=mem_mask, stm_kv_cache=stm_kv_cache)
         x = residual + x
         if self.use_post_norm:
             x = self.norm2(x)

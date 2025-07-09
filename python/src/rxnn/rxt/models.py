@@ -240,8 +240,8 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
             init_identity_norm=init_identity_norm,
         )
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.model(x, attention_mask=attention_mask)
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.model(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache)
 
 
 class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):

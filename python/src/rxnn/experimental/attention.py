@@ -89,7 +89,7 @@ class GroupedMoeAttention(GroupedQueryAttention):
         #     torch.nn.init.zeros_(self.bv)
 
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int,
-                     skip_query_processing: bool = False):
+                     stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None, skip_query_processing: bool = False):
         # Process Query as in GQA
         q = self.q_proj(query).view(b, t, self.num_heads, -1).transpose(1, 2) if not skip_query_processing else query
 
@@ -207,7 +207,8 @@ class DeepMoeAttention(GroupedMoeAttention):
         out_hidden_dim = d // self.num_heads * self.num_query_groups
         return attn_output.transpose(1, 2).contiguous().view(b, t, out_hidden_dim)
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int,
+                     stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None, skip_query_processing: bool = False):
         B, T, D = query.shape
         query_flat = query.reshape(-1, D)
         weights_q, indices_q = self.query_router(query_flat)
@@ -224,7 +225,7 @@ class DeepMoeAttention(GroupedMoeAttention):
         q = (selected_q * weights_q).to(selected_q.device, dtype=selected_q.dtype)  # [B, T, num_query_groups, head_dim]
         q = q.view(B, T, self.num_query_groups, -1).permute(0, 2, 1, 3)  # [B, num_query_groups, T, head_dim]
 
-        return super()._forward_qkv(q, key, value, b, t, d, skip_query_processing=True)
+        return super()._forward_qkv(q, key, value, b, t, d, stm_kv_cache=stm_kv_cache, skip_query_processing=True)
 
 class SparseQueryAttention(MultiHeadAttention):
     """Sparse Grouped Query attention layer, with RoPE support"""
@@ -279,13 +280,20 @@ class SparseQueryAttention(MultiHeadAttention):
         """Transpose attention output back to (B, T, D) shape"""
         return attn_output.transpose(1, 2).contiguous().view(b, t, d // (self.num_heads // self.num_query_groups))
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
         head_dim = d // self.num_heads
+        if stm_kv_cache is not None:
+            projected_key = stm_kv_cache[0]
+            projected_value = stm_kv_cache[1]
+        else:
+            projected_key = self.k_proj(key)
+            projected_value = self.v_proj(value)
+
         if not self.rel_embed:
             q = self.q_proj(query).view(b, t, self.num_query_groups, head_dim).transpose(1, 2)
-            k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
-            v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
+            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
+            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
         else:
             # Relative embedding version is not working without this strange mapping - it will be removed in next versions
             group_heads = self.num_heads // self.num_groups
@@ -294,8 +302,8 @@ class SparseQueryAttention(MultiHeadAttention):
             q = self.q_proj(query).view(b, -1, self.num_query_groups, head_dim).transpose(1, 2)  # (B, Q_G, T, head_dim)
 
             # Process K and V
-            k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
-            v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
+            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
+            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
 
             # Expand and flatten to 4D tensors
             q = q.unsqueeze(2).expand(-1, -1, query_heads, -1, -1)  # (B, Q_G, query_heads, T, head_dim)

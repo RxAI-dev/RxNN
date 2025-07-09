@@ -58,14 +58,15 @@ class ReactiveTransformerBase(nn.Module):
         else:
             return None
 
-    def _handle_layer(self, i: int, x: torch.Tensor, mask: torch.Tensor = None, is_shared: bool = False):
+    def _handle_layer(self, i: int, x: torch.Tensor, mask: torch.Tensor = None, is_shared: bool = False, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None):
         stm_layer_idx = i if is_shared else i + self.num_shared_layers
         layer_stm = self.stm(stm_layer_idx)
         # expand layer STM to batch size, if it's not in batch mode
         if layer_stm.size(0) == 1:
             layer_stm = layer_stm.expand(x.size(0), -1, -1)
         layer = self.shared_layers[i] if is_shared else self.layers[i]
-        return layer(x, layer_stm, mask=mask)
+        layer_stm_cache = stm_kv_cache[stm_layer_idx] if stm_kv_cache is not None else None
+        return layer(x, layer_stm, mask=mask, stm_kv_cache=layer_stm_cache)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
@@ -98,7 +99,23 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
             head_params += list(self.head_norm.parameters())
         return layer_params + head_params
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+    def prepare_stm_kv_cache(self) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        stm_kv_cache = []
+        for i in range(self.num_shared_layers):
+            layer_stm = self.stm(i)
+            projected_key = self.shared_layers[i].memory_cross_attention.k_proj(layer_stm)
+            projected_value = self.shared_layers[i].memory_cross_attention.v_proj(layer_stm)
+            stm_kv_cache.append((projected_key, projected_value))
+
+        for i in range(self.num_own_layers):
+            layer_stm = self.own_layers(i + self.num_shared_layers)
+            projected_key = self.layers[i].memory_cross_attention.k_proj(layer_stm)
+            projected_value = self.layers[i].memory_cross_attention.v_proj(layer_stm)
+            stm_kv_cache.append((projected_key, projected_value))
+
+        return stm_kv_cache
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
         seq_len = x.size(1)
         if not self.use_flash_attention and self.use_relative_embedding:
@@ -112,10 +129,10 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                x = self._handle_layer(i, x, mask=mask, is_shared=True)
+                x = self._handle_layer(i, x, mask=mask, is_shared=True, stm_kv_cache=stm_kv_cache)
         # Process own layers
         for i in range(self.num_own_layers):
-            x = self._handle_layer(i, x, mask=mask)
+            x = self._handle_layer(i, x, mask=mask, stm_kv_cache=stm_kv_cache)
         return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 

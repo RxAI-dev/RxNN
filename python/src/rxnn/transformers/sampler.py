@@ -299,6 +299,8 @@ class BatchSampler:
         working_ids = input_ids.clone()
         working_mask = attention_mask.clone()
 
+        stm_kv_cache = self.model.prepare_stm_kv_cache()
+
         for step in range(max_gen_len):
             active = (~finished) & (current_lens < max_seq_len)
             if not active.any():
@@ -310,7 +312,7 @@ class BatchSampler:
                 # Slice input and mask up to the current max length among active sequences
                 inputs = working_ids[:, :max_len]
                 masks = working_mask[:, :max_len]
-                logits = self.model(inputs, attention_mask=masks)
+                logits = self.model(inputs, attention_mask=masks, stm_kv_cache=stm_kv_cache)
 
             # Get the last valid token index for each active sequence
             indices = (current_lens - 1).to(self.device)

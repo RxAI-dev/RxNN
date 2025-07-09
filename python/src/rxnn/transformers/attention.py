@@ -62,11 +62,17 @@ class MultiHeadAttention(nn.Module):
         """Initialize output projection"""
         self.out_proj = nn.Linear(embed_dim, embed_dim)
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Forward pass through query, key, and value projections, and split the results into heads"""
         q = self.q_proj(query).view(b, t, self.num_heads, d // self.num_heads).transpose(1, 2)
-        k = self.k_proj(key).view(b, -1, self.num_heads, d // self.num_heads).transpose(1, 2)
-        v = self.v_proj(value).view(b, -1, self.num_heads, d // self.num_heads).transpose(1, 2)
+        if stm_kv_cache is not None:
+            projected_key = stm_kv_cache[0]
+            projected_value = stm_kv_cache[1]
+        else:
+            projected_key = self.k_proj(key)
+            projected_value = self.v_proj(value)
+        k = projected_key.view(b, -1, self.num_heads, d // self.num_heads).transpose(1, 2)
+        v = projected_value.view(b, -1, self.num_heads, d // self.num_heads).transpose(1, 2)
         return q, k, v
 
     def _apply_rope(self, q: torch.Tensor, k: torch.Tensor, separate: bool = False):
@@ -140,9 +146,9 @@ class MultiHeadAttention(nn.Module):
         attn_weights = self.dropout(attn_weights)
         return self._calculate_output(attn_weights, v, b, t, d)
 
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         b, t, d = query.size()
-        q, k, v = self._forward_qkv(query, key, value, b, t, d)
+        q, k, v = self._forward_qkv(query, key, value, b, t, d, stm_kv_cache=stm_kv_cache)
         if not self.rel_embed:
             q, k = self._apply_rope(q, k)
             attn_output = self._calculate_attention(q, k, v, b, t, d, mask=mask)
@@ -191,13 +197,20 @@ class GroupedQueryAttention(MultiHeadAttention):
         self.k_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
         self.v_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
         head_dim = d // self.num_heads
+        if stm_kv_cache is not None:
+            projected_key = stm_kv_cache[0]
+            projected_value = stm_kv_cache[1]
+        else:
+            projected_key = self.k_proj(key)
+            projected_value = self.v_proj(value)
+
         if not self.rel_embed:
             q = self.q_proj(query).view(b, t, self.num_heads, head_dim).transpose(1, 2)
-            k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
-            v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)
+            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
+            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
         else:
             # Relative embedding version is not working without this strange mapping - it will be removed in next versions
             group_heads = self.num_heads // self.num_groups
@@ -207,8 +220,8 @@ class GroupedQueryAttention(MultiHeadAttention):
                                                                                               4)  # (B, G, group_heads, T, head_dim)
 
             # Process K and V
-            k = self.k_proj(key).view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
-            v = self.v_proj(value).view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
+            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
+            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
 
             # Expand and flatten to 4D tensors
             k = k.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
@@ -267,17 +280,24 @@ class MultiQueryAttention(MultiHeadAttention):
         self.k_proj = nn.Linear(embed_dim, embed_dim // self.num_heads, bias=self.use_bias)
         self.v_proj = nn.Linear(embed_dim, embed_dim // self.num_heads, bias=self.use_bias)
 
-    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int):
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Override query, key, and value projections for GQA case - use multiple heads
         for query and single for key/values"""
+        if stm_kv_cache is not None:
+            projected_key = stm_kv_cache[0]
+            projected_value = stm_kv_cache[1]
+        else:
+            projected_key = self.k_proj(key)
+            projected_value = self.v_proj(value)
+
         if not self.rel_embed:
             q = self.q_proj(query).view(b, t, self.num_heads, d // self.num_heads).transpose(1, 2)
-            k = self.k_proj(key).view(b, -1, 1, d // self.num_heads).transpose(1, 2)
-            v = self.v_proj(value).view(b, -1, 1, d // self.num_heads).transpose(1, 2)
+            k = projected_key.view(b, -1, 1, d // self.num_heads).transpose(1, 2)
+            v = projected_value.view(b, -1, 1, d // self.num_heads).transpose(1, 2)
         else:
             q = self.q_proj(query).view(b, t, self.num_heads, d // self.num_heads).transpose(1, 2)
-            k = self.k_proj(key).unsqueeze(1).expand(-1, self.num_heads, -1, -1)
-            v = self.v_proj(value).unsqueeze(1).expand(-1, self.num_heads, -1, -1)
+            k = projected_key.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
+            v = projected_value.unsqueeze(1).expand(-1, self.num_heads, -1, -1)
         return q, k, v
 
     def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
