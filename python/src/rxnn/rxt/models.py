@@ -271,6 +271,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             residual_gate_type: ResidualGateType = 'static',
             residual_gate_slot_status_type: SlotStatusType = 'mean',
             use_tanh_residual_gate: bool = True,
+            disable_residual: bool = False,
             debug_mode: bool = False,
             debug_interval: int = 10,
             **kwargs,
@@ -306,6 +307,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
                 use_gate=use_gated_residual, gate_type=residual_gate_type,
                 per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
                 use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
+                disable_residual=disable_residual,
             ) for _ in range(num_layers)
         ])
 

@@ -16,6 +16,7 @@ class ResidualGate(nn.Module):
             init_gate: float = 0.0,
             use_tanh_gate: bool = True,
             slot_status_type: SlotStatusType = 'mean',
+            disable_residual: bool = False,
             **kwargs,
     ):
         super(ResidualGate, self).__init__(**kwargs)
@@ -24,6 +25,7 @@ class ResidualGate(nn.Module):
         self.gate_type = gate_type
         self.use_tanh_gate = use_tanh_gate
         self.slot_status_type = slot_status_type
+        self.disable_residual = disable_residual
 
         if self.use_gate:
             if self.gate_type == 'linear':
@@ -71,6 +73,8 @@ class ResidualGate(nn.Module):
             return layer_gate * new_value + (1 - layer_gate) * old_value
 
     def forward(self, old_value: torch.Tensor, new_value: torch.Tensor) -> torch.Tensor:
+        if self.disable_residual:
+            return new_value
         if not self.use_gate:
             return new_value + old_value
 
