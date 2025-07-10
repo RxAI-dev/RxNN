@@ -58,7 +58,7 @@ class ReactiveTransformerBase(nn.Module):
         else:
             return None
 
-    def _handle_layer(self, i: int, x: torch.Tensor, mask: torch.Tensor = None, is_shared: bool = False, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None):
+    def _handle_layer(self, i: int, x: torch.Tensor, mask: torch.Tensor = None, is_shared: bool = False, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None, use_self_attn_cache: bool = False):
         stm_layer_idx = i if is_shared else i + self.num_shared_layers
         layer_stm = self.stm(stm_layer_idx)
         # expand layer STM to batch size, if it's not in batch mode
@@ -66,7 +66,7 @@ class ReactiveTransformerBase(nn.Module):
             layer_stm = layer_stm.expand(x.size(0), -1, -1)
         layer = self.shared_layers[i] if is_shared else self.layers[i]
         layer_stm_cache = stm_kv_cache[stm_layer_idx] if stm_kv_cache is not None else None
-        return layer(x, layer_stm, mask=mask, stm_kv_cache=layer_stm_cache)
+        return layer(x, layer_stm, mask=mask, stm_kv_cache=layer_stm_cache, use_self_attn_cache=use_self_attn_cache)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # Shared logic for encoders and decoders - apply embeddings and positional encoding
@@ -115,7 +115,13 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
 
         return stm_kv_cache
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None) -> torch.Tensor:
+    def reset_self_attn_cache(self):
+        for i in range(self.num_shared_layers):
+            self.shared_layers[i].attention.reset_inner_cache()
+        for i in range(self.num_own_layers):
+            self.layers[i].attention.reset_inner_cache()
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None, stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None, use_self_attn_cache: bool = False) -> torch.Tensor:
         x = super().forward(x)  # apply embeddings
         seq_len = x.size(1)
         if not self.use_flash_attention and self.use_relative_embedding:
@@ -129,10 +135,10 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
         # Process shared layers
         if self.shared_layers is not None:
             for i in range(self.num_shared_layers):
-                x = self._handle_layer(i, x, mask=mask, is_shared=True, stm_kv_cache=stm_kv_cache)
+                x = self._handle_layer(i, x, mask=mask, is_shared=True, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
         # Process own layers
         for i in range(self.num_own_layers):
-            x = self._handle_layer(i, x, mask=mask, stm_kv_cache=stm_kv_cache)
+            x = self._handle_layer(i, x, mask=mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
         return self.head(self.head_norm(x) if self.use_head_norm else x)
 
 

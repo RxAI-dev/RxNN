@@ -101,12 +101,12 @@ class ReactiveTransformerLayer(nn.Module):
         else:
             return None
 
-    def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, stm: torch.Tensor, mask: torch.Tensor = None, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None, use_self_attn_cache: bool = False) -> torch.Tensor:
         # First step, self-attention
         residual = x
         if not self.use_post_norm:
             x = self.norm1(x)
-        x = self.attention(x, x, x, mask=mask)
+        x = self.attention(x, x, x, mask=mask, use_self_attn_cache=use_self_attn_cache)
 
         x = residual + x
         if self.use_post_norm:

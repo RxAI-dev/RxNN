@@ -201,11 +201,19 @@ class MrlActorModel(nn.Module):
     def prepare_stm_kv_cache(self) -> list[tuple[torch.Tensor, torch.Tensor]]:
         return self.decoder.model.prepare_stm_kv_cache()
 
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None,
-                stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None,
-                action: MrlActorAction = MrlActorAction.DECODE) -> torch.Tensor:
+    def reset_self_attn_cache(self):
+        return self.decoder.model.reset_self_attn_cache()
+
+    def forward(
+            self,
+            x: torch.Tensor,
+            attention_mask: torch.Tensor = None,
+            stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None,
+            use_self_attn_cache: bool = False,
+            action: MrlActorAction = MrlActorAction.DECODE
+    ) -> torch.Tensor:
         if action == MrlActorAction.DECODE:
-            return self.decoder(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache)
+            return self.decoder(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
         else:
             _, ed = self.encoder(x, attention_mask=attention_mask)
             return self.memory_attention(ed, attention_mask=attention_mask)

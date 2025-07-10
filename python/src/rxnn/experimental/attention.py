@@ -280,6 +280,12 @@ class SparseQueryAttention(MultiHeadAttention):
         """Transpose attention output back to (B, T, D) shape"""
         return attn_output.transpose(1, 2).contiguous().view(b, t, d // (self.num_heads // self.num_query_groups))
 
+    def _split_kv_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
+        return projected.view(b, -1, self.num_groups, d // self.num_heads).transpose(1, 2)
+
+    def _split_q_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
+        return projected.view(b, t, self.num_query_groups, d // self.num_heads).transpose(1, 2)
+
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
         head_dim = d // self.num_heads
