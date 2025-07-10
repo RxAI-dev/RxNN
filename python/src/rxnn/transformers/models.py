@@ -101,16 +101,19 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
 
     def prepare_stm_kv_cache(self) -> list[tuple[torch.Tensor, torch.Tensor]]:
         stm_kv_cache = []
+
         for i in range(self.num_shared_layers):
             layer_stm = self.stm(i)
-            projected_key = self.shared_layers[i].memory_cross_attention.k_proj(layer_stm)
-            projected_value = self.shared_layers[i].memory_cross_attention.v_proj(layer_stm)
+            normalized_layer_stm = self.shared_layers[i].stm_norm(layer_stm)
+            projected_key = self.shared_layers[i].memory_cross_attention.k_proj(normalized_layer_stm)
+            projected_value = self.shared_layers[i].memory_cross_attention.v_proj(normalized_layer_stm)
             stm_kv_cache.append((projected_key, projected_value))
 
         for i in range(self.num_own_layers):
             layer_stm = self.stm(i + self.num_shared_layers)
-            projected_key = self.layers[i].memory_cross_attention.k_proj(layer_stm)
-            projected_value = self.layers[i].memory_cross_attention.v_proj(layer_stm)
+            normalized_layer_stm = self.layers[i].stm_norm(layer_stm)
+            projected_key = self.layers[i].memory_cross_attention.k_proj(normalized_layer_stm)
+            projected_value = self.layers[i].memory_cross_attention.v_proj(normalized_layer_stm)
             stm_kv_cache.append((projected_key, projected_value))
 
         return stm_kv_cache
