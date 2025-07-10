@@ -108,7 +108,7 @@ class ReactiveTransformerDecoder(ReactiveTransformerBase):
             stm_kv_cache.append((projected_key, projected_value))
 
         for i in range(self.num_own_layers):
-            layer_stm = self.own_layers(i + self.num_shared_layers)
+            layer_stm = self.stm(i + self.num_shared_layers)
             projected_key = self.layers[i].memory_cross_attention.k_proj(layer_stm)
             projected_value = self.layers[i].memory_cross_attention.v_proj(layer_stm)
             stm_kv_cache.append((projected_key, projected_value))
