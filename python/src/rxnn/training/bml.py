@@ -9,6 +9,7 @@ from ..training.base import BaseTrainer
 from .models import MLMTrainingModel, JointTrainingModel
 from .ddp import distributed_mean
 
+
 class MLMTrainer(BaseTrainer):
     def __init__(
             self,
@@ -87,9 +88,11 @@ class MLMTrainer(BaseTrainer):
                         preds = logits.argmax(-1)
                         batch_correct = (preds[valid_indices] == labels[valid_indices]).sum()
                         batch_total = valid_indices.sum()
-                        batch_acc = (batch_correct / batch_total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
+                        batch_acc = (batch_correct / batch_total * 100) if total > 0 else torch.tensor(0.0).to(
+                            self.device)
                         if self.writer is not None:
-                            self.writer.add_scalar('Accuracy/Valid total', batch_acc.item(), self.total_validation_steps)
+                            self.writer.add_scalar('Accuracy/Valid total', batch_acc.item(),
+                                                   self.total_validation_steps)
                         correct += batch_correct
                         total += batch_total
 
@@ -188,9 +191,11 @@ class AutoregressiveTrainer(BaseTrainer):
                         preds = shifted_logits.argmax(-1)
                         batch_correct = (preds[valid_indices] == shifted_targets[valid_indices]).sum()
                         batch_total = valid_indices.sum()
-                        batch_acc = (batch_correct / batch_total * 100) if total > 0 else torch.tensor(0.0).to(self.device)
+                        batch_acc = (batch_correct / batch_total * 100) if total > 0 else torch.tensor(0.0).to(
+                            self.device)
                         if self.writer is not None:
-                            self.writer.add_scalar('Accuracy/Valid total', batch_acc.item(), self.total_validation_steps)
+                            self.writer.add_scalar('Accuracy/Valid total', batch_acc.item(),
+                                                   self.total_validation_steps)
                         correct += batch_correct
                         total += batch_total
 
@@ -207,10 +212,12 @@ class AutoregressiveTrainer(BaseTrainer):
         self.model.train()
         return avg_loss, metrics
 
+
 class JointLMTrainer(BaseTrainer):
     """"
     It's not recommended to use Joint LM Training in current implementation. More info soon
     """
+
     def __init__(
             self,
             model: JointTrainingModel,
@@ -220,25 +227,34 @@ class JointLMTrainer(BaseTrainer):
             dtype: torch.dtype = None,
             components_loss_log_interval: int = None,
             encoder_loss_scale: float = 1.0,
+            decoder_loss_scale: float = 1.0,
             **kwargs
     ):
         super(JointLMTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype, **kwargs)
         self.vocab_size = vocab_size
         self.components_loss_log_interval = components_loss_log_interval
         self.encoder_loss_scale = encoder_loss_scale
+        self.decoder_loss_scale = decoder_loss_scale
 
     def train_step(self, batch: dict[str, Union[torch.Tensor, dict[torch.Tensor]]], batch_idx: int) -> torch.Tensor:
         if self.use_amp:
             batch = {
-                k: ({kk: vv.to(self.device) for kk, vv in v.items()} if not torch.is_tensor(v) else v.to(self.device))
-                for k, v in batch.items()}
+                k: (
+                    { kk: vv.to(self.device) for kk, vv in v.items() } if not torch.is_tensor(v) else v.to(self.device)
+                ) for k, v in batch.items()
+            }
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                 (encoder_loss, decoder_loss), _ = self.compute_loss(batch)
         else:
-            batch = {k: (
-                {kk: vv.to(self.device, dtype=self.dtype) for kk, vv in v.items()} if not torch.is_tensor(v) else v.to(
-                    self.device, dtype=self.dtype)) for k, v in batch.items()}
+            batch = {
+                k: (
+                    {
+                        kk: vv.to(self.device, dtype=self.dtype) for kk, vv in v.items()
+                    } if not torch.is_tensor(v) else v.to(self.device, dtype=self.dtype)
+                ) for k, v in batch.items()
+            }
             (encoder_loss, decoder_loss), _ = self.compute_loss(batch)
+
         if self.components_loss_log_interval is not None:
             if batch_idx % self.components_loss_log_interval == 0:
                 print(f"Encoder loss: {encoder_loss.item():.4f}")
@@ -246,7 +262,11 @@ class JointLMTrainer(BaseTrainer):
                 if self.encoder_loss_scale != 1.0:
                     print(
                         f"Encoder loss scaled by {self.encoder_loss_scale}: {(encoder_loss * self.encoder_loss_scale).item() :.4f}")
-        return (encoder_loss * self.encoder_loss_scale) + decoder_loss
+                if self.decoder_loss_scale != 1.0:
+                    print(
+                        f"Decoder loss scaled by {self.decoder_loss_scale}: {(decoder_loss * self.decoder_loss_scale).item() :.4f}")
+
+        return (encoder_loss * self.encoder_loss_scale) + (decoder_loss * self.decoder_loss_scale)
 
     def compute_loss(self, batch: dict[str, dict[str, torch.Tensor]]) -> tuple[
         tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
@@ -320,7 +340,7 @@ class JointLMTrainer(BaseTrainer):
                         (encoder_loss, decoder_loss), (encoder_logits, decoder_logits) = self.compute_loss(batch)
                 enc_loss += encoder_loss
                 dec_loss += decoder_loss
-                val_loss += (enc_loss * self.encoder_loss_scale) + dec_loss
+                val_loss += (encoder_loss * self.encoder_loss_scale) + (decoder_loss * self.decoder_loss_scale)
 
                 encoder_labels = batch['encoder']['labels'].to(self.device)
                 valid_mlm_indices = encoder_labels != -100
