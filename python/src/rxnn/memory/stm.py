@@ -75,15 +75,17 @@ class ShortTermMemory(nn.Module):
             assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
                 'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
             self.init_type = init_type
+        device = self.memory.device
         self.batch_size = batch_size
         delattr(self, 'memory')
-        self.register_buffer('memory', self._init_tensor())
+        self.register_buffer('memory', self._init_tensor().to(device))
 
     def single_memory(self, init_type: str = None, use_mean_from_batch: bool = False):
         if init_type is not None:
             assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
                 'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
             self.init_type = init_type
+        device = self.memory.device
         self.batch_size = 1
         if use_mean_from_batch:
             batch_mean = self.memory.mean(dim=(1, 2, 3), keepdim=True)
@@ -91,4 +93,4 @@ class ShortTermMemory(nn.Module):
             self.register_buffer('memory', batch_mean)
         else:
             delattr(self, 'memory')
-            self.register_buffer('memory', self._init_tensor())
+            self.register_buffer('memory', self._init_tensor().to(device))

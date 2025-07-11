@@ -756,7 +756,7 @@ class BaseInteractionDataset(Dataset):
                                   answer_field=answer_field, **kwargs)
 
 
-class DecoderSftDataset(BaseInteractionDataset):
+class JointSftDataset(BaseInteractionDataset):
     def __init__(
             self,
             interactions: Union[list[dict], HfDataset],
@@ -768,10 +768,11 @@ class DecoderSftDataset(BaseInteractionDataset):
             cache_remove_text: bool = True,
             tokenize_in_background: bool = False,
             batch_size: int = 1,
+            mask_prob: float = 0.15,
             *args,
             **kwargs
     ):
-        super(DecoderSftDataset, self).__init__(
+        super(JointSftDataset, self).__init__(
             interactions,
             tokenizer=tokenizer,
             max_seq_len=max_seq_len,
@@ -784,7 +785,44 @@ class DecoderSftDataset(BaseInteractionDataset):
             *args,
             **kwargs
         )
+        self.mask_prob = mask_prob
 
+    def __getitem__(self, idx: int) -> dict[str, dict[str, torch.Tensor]]:
+        inputs = self.get_tokenized_text(idx)
+
+        encoder_input_ids = inputs['input_ids'][0]
+        if self.is_pre_tokenized:
+            encoder_input_ids = encoder_input_ids.clone()
+        attention_mask = inputs['attention_mask'][0]
+
+        decoder_input_ids = encoder_input_ids.clone()
+
+        encoder_labels = encoder_input_ids.clone()
+        decoder_targets = encoder_input_ids.clone()
+
+        # Create masked indices
+        masked_indices = torch.bernoulli(
+            torch.full(encoder_labels.shape, self.mask_prob)
+        ).bool() & attention_mask.bool()
+
+        # Apply mask
+        encoder_labels[~masked_indices] = -100
+        encoder_input_ids[masked_indices] = self.tokenizer.mask_token_id
+
+        return {
+            'decoder': {
+                'input_ids': decoder_input_ids,
+                'targets': decoder_targets,
+            },
+            'encoder': {
+                'input_ids': encoder_input_ids,
+                'labels': encoder_labels,
+            },
+            'attention_mask': attention_mask,
+        }
+
+
+class DecoderSftDataset(BaseInteractionDataset):
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         inputs = self.get_tokenized_text(idx)
 

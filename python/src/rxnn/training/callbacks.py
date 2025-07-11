@@ -372,16 +372,19 @@ class JointModelSaveCallback(TrainerCallback):
             if isinstance(model, DistributedDataParallel):
                 model = next(model.children())
 
-            # Set single memory item for saving
-            batch_size = model.encoder.model.stm.batch_size
-            model.encoder.model.stm.single_memory()
-
-            self._save_batch(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
             if not self.mlm_mode:
+                # Set single memory item for saving
+                batch_size = model.decoder.model.stm.batch_size
+                model.decoder.model.stm.single_memory()
+
+                self._save_batch(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
                 self._save_batch(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
-            self._save_batch(model.mlm_head, 'head', hub_id=self.hub_model_head)
-            # Set back batched memory
-            model.encoder.model.stm.batched_memory(batch_size)
+                self._save_batch(model.mlm_head, 'head', hub_id=self.hub_model_head)
+                # Set back batched memory
+                model.decoder.model.stm.batched_memory(batch_size)
+            else:
+                self._save_batch(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
+                self._save_batch(model.mlm_head, 'head', hub_id=self.hub_model_head)
 
 
     def _save_validation(self, model: Union[nn.Module, PyTorchModelHubMixin], component: str, epoch: int,
@@ -450,17 +453,19 @@ class JointModelSaveCallback(TrainerCallback):
                 self.best_loss = val_loss
                 if isinstance(model, DistributedDataParallel):
                     model = next(model.children())
-
-                # Set single memory item for saving
-                batch_size = model.encoder.model.stm.batch_size
-                model.encoder.model.stm.single_memory()
-
-                self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
                 if not self.mlm_mode:
+                    # Set single memory item for saving
+                    batch_size = model.decoder.model.stm.batch_size
+                    model.decoder.model.stm.single_memory()
+
+                    self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
                     self._save_validation(model.decoder, 'decoder', epoch, val_loss, hub_id=self.hub_model_decoder)
-                self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
-                # Set back batched memory
-                model.encoder.model.stm.batched_memory(batch_size)
+                    self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
+                    # Set back batched memory
+                    model.decoder.model.stm.batched_memory(batch_size)
+                else:
+                    self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
+                    self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
 
     def _save_final(self, model: Union[nn.Module, PyTorchModelHubMixin], component: str, hub_id: str = None):
         try:
@@ -507,18 +512,20 @@ class JointModelSaveCallback(TrainerCallback):
         if self.rank == 0:
             if isinstance(model, DistributedDataParallel):
                 model = next(model.children())
-
-            # Set single memory item for saving
-            batch_size = model.encoder.model.stm.batch_size
-            model.encoder.model.stm.single_memory()
-
-            self._save_final(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
             if not self.mlm_mode:
-                self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
-            self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
+                # Set single memory item for saving
+                batch_size = model.decoder.model.stm.batch_size
+                model.decoder.model.stm.single_memory()
 
-            # Set back batched memory
-            model.encoder.model.stm.batched_memory(batch_size)
+                self._save_final(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
+                self._save_final(model.decoder, 'decoder', hub_id=self.hub_model_decoder)
+                self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
+
+                # Set back batched memory
+                model.decoder.model.stm.batched_memory(batch_size)
+            else:
+                self._save_final(model.encoder, 'encoder', hub_id=self.hub_model_encoder)
+                self._save_final(model.mlm_head, 'head', hub_id=self.hub_model_head)
 
 class EarlyStoppageCallback(TrainerCallback):
     def __init__(self, num_plateau_epochs: int = 3) -> None:
