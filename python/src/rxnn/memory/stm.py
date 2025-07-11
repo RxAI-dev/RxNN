@@ -10,7 +10,7 @@ class ShortTermMemory(nn.Module):
         self.num_layers = num_layers
         self.embed_dim = embed_dim
         self.stm_size = stm_size
-        self.batch_size = 256 # setting 1 as initial batch size (it will be normally used in inference/pre-training. Bigger batches are for RL stages)
+        self.batch_size = 1 # setting 1 as initial batch size (it will be normally used in inference/pre-training. Bigger batches are for RL stages)
         self.is_trainable = is_trainable
         assert init_type in ['normal', 'standard', 'uniform', 'ones', 'zeros'], \
             'STM init type must be one of "normal", "standard", "uniform", "ones", "zeros"'
