@@ -88,6 +88,7 @@ class CurriculumConfig(TypedDict):
     freeze_embeddings: Optional[bool]
     embedding_lr: Optional[float]
     teacher_forcing: Optional[bool]
+    shallow_update_mode: Optional[bool]
 
 
 class SamplerConfig(TypedDict):
@@ -250,6 +251,7 @@ class MRLTrainer:
         self.global_epoch = 0
         self.global_epochs_count = 0
         self.teacher_forcing = False
+        self.shallow_update_mode = False
 
     def _init_optimizers(
             self,
@@ -329,17 +331,18 @@ class MRLTrainer:
     def encode_and_update_stm(self, query: TokenizedDict, answer: TokenizedDict):
         """Encode interaction and update STM."""
         # 1. Encode data and update memory - with autocast on/off
+        update_action = MrlActorAction.SHALLOW_UPDATE if self.shallow_update_mode else MrlActorAction.UPDATE
         if self.use_amp:
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
                 # 2. Concatenate batch of queries and answers (they are already on training device)
                 inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
                 # 3. Encode data and update STM
-                self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.UPDATE)
+                self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=update_action)
         else:
             # 2. Concatenate batch of queries and answers (they are already on training device)
             inputs = smart_concat(query, answer, self.max_seq_len, self.pad_token_id)
             # 3. Encode data and update STM
-            self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=MrlActorAction.UPDATE)
+            self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'], action=update_action)
 
     def _hard_memory_warmup(self, query: TokenizedDict, answer: TokenizedDict):
         # 1. Encode data and update memory - with autocast on/off
@@ -1162,6 +1165,7 @@ class MRLTrainer:
         self.update_epochs = config.get('update_epochs', self.shared_update_epochs)  # Internal update epochs
         self.freeze_embeddings = config.get('freeze_embeddings', self.shared_freeze_embeddings)
         self.teacher_forcing = config.get('teacher_forcing', False)
+        self.shallow_update_mode = config.get('shallow_update_mode', False)
 
         def has_param(field: OptimField) -> bool:
             return field in config and config[field] is not None
