@@ -338,24 +338,25 @@ class JointLMTrainer(BaseTrainer):
                             {kk: vv.to(self.device, dtype=self.dtype) for kk, vv in v.items()} if not torch.is_tensor(
                                 v) else v.to(self.device, dtype=self.dtype)) for k, v in batch.items()}
                         (encoder_loss, decoder_loss), (encoder_logits, decoder_logits) = self.compute_loss(batch)
-                enc_loss += encoder_loss
-                dec_loss += decoder_loss
-                val_loss += (encoder_loss * self.encoder_loss_scale) + (decoder_loss * self.decoder_loss_scale)
 
-                encoder_labels = batch['encoder']['labels'].to(self.device)
-                valid_mlm_indices = encoder_labels != -100
-                if valid_mlm_indices.any():
-                    preds_mlm = encoder_logits.argmax(-1)
-                    correct_mlm += (preds_mlm[valid_mlm_indices] == encoder_labels[valid_mlm_indices]).sum()
-                    total_mlm += valid_mlm_indices.sum()
+                    enc_loss += encoder_loss
+                    dec_loss += decoder_loss
+                    val_loss += (encoder_loss * self.encoder_loss_scale) + (decoder_loss * self.decoder_loss_scale)
 
-                shifted_logits = decoder_logits[:, :-1].contiguous()
-                shifted_targets = batch['decoder']['targets'][:, 1:].to(self.device).contiguous()
-                valid_alm_indices = shifted_targets != -100
-                if valid_alm_indices.any():
-                    preds_alm = shifted_logits.argmax(-1)
-                    correct_alm += (preds_alm[valid_alm_indices] == shifted_targets[valid_alm_indices]).sum()
-                    total_alm += valid_alm_indices.sum()
+                    encoder_labels = batch['encoder']['labels'].to(self.device)
+                    valid_mlm_indices = encoder_labels != -100
+                    if valid_mlm_indices.any():
+                        preds_mlm = encoder_logits.argmax(-1)
+                        correct_mlm += (preds_mlm[valid_mlm_indices] == encoder_labels[valid_mlm_indices]).sum()
+                        total_mlm += valid_mlm_indices.sum()
+
+                    shifted_logits = decoder_logits[:, :-1].contiguous()
+                    shifted_targets = batch['decoder']['targets'][:, 1:].to(self.device).contiguous()
+                    valid_alm_indices = shifted_targets != -100
+                    if valid_alm_indices.any():
+                        preds_alm = shifted_logits.argmax(-1)
+                        correct_alm += (preds_alm[valid_alm_indices] == shifted_targets[valid_alm_indices]).sum()
+                        total_alm += valid_alm_indices.sum()
 
         loader_len = len(val_dataloader)
         avg_loss = val_loss / loader_len
