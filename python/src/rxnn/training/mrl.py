@@ -48,6 +48,7 @@ class MrlConfig(TypedDict):
     max_grad_norm: Optional[float]
     use_memory_diff_penalty: Optional[bool]
     memory_diff_scale: Optional[float]
+    use_self_attn_cache: Optional[bool]
 
 
 class MrlStrategy(Enum):
@@ -165,6 +166,7 @@ class MRLTrainer:
         self.use_memory_diff_penalty = config.get('use_memory_diff_penalty', False)
         self.memory_diff_scale = config.get('memory_diff_scale', 0.001)
         self.memory_diff_loss = nn.MSELoss()
+        self.use_self_attn_cache = config.get('use_self_attn_cache', True)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -1234,7 +1236,7 @@ class MRLTrainer:
             self.critic = DistributedDataParallel(self.critic, device_ids=[self.device.index])
 
         # 2. Init BatchSampler with actor model (we have to run it after DDP init)
-        self.generator = BatchSampler(self.actor, self.device, end_token_id=self.end_token_id, answer_token_id=self.answer_token_id)
+        self.generator = BatchSampler(self.actor, self.device, end_token_id=self.end_token_id, answer_token_id=self.answer_token_id, use_self_attn_cache=self.use_self_attn_cache)
 
         # 3. Run each curriculum step based on config
         for current_curriculum_step in curriculum_config:

@@ -269,11 +269,12 @@ def sample_batch(
 
 
 class BatchSampler:
-    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int, answer_token_id: int):
+    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int, answer_token_id: int, use_self_attn_cache: bool = True):
         self.model = model.to(device)
         self.device = device
         self.end_token_id = end_token_id
         self.answer_token_id = answer_token_id
+        self.use_self_attn_cache = use_self_attn_cache
 
     def __call__(
         self,
@@ -313,7 +314,7 @@ class BatchSampler:
                 # Slice input and mask up to the current max length among active sequences
                 inputs = working_ids[:, :max_len]
                 masks = working_mask[:, :max_len]
-                logits = self.model(inputs, attention_mask=masks, stm_kv_cache=stm_kv_cache, use_self_attn_cache=True)
+                logits = self.model(inputs, attention_mask=masks, stm_kv_cache=stm_kv_cache, use_self_attn_cache=self.use_self_attn_cache)
 
             # Get the last valid token index for each active sequence
             indices = (current_lens - 1).to(self.device)
