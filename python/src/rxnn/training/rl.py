@@ -122,8 +122,9 @@ class PPOAlgorithm(RlAlgorithm):
         policy_loss = -(torch.min(surr1, surr2).sum(dim=-1) / shifted_mask.sum(dim=-1)).mean()
 
         # 8. Add Entropy bonus
+        entropy_mask = answer_mask[:, :-1]
         entropy = -(
-            (shifted_log_probs * shifted_log_probs.exp() * shifted_mask.unsqueeze(-1)).sum(dim=-1) / shifted_mask.sum(dim=-1)
+            (new_log_probs * new_log_probs.exp() * entropy_mask.unsqueeze(-1)).sum(dim=-1) / entropy_mask.sum(dim=-1).unsqueeze(-1)
         ).mean()
         policy_loss -= self.entropy_coef * entropy
 
