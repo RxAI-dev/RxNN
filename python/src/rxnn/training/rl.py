@@ -96,6 +96,7 @@ class PPOAlgorithm(RlAlgorithm):
         new_log_probs = F.log_softmax(shifted_logits, dim=-1)
         shifted_log_probs = new_log_probs.gather(-1, shifted_targets.unsqueeze(-1)).squeeze(-1)
         shifted_log_probs *= shifted_mask
+        shifted_old_log_probs *= shifted_mask
 
         # 5. Calculate ratio
         ratio = (shifted_log_probs - shifted_old_log_probs).exp()
@@ -116,12 +117,14 @@ class PPOAlgorithm(RlAlgorithm):
                 self.debug_step += 1
 
         # 7. Calculate base policy loss
-        surr1 = ratio * advantages
-        surr2 = torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * advantages
-        policy_loss = -torch.min(surr1, surr2).mean()
+        surr1 = (ratio * shifted_mask) * advantages
+        surr2 = (torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * shifted_mask) * advantages
+        policy_loss = -(torch.min(surr1, surr2).sum(dim=-1) / shifted_mask.sum(dim=-1)).mean()
 
         # 8. Add Entropy bonus
-        entropy = -torch.sum(new_log_probs * new_log_probs.exp(), dim=-1).mean()
+        entropy = -(
+            (new_log_probs * new_log_probs.exp() * shifted_mask).sum(dim=-1) / shifted_mask.sum(dim=-1)
+        ).mean()
         policy_loss -= self.entropy_coef * entropy
 
         return policy_loss
