@@ -228,6 +228,8 @@ class JointLMTrainer(BaseTrainer):
             components_loss_log_interval: int = None,
             encoder_loss_scale: float = 1.0,
             decoder_loss_scale: float = 1.0,
+            use_moe_aux_loss: bool = False,
+            moe_aux_loss_scale: float = 0.01,
             **kwargs
     ):
         super(JointLMTrainer, self).__init__(model, device, use_amp=use_amp, dtype=dtype, **kwargs)
@@ -235,6 +237,8 @@ class JointLMTrainer(BaseTrainer):
         self.components_loss_log_interval = components_loss_log_interval
         self.encoder_loss_scale = encoder_loss_scale
         self.decoder_loss_scale = decoder_loss_scale
+        self.use_moe_aux_loss = use_moe_aux_loss
+        self.moe_aux_loss_scale = moe_aux_loss_scale
 
     def train_step(self, batch: dict[str, Union[torch.Tensor, dict[torch.Tensor]]], batch_idx: int) -> torch.Tensor:
         if self.use_amp:
@@ -268,6 +272,25 @@ class JointLMTrainer(BaseTrainer):
 
         return (encoder_loss * self.encoder_loss_scale) + (decoder_loss * self.decoder_loss_scale)
 
+    def _moe_aux_loss(self, main_loss: torch.Tensor) -> torch.Tensor:
+        if not self.use_moe_aux_loss:
+            return main_loss
+
+        model = next(self.model.children()) if isinstance(self.model, DistributedDataParallel) else self.model
+
+        router_loss = model.decoder.model.moe_router_loss()
+        loss = main_loss + self.moe_aux_loss_scale * router_loss
+
+        if self.writer is not None:
+            if self.model.training:
+                self.writer.add_scalar('Router aux loss/Train', router_loss.item(), self.total_steps)
+                self.writer.add_scalar('Model loss/Train', main_loss.item(), self.total_steps)
+            else:
+                self.writer.add_scalar('Router aux loss/Valid', router_loss.item(), self.total_steps)
+                self.writer.add_scalar('Model loss/Valid', main_loss.item(), self.total_steps)
+
+        return loss
+
     def compute_loss(self, batch: dict[str, dict[str, torch.Tensor]]) -> tuple[
         tuple[torch.Tensor, torch.Tensor], tuple[torch.Tensor, torch.Tensor]]:
         encoder_inputs = batch['encoder']['input_ids']
@@ -295,6 +318,8 @@ class JointLMTrainer(BaseTrainer):
             shifted_logits.view(-1, self.vocab_size),
             shifted_targets.view(-1)
         )
+
+        decoder_loss = self._moe_aux_loss(decoder_loss)
 
         return (encoder_loss, decoder_loss), (encoder_logits, decoder_logits)
 
