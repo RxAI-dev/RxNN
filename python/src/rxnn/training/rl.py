@@ -127,22 +127,20 @@ class PPOAlgorithm(RlAlgorithm):
         return policy_loss
 
     def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
-                     last_value: torch.Tensor, dones: torch.Tensor, last_done: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+                     last_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         trajectory_len, batch_size = rewards.shape
         advantages = torch.zeros_like(rewards, device=rewards.device)
         last_advantage = 0
         next_value = last_value
-        next_done = last_done.float()
         dones = dones.float()
 
         for t in reversed(range(trajectory_len)):
             # Calculate delta from rewards, stored next_value, masked by stored next_done, and values
-            delta = rewards[t] + self.gae_gamma * next_value * (1 - next_done) - values[t]
+            delta = rewards[t] + self.gae_gamma * next_value * (1 - dones[t]) - values[t]
             # Calculate advantages based on delta, gamma/lambda factors and last advantage, masked by current done flags
             advantages[t] = delta + self.gae_gamma * self.gae_lambda * (1 - dones[t]) * last_advantage
             # Store current step data as last_advantage, next_done and next_value, for the next iteration step
             last_advantage = advantages[t]
-            next_done = dones[t]
             next_value = values[t]
 
         # Calculate reference returns, based on advantages and values, and return them with advantages for critic update
@@ -150,7 +148,7 @@ class PPOAlgorithm(RlAlgorithm):
         return advantages, returns
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1], dones[-1])
+        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
         if self.use_distributed_advantage_norm:
             mean_advantage = distributed_mean(advantages.mean())
             std_advantage = distributed_mean(advantages.std())
