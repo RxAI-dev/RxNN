@@ -89,7 +89,10 @@ class CurriculumConfig(TypedDict):
     embedding_lr: Optional[float]
     teacher_forcing: Optional[bool]
     shallow_update_mode: Optional[bool]
-
+    use_memory_diff_penalty: Optional[bool]
+    memory_diff_scale: Optional[float]
+    use_memory_warmup: Optional[bool]
+    hard_warmup: Optional[bool]
 
 class SamplerConfig(TypedDict):
     temperature: float
@@ -158,15 +161,26 @@ class MRLTrainer:
         self.moe_aux_loss_scale = config.get('moe_aux_loss_scale', 0.01)
         self.shared_freeze_embeddings = config.get('freeze_embeddings', False)
         self.freeze_embeddings = self.shared_freeze_embeddings
-        self.use_memory_warmup = config.get('use_memory_warmup', False)
-        self.hard_warmup = config.get('hard_warmup', False)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
         self.clamp_logits = config.get('clamp_logits', None)
         self.max_grad_norm = config.get('max_grad_norm', 1.0)
-        self.use_memory_diff_penalty = config.get('use_memory_diff_penalty', False)
-        self.memory_diff_scale = config.get('memory_diff_scale', 0.001)
+
+        self.base_memory_warmup_config = {
+            'use_memory_warmup': config.get('use_memory_warmup', False),
+            'hard_warmup': config.get('hard_warmup', False)
+        }
+        self.use_memory_warmup = self.base_memory_warmup_config['use_memory_warmup']
+        self.hard_warmup = self.base_memory_warmup_config['hard_warmup']
+
+        self.base_memory_diff_config = {
+            'use_memory_diff_penalty': config.get('use_memory_diff_penalty', False),
+            'memory_diff_scale': config.get('memory_diff_scale', 0.001),
+        }
+        self.use_memory_diff_penalty = self.base_memory_diff_config['use_memory_diff_penalty']
+        self.memory_diff_scale = self.base_memory_diff_config['memory_diff_scale']
         self.memory_diff_loss = nn.MSELoss()
+
         self.use_self_attn_cache = config.get('use_self_attn_cache', True)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
@@ -1166,6 +1180,11 @@ class MRLTrainer:
         self.freeze_embeddings = config.get('freeze_embeddings', self.shared_freeze_embeddings)
         self.teacher_forcing = config.get('teacher_forcing', False)
         self.shallow_update_mode = config.get('shallow_update_mode', False)
+
+        self.use_memory_warmup = config.get('use_memory_warmup', self.base_memory_warmup_config['use_memory_warmup'])
+        self.hard_warmup = config.get('hard_warmup', self.base_memory_warmup_config['hard_warmup'])
+        self.use_memory_diff_penalty = config.get('use_memory_diff_penalty', self.base_memory_diff_config['use_memory_diff_penalty'])
+        self.memory_diff_scale = config.get('memory_diff_scale', self.base_memory_diff_config['memory_diff_scale'])
 
         def has_param(field: OptimField) -> bool:
             return field in config and config[field] is not None
