@@ -123,7 +123,7 @@ class PPOAlgorithm(RlAlgorithm):
 
         # 8. Add Entropy bonus
         entropy = -(
-            (new_log_probs * new_log_probs.exp() * shifted_mask).sum(dim=-1) / shifted_mask.sum(dim=-1)
+            (shifted_log_probs * shifted_log_probs.exp() * shifted_mask.unsqueeze(-1)).sum(dim=-1) / shifted_mask.sum(dim=-1)
         ).mean()
         policy_loss -= self.entropy_coef * entropy
 
