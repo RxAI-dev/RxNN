@@ -135,13 +135,46 @@ class PPOAlgorithm(RlAlgorithm):
 
         # 9. Calculate step policy consistency loss
         if prev_step_log_probs is not None:
-            this_step_probs = new_log_probs.exp()
-            kl_loss = F.kl_div(prev_step_log_probs, this_step_probs, reduction='batchmean')
+            kl_loss = self.policy_consistency_loss(prev_step_log_probs, new_log_probs.exp(), entropy_mask)
             if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
                 print(f'KL loss: {kl_loss.item():.4f}, scaled: {(self.kl_coeff * kl_loss).item():.4f}')
             policy_loss += self.kl_coeff * kl_loss
 
         return policy_loss, new_log_probs.clone().detach()
+
+    def policy_consistency_loss(self, prev_step_log_probs: torch.Tensor, this_step_probs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        """
+        prev_step_log_probs: Tensor of log probabilities [batch, seq_len, vocab]
+        this_step_probs: Tensor of probabilities [batch, seq_len, vocab]
+        mask: Tensor [batch, seq_len] indicating valid positions
+        """
+        # 1. Apply mask to both distributions
+        mask_expanded = mask.unsqueeze(-1)  # [batch, seq_len, 1]
+        masked_log_probs = prev_step_log_probs * mask_expanded
+        masked_probs = this_step_probs * mask_expanded
+
+        # 2. Flatten while preserving mask
+        batch_size, seq_len, vocab_size = prev_step_log_probs.shape
+        flat_log_probs = masked_log_probs.view(-1, vocab_size)
+        flat_probs = masked_probs.view(-1, vocab_size)
+
+        # 3. Filter out completely masked positions
+        valid_indices = mask.flatten().bool()
+        valid_log_probs = flat_log_probs[valid_indices]
+        valid_probs = flat_probs[valid_indices]
+
+        # 4. Compute KL divergence only for valid positions
+        if len(valid_log_probs) > 0:
+            kl_loss = F.kl_div(
+                valid_log_probs,
+                valid_probs,
+                reduction='batchmean',
+                log_target=False
+            )
+        else:
+            kl_loss = torch.tensor(0.0).to(mask.device)
+
+        return kl_loss
 
     def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
                      last_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
