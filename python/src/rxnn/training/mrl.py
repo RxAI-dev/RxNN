@@ -94,6 +94,7 @@ class CurriculumConfig(TypedDict):
     memory_diff_scale: Optional[float]
     use_memory_warmup: Optional[bool]
     hard_warmup: Optional[bool]
+    use_critic_warmup_epoch: Optional[bool]
 
 class SamplerConfig(TypedDict):
     temperature: float
@@ -577,13 +578,16 @@ class MRLTrainer:
 
         return trajectories
 
-    def _critic_writer(self, critic_loss: float, epoch: int):
+    def _critic_writer(self, critic_loss: float, epoch: int, warmup_step: Optional[int] = None):
         if self.writer is not None:
-            self.writer.add_scalar('Loss/critic (global)', critic_loss, self.global_step['train'])
-            self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps}, epoch: {epoch})', critic_loss,
-                                   self.epoch_step['train'])
-            self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps})', critic_loss,
-                                   self.stage_step['train'])
+            if epoch == -1 and warmup_step is not None:
+                self.writer.add_scalar('Loss/critic warmup', critic_loss, warmup_step)
+            else:
+                self.writer.add_scalar('Loss/critic (global)', critic_loss, self.global_step['train'])
+                self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps}, epoch: {epoch})', critic_loss,
+                                       self.epoch_step['train'])
+                self.writer.add_scalar(f'Loss/critic (steps: {self.curriculum_steps})', critic_loss,
+                                       self.stage_step['train'])
 
     def _rl_writer(self, policy_loss: float, epoch: int):
         if self.writer is not None:
@@ -594,7 +598,7 @@ class MRLTrainer:
                                    self.stage_step['train'])
 
     def update_critic(self, state: tuple[TokenizedDict, TokenizedDict, TokenizedDict], ref_values: torch.Tensor,
-                      epoch: int) -> float:
+                      epoch: int, warmup_step: Optional[int] = None) -> float:
         # 1. Reset critic gradients
         self.critic_optimizer.zero_grad()
 
@@ -630,11 +634,11 @@ class MRLTrainer:
         critic_loss_item = critic_loss.item()
 
         # 4. Write to TensorBoard
-        self._critic_writer(critic_loss_item, epoch)
+        self._critic_writer(critic_loss_item, epoch, warmup_step=warmup_step)
 
         # 5. Run "on critic updated" callbacks
         for cb in self.callbacks:
-            cb.on_critic_updated(self.actor, self.critic, epoch, self.epoch_step['train'], critic_loss_item)
+            cb.on_critic_updated(self.actor, self.critic, epoch, self.epoch_step['train'] if warmup_step is None else warmup_step, critic_loss_item)
         # 6. Return loss item
         return critic_loss_item
 
@@ -723,7 +727,8 @@ class MRLTrainer:
             initial_stm_state: torch.Tensor,
             epoch: int,
             step_idx: int,
-    ) -> float:
+            prev_step_log_probs: Optional[torch.Tensor] = None,
+    ) -> tuple[float, torch.Tensor]:
         # 1. Reset actor gradients
         self.optimizer.zero_grad()
         # 2. Unpack state dicts
@@ -744,8 +749,8 @@ class MRLTrainer:
                 if self.clamp_logits is not None:
                     logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
                 # 4.2 Calculate policy loss with selected algorithm
-                policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
-                                                            advantages)
+                policy_loss, this_step_log_probs = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs,
+                                                            advantages, prev_step_log_probs=prev_step_log_probs)
                 policy_loss = self._moe_aux_loss(policy_loss)
                 policy_loss = self._memory_diff_loss(policy_loss, initial_stm_state, step_idx)
 
@@ -769,7 +774,9 @@ class MRLTrainer:
             if self.clamp_logits is not None:
                 logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
             # 4.2 Calculate policy loss with selected algorithm
-            policy_loss = self.rl_algorithm.policy_loss(next_query, action, logits, old_log_probs, advantages)
+            policy_loss, this_step_log_probs = self.rl_algorithm.policy_loss(
+                next_query, action, logits, old_log_probs, advantages, prev_step_log_probs=prev_step_log_probs
+            )
             policy_loss = self._moe_aux_loss(policy_loss)
             policy_loss = self._memory_diff_loss(policy_loss, initial_stm_state, step_idx)
             # 4.3 Run backpropagation
@@ -791,7 +798,7 @@ class MRLTrainer:
             cb.on_batch_updated(self.actor, epoch, self.epoch_step['train'], policy_loss_item)
 
         # 8. Return loss item
-        return policy_loss_item
+        return policy_loss_item, this_step_log_probs
 
     def rl_step(self, trajectories: list[MrlTrajectoryEpisode], advantages: torch.Tensor, ref_values: torch.Tensor,
                 epoch: int, batch_size: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -814,6 +821,8 @@ class MRLTrainer:
             # 3. Reset memory for current batch episode
             if should_reset_stm:
                 self.reset_stm(force=True)
+
+            stored_prev_step_log_probs = None
 
             # 4. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
             for step_idx, step in enumerate(episode_steps):
@@ -845,16 +854,49 @@ class MRLTrainer:
                 # 8. Accumulate critic loss for epoch callbacks
                 critic_losses.append(critic_loss_item)
 
+                prev_step_log_probs = stored_prev_step_log_probs if step_idx != 0 else None
+
                 # 9. Update actor
-                policy_loss_item = self.update_actor(
+                policy_loss_item, stored_prev_step_log_probs = self.update_actor(
                     (query, answer, next_query),
                     action, step_advantages, log_probs,
-                    initial_stm, epoch, step_idx
+                    initial_stm, epoch, step_idx,
+                    prev_step_log_probs=prev_step_log_probs
                 )
 
                 all_losses.append(policy_loss_item)
         # 10. Return mean losses for epoch callbacks
         return torch.mean(torch.tensor(all_losses)), torch.mean(torch.tensor(critic_losses))
+
+    def _critic_warmup_epoch(self, trajectories: list[MrlTrajectoryEpisode]):
+        total_loss = 0.0
+        if self.memory_aware_critic:
+            flat_trajectories = [
+                (t, i == 0 and episode['reset_stm'])
+                for episode in trajectories
+                for i, t in enumerate(episode['steps'])
+            ]
+
+            for step_idx, (trajectory, reset_stm) in enumerate(flat_trajectories):
+                if reset_stm:
+                    self.reset_stm(force=True)
+
+                state = self._move_multiple_batches(*trajectory['state'])
+                query, answer, _ = state
+                self.encode_and_update_stm(query, answer)
+                rewards = torch.tensor(trajectory['reward']).to(self.device)
+                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size())
+                total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
+        else:
+            flat_trajectories = [t for episode in trajectories for t in episode['steps']]
+            for step_idx, trajectory in enumerate(flat_trajectories):
+                state = self._move_multiple_batches(*trajectory['state'])
+                rewards = torch.tensor(trajectory['reward']).to(self.device)
+                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size())
+                total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
+
+        return total_loss / (len(flat_trajectories) + 1e-8)
+
 
     def _critic_values_rewards_and_dones(self, trajectories: list[MrlTrajectoryEpisode]):
         if self.memory_aware_critic:
@@ -886,7 +928,8 @@ class MRLTrainer:
             if reset_stm:
                 self.reset_stm(force=True)
             # 3. Encode and update STM for critic
-            self.encode_and_update_stm(*moved_state)
+            query, answer, _ = moved_state
+            self.encode_and_update_stm(query, answer)
             # 4. Get concatenated critic states
             inputs = smart_concat_critic_states(
                 *moved_state,
@@ -910,10 +953,13 @@ class MRLTrainer:
             return self.critic(inputs['input_ids'],
                                attention_mask=inputs['attention_mask']).squeeze()
 
-    def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int):
+    def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int, use_critic_warmup: bool = False):
         """Train for one epoch."""
         # 1. Collect trajectories for current epoch
         trajectories = self.collect_trajectories(dataloader, epoch, batch_size)
+
+        if use_critic_warmup:
+            self._critic_warmup_epoch(trajectories)
 
         # 2. Flatten trajectories, call critic and collect values, dones and rewards, and calculate advantages
         if self.use_amp:
@@ -1333,8 +1379,10 @@ class MRLTrainer:
                 if train_sampler is not None:
                     train_sampler.set_epoch(epoch)
 
+                use_critic_warmup = epoch == 0 and current_curriculum_step.get('use_critic_warmup_epoch', False)
+
                 # 14. Run reinforcement learning algorithms for current epoch
-                policy_loss, critic_loss = self.train_epoch(dataloader, epoch, batch_size)
+                policy_loss, critic_loss = self.train_epoch(dataloader, epoch, batch_size, use_critic_warmup=use_critic_warmup)
 
                 # 15. If evaluation dataset is provided, run evaluation steps
                 if self.eval_dataset:

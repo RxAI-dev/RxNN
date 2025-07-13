@@ -360,7 +360,8 @@ class BatchSampler:
             log_probs[:, :-1]
         ], dim=-1)
 
-
+        if (generated_mask.sum(dim=-1) == 1).any():
+            print(f"Error: EMPTY SEQUENCES - {generated_ids}")
 
         return generated_ids, generated_mask, prepended_log_probs
 

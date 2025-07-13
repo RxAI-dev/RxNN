@@ -14,7 +14,8 @@ class RlAlgorithm(ABC):
 
     @abstractmethod
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
-                    old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
+                    old_log_probs: torch.Tensor, advantages: torch.Tensor,
+                    prev_step_log_probs: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
         pass
 
     @abstractmethod
@@ -36,6 +37,7 @@ class PPOConfig(TypedDict):
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
     skip_gae: Optional[bool]
+    kl_coeff: Optional[float]
 
 
 class PPOAlgorithm(RlAlgorithm):
@@ -56,6 +58,7 @@ class PPOAlgorithm(RlAlgorithm):
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
         self.skip_gae = config.get('skip_gae', False)
+        self.kl_coeff = config.get('kl_coeff', 0.01)
         self.debug_step = 0
 
     def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
@@ -66,7 +69,7 @@ class PPOAlgorithm(RlAlgorithm):
         return self.critic_loss_fn(values, ref_values)
 
     def policy_loss(self, query: TokenizedDict, answer: TokenizedDict, logits: torch.Tensor,
-                    old_log_probs: torch.Tensor, advantages: torch.Tensor) -> torch.Tensor:
+                    old_log_probs: torch.Tensor, advantages: torch.Tensor, prev_step_log_probs: Optional[torch.Tensor] = None) -> tuple[torch.Tensor, torch.Tensor]:
         # 1. Get query, answer, max and combined lengths in batch
         query_lens = query['attention_mask'].sum(dim=1).long()  # Query lengths per sample
         answer_mask = answer['attention_mask']
@@ -112,7 +115,7 @@ class PPOAlgorithm(RlAlgorithm):
                 print(
                     f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
                 print(
-                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={((ratio * shifted_mask).sum(dim=-1) / shifted_mask.sum(dim=-1)).mean().item():.4f}")
+                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={((ratio * shifted_mask).sum(dim=-1) / (shifted_mask.sum(dim=-1) + 1e-8)).mean().item():.4f}")
                 print(
                     f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
             else:
@@ -121,16 +124,22 @@ class PPOAlgorithm(RlAlgorithm):
         # 7. Calculate base policy loss
         surr1 = (ratio * shifted_mask) * advantages
         surr2 = (torch.clamp(ratio, 1.0 - self.clip_eps, 1.0 + self.clip_eps) * shifted_mask) * advantages
-        policy_loss = -(torch.min(surr1, surr2).sum(dim=-1) / shifted_mask.sum(dim=-1)).mean()
+        policy_loss = -(torch.min(surr1, surr2).sum(dim=-1) / (shifted_mask.sum(dim=-1) + 1e-8)).mean()
 
         # 8. Add Entropy bonus
         entropy_mask = answer_mask[:, :-1]
         entropy = -(
-            (new_log_probs * new_log_probs.exp() * entropy_mask.unsqueeze(-1)).sum(dim=-1) / entropy_mask.sum(dim=-1).unsqueeze(-1)
+            (new_log_probs * new_log_probs.exp() * entropy_mask.unsqueeze(-1)).sum(dim=-1) / (entropy_mask.sum(dim=-1).unsqueeze(-1) + 1e-8)
         ).mean()
         policy_loss -= self.entropy_coef * entropy
 
-        return policy_loss
+        # 9. Calculate step policy consistency loss
+        if prev_step_log_probs is not None:
+            this_step_probs = new_log_probs.exp()
+            kl_loss = F.kl_div(prev_step_log_probs, this_step_probs, reduction='batchmean')
+            policy_loss += self.kl_coeff * kl_loss
+
+        return policy_loss, new_log_probs
 
     def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
                      last_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
