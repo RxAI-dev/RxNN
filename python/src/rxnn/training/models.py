@@ -93,19 +93,21 @@ class MrlActorModel(nn.Module):
         self.decoder = decoder
         self.memory_attention = memory_attention
 
-    def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint', freeze_embeddings: bool = False):
+    def freeze_components(self, stage: Literal['update', 'fetch', 'joint'] = 'joint', freeze_embeddings: bool = False, skip_encoder_cross_attn: bool = False):
         """Freeze encoder/decoder except memory-related layers."""
         # Freeze/unfreeze encoder
         if self.encoder.freeze_without_memory is not None:
             if stage == 'update' or stage == 'joint':
                 self.encoder.unfreeze_all()
+                if skip_encoder_cross_attn:
+                    self.encoder.freeze_memory(with_norms=True)
             else:
                 self.encoder.freeze_without_memory(unfreeze_norms=True)
                 self.encoder.freeze_memory(with_norms=True)
         else:
             for param in self.encoder.parameters():
                 param.requires_grad = True if stage != 'fetch' else False
-            self.encoder.model.trainable_cross_attention_(True if stage != 'fetch' else False, with_norms=True)
+            self.encoder.model.trainable_cross_attention_(True if stage != 'fetch' and not skip_encoder_cross_attn else False, with_norms=True)
         # Freeze/unfreeze decoder
         if self.decoder.freeze_without_memory is not None:
             if stage == 'fetch':
@@ -133,13 +135,17 @@ class MrlActorModel(nn.Module):
             for param in self.encoder.model.embedding.parameters():
                 param.requires_grad = False
 
-    def unfreeze_components(self, freeze_embeddings: bool = False):
+    def unfreeze_components(self, freeze_embeddings: bool = False, skip_encoder_cross_attn: bool = False):
         """Unfreeze all components after initial training."""
         if self.encoder.unfreeze_all is not None:
             self.encoder.unfreeze_all()
+            if skip_encoder_cross_attn:
+                self.encoder.freeze_memory(with_norms=True)
         else:
             for param in self.encoder.parameters():
                 param.requires_grad = True
+            if skip_encoder_cross_attn:
+                self.encoder.model.trainable_cross_attention_(False, with_norms=True)
         if self.decoder.unfreeze_all is not None:
             self.decoder.unfreeze_all()
         else:

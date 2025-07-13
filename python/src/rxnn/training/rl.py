@@ -35,6 +35,7 @@ class PPOConfig(TypedDict):
     critic_value_clip: Optional[float]
     debug_mode: Optional[bool]
     debug_interval: Optional[int]
+    skip_gae: Optional[bool]
 
 
 class PPOAlgorithm(RlAlgorithm):
@@ -54,6 +55,7 @@ class PPOAlgorithm(RlAlgorithm):
         self.critic_value_clip = config.get('critic_value_clip', 20.0)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
+        self.skip_gae = config.get('skip_gae', False)
         self.debug_step = 0
 
     def critic_loss(self, values: torch.Tensor, ref_values: torch.Tensor) -> torch.Tensor:
@@ -106,11 +108,11 @@ class PPOAlgorithm(RlAlgorithm):
         # 6. Log most important stats in debug mode
         if self.debug_mode:
             if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
-                self.debug_step = 0
+                self.debug_step = 1
                 print(
                     f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
                 print(
-                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={ratio.mean().item():.4f}")
+                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={((ratio * shifted_mask).sum(dim=-1) / shifted_mask.sum(dim=-1)).mean().item():.4f}")
                 print(
                     f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
             else:
@@ -152,7 +154,12 @@ class PPOAlgorithm(RlAlgorithm):
         return advantages, returns
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
+        if self.skip_gae:
+            advantages = rewards - values
+            ref_values = rewards
+        else:
+            advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
+
         if self.use_distributed_advantage_norm:
             mean_advantage = distributed_mean(advantages.mean())
             std_advantage = distributed_mean(advantages.std())

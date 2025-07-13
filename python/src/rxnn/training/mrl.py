@@ -49,6 +49,7 @@ class MrlConfig(TypedDict):
     use_memory_diff_penalty: Optional[bool]
     memory_diff_scale: Optional[float]
     use_self_attn_cache: Optional[bool]
+    skip_encoder_cross_attn: Optional[bool]
 
 
 class MrlStrategy(Enum):
@@ -182,6 +183,7 @@ class MRLTrainer:
         self.memory_diff_loss = nn.MSELoss()
 
         self.use_self_attn_cache = config.get('use_self_attn_cache', True)
+        self.skip_encoder_cross_attn = config.get('skip_encoder_cross_attn', False)
         # Internal update epochs config
         self.shared_update_epochs = config.get('update_epochs', 10)
         self.update_epochs = self.shared_update_epochs
@@ -1079,41 +1081,41 @@ class MRLTrainer:
             if isinstance(update_epoch, tuple):
                 switch_epoch, cross_att_lr = update_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                     self.optimizer = self._init_unfreeze_optimizer('update', cross_att_lr)
                     print(f"Activating 'update' unfreeze strategy with custom cross_att_lr: {cross_att_lr}")
             elif epoch == update_epoch:
-                self.actor.freeze_components('update', freeze_embeddings=self.freeze_embeddings)
+                self.actor.freeze_components('update', freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                 print(
                     f"Activating 'update' unfreeze strategy - mem-att trainable / cross-att frozen / rest model frozen")
 
             if isinstance(fetch_epoch, tuple):
                 switch_epoch, mem_att_lr = fetch_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                     self.optimizer = self._init_unfreeze_optimizer('fetch', mem_att_lr)
                     print(f"Activating 'fetch' unfreeze strategy with custom mem_att_lr: {mem_att_lr}")
             elif epoch == fetch_epoch:
-                self.actor.freeze_components('fetch', freeze_embeddings=self.freeze_embeddings)
+                self.actor.freeze_components('fetch', freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                 print(
                     f"Activating 'fetch' unfreeze strategy - mem-att frozen / cross-att trainable / rest model frozen")
 
             if isinstance(joint_epoch, tuple):
                 switch_epoch, model_lr = joint_epoch
                 if epoch == switch_epoch:
-                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                     self.optimizer = self._init_unfreeze_optimizer('joint', model_lr)
                     print(f"Activating 'joint' unfreeze strategy with custom model_lr: {model_lr}")
             elif epoch == joint_epoch:
-                self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings)
+                self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                 print(f"Activating 'joint' unfreeze strategy - mem-att/cross-att trainable / rest model frozen")
 
             if epoch == all_epoch:
-                self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+                self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                 self.optimizer = self._init_unfreeze_optimizer('all', 0.)
                 print(f"Switching to train 'all' strategy - unfreeze all components")
         elif epoch == unfreeze_epoch:
-            self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+            self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
             print(f"Switching to train 'all' strategy - unfreeze all components")
 
     def _init_unfreeze_optimizer(
@@ -1274,7 +1276,7 @@ class MRLTrainer:
                 if callable(unfreeze_epoch):
                     unfreeze_epoch(-1)
                 else:
-                    self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings)
+                    self.actor.freeze_components('joint', freeze_embeddings=self.freeze_embeddings, skip_encoder_cross_attn=self.skip_encoder_cross_attn)
                     if isinstance(unfreeze_epoch, tuple):
                         print(
                             f"Starting training with unfreeze strategies - 'warmup' - mem-att/cross-att trainable / rest model frozen")
