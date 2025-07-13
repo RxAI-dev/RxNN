@@ -870,6 +870,9 @@ class MRLTrainer:
 
     def _critic_warmup_epoch(self, trajectories: list[MrlTrajectoryEpisode]):
         total_loss = 0.0
+
+        print('Start critic warmup')
+
         if self.memory_aware_critic:
             flat_trajectories = [
                 (t, i == 0 and episode['reset_stm'])
@@ -885,17 +888,21 @@ class MRLTrainer:
                 query, answer, _ = state
                 self.encode_and_update_stm(query, answer)
                 rewards = torch.tensor(trajectory['reward']).to(self.device)
-                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size())
+                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size()).to(self.device)
                 total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
         else:
             flat_trajectories = [t for episode in trajectories for t in episode['steps']]
             for step_idx, trajectory in enumerate(flat_trajectories):
                 state = self._move_multiple_batches(*trajectory['state'])
                 rewards = torch.tensor(trajectory['reward']).to(self.device)
-                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size())
+                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size()).to(self.device)
                 total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
 
-        return total_loss / (len(flat_trajectories) + 1e-8)
+        mean_warmup_loss = total_loss / (len(flat_trajectories) + 1e-8)
+
+        print(f'Critic mean warmup loss: {mean_warmup_loss}')
+
+        return mean_warmup_loss
 
 
     def _critic_values_rewards_and_dones(self, trajectories: list[MrlTrajectoryEpisode]):

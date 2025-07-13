@@ -137,9 +137,11 @@ class PPOAlgorithm(RlAlgorithm):
         if prev_step_log_probs is not None:
             this_step_probs = new_log_probs.exp()
             kl_loss = F.kl_div(prev_step_log_probs, this_step_probs, reduction='batchmean')
+            if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
+                print(f'KL loss: {kl_loss.item():.4f}, scaled: {(self.kl_coeff * kl_loss).item():.4f}')
             policy_loss += self.kl_coeff * kl_loss
 
-        return policy_loss, new_log_probs
+        return policy_loss, new_log_probs.clone().detach()
 
     def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
                      last_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
