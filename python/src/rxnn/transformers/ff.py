@@ -47,16 +47,6 @@ class GatedFeedForward(nn.Module):
         return self.fc2(x)
 
 
-class LinearActivation(nn.Module):
-    """Linear activation - identity function, for Bilinear Gated Unit"""
-
-    def __init__(self, *args, **kwargs):
-        super(LinearActivation, self).__init__(*args, **kwargs)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return x
-
-
 def get_activation_layer(activation: str):
     if activation == 'relu':
         return nn.ReLU()
@@ -69,6 +59,6 @@ def get_activation_layer(activation: str):
     elif activation == 'tanh':
         return nn.Tanh()
     elif activation == 'linear':
-        return LinearActivation()
+        return nn.Identity()
     else:
         raise ValueError(f'Activation {activation} not supported')

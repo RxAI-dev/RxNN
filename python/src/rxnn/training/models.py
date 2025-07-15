@@ -243,21 +243,21 @@ class MrlActorModel(nn.Module):
 
 
 class MrlCriticModel(nn.Module, PyTorchModelHubMixin, license="apache-2.0", pipeline_tag="text-classification"):
-    def __init__(self, encoder: nn.Module, embed_dim: int, **kwargs):
+    def __init__(self, encoder: nn.Module, embed_dim: int, init_scale: float = 10.0, activation: Literal['sigmoid', 'tanh', 'linear'] = 'sigmoid', **kwargs):
         super(MrlCriticModel, self).__init__(**kwargs)
         self.encoder = encoder
         self.value_head = nn.Sequential(
             GatedLinearUnit(embed_dim, embed_dim, nn.SiLU()),
             nn.LayerNorm(embed_dim),
-            nn.Linear(embed_dim, 1)
+            nn.Linear(embed_dim, 1),
+            get_activation_layer(activation)
         )
         # Learnable scaling parameters
-        self.scale = nn.Parameter(torch.tensor(1.0))
+        self.scale = nn.Parameter(torch.tensor(init_scale))
         self.shift = nn.Parameter(torch.tensor(0.0))
 
-
-    def head_parameters(self) -> Iterator[nn.Parameter]:
-        return self.value_head.parameters()
+    def head_parameters(self) -> list[nn.Parameter]:
+        return [*list(self.value_head.parameters()), self.scale, self.shift]
 
     def encoder_parameters(self) -> Iterator[nn.Parameter]:
         return self.encoder.parameters()

@@ -95,6 +95,7 @@ class CurriculumConfig(TypedDict):
     use_memory_warmup: Optional[bool]
     hard_warmup: Optional[bool]
     use_critic_warmup_epoch: Optional[bool]
+    critic_warmup_noise_scale: Optional[float]
 
 class SamplerConfig(TypedDict):
     temperature: float
@@ -888,14 +889,14 @@ class MRLTrainer:
                 query, answer, _ = state
                 self.encode_and_update_stm(query, answer)
                 rewards = torch.tensor(trajectory['reward']).to(self.device)
-                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size()).to(self.device)
+                noisy_rewards = rewards + self.critic_warmup_noise_scale * torch.randn_like(rewards).to(self.device)
                 total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
         else:
             flat_trajectories = [t for episode in trajectories for t in episode['steps']]
             for step_idx, trajectory in enumerate(flat_trajectories):
                 state = self._move_multiple_batches(*trajectory['state'])
                 rewards = torch.tensor(trajectory['reward']).to(self.device)
-                noisy_rewards = rewards + 0.33 * torch.normal(0, 1, size=rewards.size()).to(self.device)
+                noisy_rewards = rewards + self.critic_warmup_noise_scale * torch.randn_like(rewards).to(self.device)
                 total_loss += self.update_critic(state, noisy_rewards, -1, warmup_step=step_idx)
 
         mean_warmup_loss = total_loss / (len(flat_trajectories) + 1e-8)
@@ -1240,6 +1241,8 @@ class MRLTrainer:
         self.hard_warmup = config.get('hard_warmup', self.base_memory_warmup_config['hard_warmup'])
         self.use_memory_diff_penalty = config.get('use_memory_diff_penalty', self.base_memory_diff_config['use_memory_diff_penalty'])
         self.memory_diff_scale = config.get('memory_diff_scale', self.base_memory_diff_config['memory_diff_scale'])
+
+        self.critic_warmup_noise_scale = config.get('critic_warmup_noise_scale', 1.0)
 
         def has_param(field: OptimField) -> bool:
             return field in config and config[field] is not None
