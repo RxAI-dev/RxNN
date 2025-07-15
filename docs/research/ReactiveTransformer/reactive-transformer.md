@@ -1,6 +1,22 @@
 # Reactive Transformer: Real-time processing for language models
 by Adam Filipek/Reactive AI
 
+> During in-depth experiments on memory systems and Memory Reinforcement Learning, we had to make several key architectural changes,
+> the most important of which are:
+> - remove memory cross-attention from encoder - it's causing vector space misalignment (memory is connected with vector space from
+>   encoder layer's feed forward results, but it's also passed to memory cross-attention, that is before feed forward). Generally,
+>   for **Reactive Transformer**, encoder doesn't need access to current Short-Term Memory state (it was originally designed
+>   for **Long-Term Memory** architectures), because it's accessed later in **Memory Attention**
+> - introduce gated residual connections for **Memory Attention** - standard residuals could lead to exploding memory updates,
+>   because of state accumulation in each step - [more details](./memory-attention.md)
+> - change pre-training/fine-tuning methods - use Joint Language Model pre-training and fine-tuning to align vector spaces
+>   between encoder and decoder, and pre-train memory cross-attention in decoder
+> - replace PPO with its custom variant made for memory systems - Implicit Memory Policy Optimization (IMPO)
+> - lot of changes in MRL algorithm itself
+> 
+> So, this documentation is a little outdated - we'll edit it and include new information in next few days. And finally,
+> we will publish it in detailed research papers after finalizing MRL in first PoC model (planned for August 2025)
+
 ## Abstract
 Language models based on Transformer architecture are industry standard in Natural Language Processing. They are great
 in language modelling and generative tasks. However, Transformers are completely stateless, and they are only emulating Short-Term
