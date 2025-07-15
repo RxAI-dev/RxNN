@@ -183,6 +183,8 @@ something to explore.
 In summary, SQA seems to be the most cost-effective variant of Grouped Query Attention, reducing training time/cost by ~5-15%,
 while staying on GQA/MQA performance level, and will be implemented in our **Reactive Transformer** models.
 
+More about [Sparse Query Attention](../sparse_query_attention.md)
+
 #### Spatially sparse attention for memory
 Spatially sparse attention mechanisms, based on sliding local windows, especially _**Flex Attention**_, are becoming more
 popular, because of their ability to handle very long sequences with `O(N * log N)` complexity. They are excellent for very
