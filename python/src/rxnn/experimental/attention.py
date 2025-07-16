@@ -280,7 +280,7 @@ class SparseQueryAttention(MultiHeadAttention):
         """Transpose attention output back to (B, T, D) shape"""
         return attn_output.transpose(1, 2).contiguous().view(b, t, d // (self.num_heads // self.num_query_groups))
 
-    def _split_kv_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
+    def split_kv_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
         return projected.view(b, -1, self.num_groups, d // self.num_heads).transpose(1, 2)
 
     def _split_q_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
@@ -288,28 +288,21 @@ class SparseQueryAttention(MultiHeadAttention):
 
     def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
         """Override query, key, and value projections for GQA case - split data into heads and groups"""
-        head_dim = d // self.num_heads
-        if stm_kv_cache is not None:
-            projected_key = stm_kv_cache[0]
-            projected_value = stm_kv_cache[1]
-        else:
-            projected_key = self.k_proj(key)
-            projected_value = self.v_proj(value)
-
         if not self.rel_embed:
-            q = self.q_proj(query).view(b, t, self.num_query_groups, head_dim).transpose(1, 2)
-            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
-            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)
+            q = self._split_q_head(self.q_proj(query), b, t, d)
+            k = self.split_kv_head(self.k_proj(key), b, t, d) if stm_kv_cache is None else stm_kv_cache[0]
+            v = self.split_kv_head(self.v_proj(value), b, t, d) if stm_kv_cache is None else stm_kv_cache[1]
         else:
             # Relative embedding version is not working without this strange mapping - it will be removed in next versions
             group_heads = self.num_heads // self.num_groups
             query_heads = self.num_heads // self.num_query_groups
+            head_dim = d // self.num_heads
             # Process Q
-            q = self.q_proj(query).view(b, -1, self.num_query_groups, head_dim).transpose(1, 2)  # (B, Q_G, T, head_dim)
+            q = self._split_q_head(self.q_proj(query), b, t, d)  # (B, Q_G, T, head_dim)
 
             # Process K and V
-            k = projected_key.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
-            v = projected_value.view(b, -1, self.num_groups, head_dim).transpose(1, 2)  # (B, G, S, head_dim)
+            k = self.split_kv_head(self.k_proj(key), b, t, d) if stm_kv_cache is None else stm_kv_cache[0]  # (B, G, S, head_dim)
+            v = self.split_kv_head(self.v_proj(value), b, t, d) if stm_kv_cache is None else stm_kv_cache[1]  # (B, G, S, head_dim)
 
             # Expand and flatten to 4D tensors
             q = q.unsqueeze(2).expand(-1, -1, query_heads, -1, -1)  # (B, Q_G, query_heads, T, head_dim)

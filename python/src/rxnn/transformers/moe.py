@@ -23,10 +23,10 @@ class MoeRouter(nn.Module):
 
     def calculate_aux_loss(self, top_k_indices: torch.Tensor, probs: torch.Tensor) -> torch.Tensor:
         # Get shapes
-        T, K = top_k_indices.shape  # Batch, Sequence length, Top-K
+        T, K = top_k_indices.size()  # Batch, Sequence length, Top-K
 
         # 1. Compute expert selection mask (one-hot encoded)
-        expert_mask = F.one_hot(top_k_indices, self.num_experts).float()  # (B, S, K, E)
+        expert_mask = F.one_hot(top_k_indices, self.num_experts).to(dtype=probs.dtype)  # (B, S, K, E)
 
         # 2. Total number of times each expert is selected
         expert_usage = expert_mask.sum(dim=(0, 1))  # (E,)
@@ -97,14 +97,14 @@ class MoeFeedForward(nn.Module):
         return self.router.aux_loss
 
     def forward(self, x: torch.Tensor):
-        orig_shape = x.shape
+        orig_shape = x.size()
         x = x.view(-1, self.embed_dim)  # [batch*seq_len, embed_dim]
 
         # Get routing weights and indices
         weights, indices = self.router(x)  # [B*T, top_k], [B*T, top_k]
 
         # Create mask for expert contributions (B*T, num_experts)
-        expert_mask = F.one_hot(indices, self.num_experts).float()  # [B*T, top_k, num_experts]
+        expert_mask = F.one_hot(indices, self.num_experts).to(dtype=weights.dtype)  # [B*T, top_k, num_experts]
         expert_weights = (weights.unsqueeze(-1) * expert_mask).sum(dim=1)  # [B*T, num_experts]
 
         output = torch.zeros_like(x)

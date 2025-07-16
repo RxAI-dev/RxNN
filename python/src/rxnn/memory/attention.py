@@ -209,3 +209,68 @@ class SelfStmMemoryAttention(StmMemoryAttention):
         self.stm.update_all(new_stm)
         return self.stm.memory
 
+class SelfInterlayerStmMemoryAttention(StmMemoryAttention):
+    def __init__(
+            self,
+            stm: ShortTermMemory,
+            attention_layers: nn.ModuleList,
+            memory_norm_layers: nn.ModuleList,
+            memory_input_norm_layers: nn.ModuleList,
+            residual_gate_layers: nn.ModuleList,
+            mean_attention_layers: nn.ModuleList,
+            mean_memory_norm_layers: nn.ModuleList,
+            mean_residual_gate_layers: nn.ModuleList,
+            interlayer_gate_layers: nn.ModuleList,
+            mean_stm_norm: nn.Module,
+            debug_mode: bool = False,
+            debug_interval: int = 10,
+            **kwargs
+    ):
+        super(SelfInterlayerStmMemoryAttention, self).__init__(
+            stm, attention_layers, memory_norm_layers, memory_input_norm_layers, residual_gate_layers,
+            debug_mode=debug_mode, debug_interval=debug_interval, **kwargs
+        )
+        self.mean_attention_layers = mean_attention_layers
+        self.mean_memory_norm_layers = mean_memory_norm_layers
+        self.mean_stm_norm = mean_stm_norm
+        self.mean_residual_gate_layers = mean_residual_gate_layers
+        self.interlayer_gate_layers = interlayer_gate_layers
+        assert (len(self.mean_attention_layers) == len(self.mean_memory_norm_layers) ==
+                len(self.mean_residual_gate_layers) == len(self.interlayer_gate_layers) == self.num_layers)
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        # 1. Process correct attention mask
+        if attention_mask is not None:
+            attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).bool()
+        # 2. Init new empty STM
+        new_stm = torch.zeros_like(self.stm.memory)
+
+        # 3. Get mean STM value from layers for mean interlayer memory attention
+        mean_stm = self.stm.memory.mean(dim=0) # [batch_size, stm_size, embed_dim]
+        # 4. Normalize mean STM layer
+        normalized_mean_stm = self.mean_stm_norm(mean_stm)
+
+        # 5. Run Short-Term Memory update for all layers
+        for i in range(self.num_layers):
+            # 6. Get current layer STM value
+            layer_stm = self.stm(i)
+            # 7. Expand layer STM to batch size, if it's not in batch mode
+            if layer_stm.size(0) == 1:
+                layer_stm = layer_stm.expand(x.size(0), -1, -1)
+
+            # 8. Gated self/interlayer memory attention
+            # a) normalize STM layer value
+            pre_normalized_layer_stm = self.mean_memory_norm_layers[i](layer_stm)
+            # b) combine interlayer and current layer data with gate
+            self_interlayer_stm_input = self.interlayer_gate_layers[i](pre_normalized_layer_stm, normalized_mean_stm)
+            # c) calculate attention between STM layer and combined self/interlayer state
+            self_interlayer_stm = self.mean_attention_layers[i](pre_normalized_layer_stm, self_interlayer_stm_input, self_interlayer_stm_input, mask=None)
+            # d) combine updated interlayer state with current STM state in residual gate
+            updated_layer_stm = self.mean_residual_gate_layers[i](layer_stm, self_interlayer_stm)
+
+            # 9. Main memory attention
+            new_stm[i] = self._main_attention(i, x, updated_layer_stm, mask=attention_mask)
+        # 10. Update all layers/models
+        self.stm.update_all(new_stm)
+        return self.stm.memory
+

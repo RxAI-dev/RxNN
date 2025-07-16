@@ -9,7 +9,7 @@ from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEn
 from ..transformers.ff import get_activation_layer
 from ..memory.stm import ShortTermMemory
 from ..memory.norm import init_memory_norm
-from ..memory.attention import StmMemoryAttention, InterlayerStmMemoryAttention, SelfStmMemoryAttention
+from ..memory.attention import StmMemoryAttention, InterlayerStmMemoryAttention, SelfStmMemoryAttention, SelfInterlayerStmMemoryAttention
 from ..memory.gate import ResidualGate, ResidualGateType, SlotStatusType
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
@@ -583,6 +583,152 @@ class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apac
         self.model = SelfStmMemoryAttention(
             stm, attention_layers, memory_norm_layers, memory_input_norm_layers, residual_gates,
             self_attention_layers, self_memory_norm_layers, self_residual_gates,
+            debug_mode=debug_mode, debug_interval=debug_interval,
+        )
+
+    def freeze(self):
+        for param in self.parameters():
+            param.requires_grad = False
+
+    def unfreeze(self):
+        for param in self.parameters():
+            param.requires_grad = True
+
+    def load_shared_memory(self, stm: ShortTermMemory):
+        self.model.stm = stm
+
+    def update_max_len(self, max_seq_len: int):
+        self.model.update_max_len(max_seq_len)
+
+    def reset_memory(self, init_type: str = None):
+        self.model.stm.reset(init_type)
+
+    def clone_reset_memory(self):
+        self.model.stm.clone_detach_reset()
+
+    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
+        return self.model(x, attention_mask=attention_mask)
+
+
+class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+    """RxT-Alpha (Reactive Transformer) memory attention model with interlayer STM attention"""
+
+    def __init__(
+            self,
+            num_layers: int = 12,
+            embed_dim: int = 512,
+            att_heads: int = 16,
+            seq_len: int = 1024,
+            stm_size: int = 1024,
+            use_flash_attention: bool = False,
+            att_dropout: float = 0.0,
+            att_groups: int = 1,
+            att_type: str = 'sqa',
+            att_experts: int = None,
+            att_query_experts: int = None,
+            att_query_groups: int = None,
+            interlayer_att_dropout: float = 0.0,
+            interlayer_att_groups: int = 1,
+            interlayer_att_type: str = 'sqa',
+            interlayer_att_experts: int = None,
+            interlayer_att_query_experts: int = None,
+            interlayer_att_query_groups: int = None,
+            norm_type: str = 'classic-rms',
+            norm_init_gate: float = -2.0,
+            norm_per_dim_scale: bool = False,
+            norm_decay: float = 0.9,
+            use_gated_residual: bool = False,
+            residual_per_slot_gate: bool = True,
+            residual_gate_init: float = 3.0,
+            residual_gate_type: ResidualGateType = 'static',
+            residual_gate_slot_status_type: SlotStatusType = 'mean',
+            use_tanh_residual_gate: bool = True,
+            debug_mode: bool = False,
+            debug_interval: int = 10,
+            **kwargs,
+    ):
+        super(RxTAlphaSelfInterlayerMemoryAttention, self).__init__(**kwargs)
+
+        assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
+                            'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
+
+        rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
+        stm = ShortTermMemory(num_layers, embed_dim, stm_size)
+
+        if att_type in ['mha', 'gqa', 'mqa']:
+            att_init = lambda: init_attention(
+                embed_dim, att_heads, att_type, att_groups, rope=rope,
+                use_flash_attention=use_flash_attention, dropout=att_dropout,
+                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True
+            )
+        else:
+            att_init = lambda: init_experimental_attention(
+                embed_dim, att_heads, att_type, att_groups, rope=rope,
+                use_flash_attention=use_flash_attention, dropout=att_dropout,
+                max_seq_len=seq_len, is_causal=False, num_experts=att_experts,
+                num_query_experts=att_query_experts, num_query_groups=att_query_groups,
+                rope_only_for_keys=True
+            )
+
+        memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size, decay=norm_decay,
+                                                             init_gate=norm_init_gate, per_dim_scale=norm_per_dim_scale)
+                                            for _ in range(num_layers)])
+        memory_input_norm_layers = nn.ModuleList(nn.RMSNorm(embed_dim) for _ in range(num_layers))
+        attention_layers = nn.ModuleList([att_init() for _ in range(num_layers)])
+        residual_gates = nn.ModuleList([
+            ResidualGate(
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
+            ) for _ in range(num_layers)
+        ])
+
+        # Interlayer attention
+        if interlayer_att_type in ['mha', 'gqa', 'mqa']:
+            interlayer_att_init = lambda: init_attention(
+                embed_dim, att_heads, interlayer_att_type, interlayer_att_groups, rope=None,
+                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False
+            )
+        else:
+            interlayer_att_init = lambda: init_experimental_attention(
+                embed_dim, att_heads, interlayer_att_type, interlayer_att_groups, rope=None,
+                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False,
+                num_experts=interlayer_att_experts, num_query_experts=interlayer_att_query_experts, num_query_groups=interlayer_att_query_groups
+            )
+
+        mean_attention_layers = nn.ModuleList([interlayer_att_init() for _ in range(num_layers)])
+
+        mean_stm_norm = init_memory_norm(
+            norm_type, embed_dim, stm_size, decay=norm_decay,
+            init_gate=norm_init_gate, per_dim_scale=norm_per_dim_scale
+        )
+
+        mean_memory_norm_layers = nn.ModuleList([init_memory_norm(norm_type, embed_dim, stm_size, decay=norm_decay,
+                                                             init_gate=norm_init_gate, per_dim_scale=norm_per_dim_scale)
+                                            for _ in range(num_layers)])
+
+        mean_residual_gates = nn.ModuleList([
+            ResidualGate(
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
+            ) for _ in range(num_layers)
+        ])
+
+        interlayer_gates = nn.ModuleList([
+            ResidualGate(
+                stm_size, embed_dim,
+                use_gate=use_gated_residual, gate_type=residual_gate_type,
+                per_slot_gate=residual_per_slot_gate, init_gate=residual_gate_init,
+                use_tanh_gate=use_tanh_residual_gate, slot_status_type=residual_gate_slot_status_type,
+            ) for _ in range(num_layers)
+        ])
+
+        self.model = SelfInterlayerStmMemoryAttention(
+            stm, attention_layers, memory_norm_layers, memory_input_norm_layers, residual_gates,
+            mean_attention_layers, mean_memory_norm_layers, mean_residual_gates, interlayer_gates, mean_stm_norm,
             debug_mode=debug_mode, debug_interval=debug_interval,
         )
 
