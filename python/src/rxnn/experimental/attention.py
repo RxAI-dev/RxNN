@@ -380,7 +380,7 @@ class FlexAttention(MultiHeadAttention):
         return self._transpose_output(x, b, t, h * d)
 
     def _sdpa(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
-        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0,
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0.0,
                                        is_causal=self.is_causal)
 
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, mask: torch.Tensor = None):
@@ -501,7 +501,7 @@ class FlexSparseQueryAttention(FlexAttention):
 
     def _sdpa(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, mask: torch.Tensor = None) -> torch.Tensor:
         is_gqa = self.num_query_groups != self.num_groups
-        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0,
+        return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0.0,
                                        is_causal=self.is_causal, enable_gqa=is_gqa)
 
 

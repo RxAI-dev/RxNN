@@ -205,12 +205,8 @@ def sample_batch(
     if temperature <= 0:
         raise ValueError("Temperature must be > 0")
 
-    # Store original dtype and device
-    original_dtype = logits.dtype
+    # Store original device
     device = logits.device
-
-    # Convert to float32 for numerical stability
-    logits = logits.float()
 
     # Apply temperature
     logits = logits / temperature
@@ -265,7 +261,7 @@ def sample_batch(
     selected_log_probs = log_probs.gather(-1, next_tokens.unsqueeze(-1)).squeeze(-1)
 
     # Convert back to original dtype
-    return next_tokens.to(original_dtype), selected_log_probs.to(torch.float32)
+    return next_tokens.long(), selected_log_probs
 
 
 class BatchSampler:
@@ -285,6 +281,7 @@ class BatchSampler:
         top_p: Optional[float] = None,
         max_gen_len: int = 256,
         no_grad: bool = True,
+        dtype: torch.dtype = torch.float32,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         batch_size, max_seq_len = input_ids.shape
 
@@ -296,11 +293,13 @@ class BatchSampler:
         initial_lens += 1
         current_lens = initial_lens.clone()
         finished = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-        log_probs = torch.zeros((batch_size, max_gen_len), dtype=torch.float32, device=self.device)
+        log_probs = torch.zeros((batch_size, max_gen_len), dtype=dtype, device=self.device)
         working_ids = input_ids.clone()
         working_mask = attention_mask.clone()
 
-        stm_kv_cache = self.model.prepare_stm_kv_cache()
+        with torch.set_grad_enabled(not no_grad):
+            stm_kv_cache = self.model.prepare_stm_kv_cache()
+
         self.model.reset_self_attn_cache()
 
         for step in range(max_gen_len):
@@ -314,7 +313,11 @@ class BatchSampler:
                 # Slice input and mask up to the current max length among active sequences
                 inputs = working_ids[:, :max_len]
                 masks = working_mask[:, :max_len]
-                logits = self.model(inputs, attention_mask=masks, stm_kv_cache=stm_kv_cache, use_self_attn_cache=self.use_self_attn_cache)
+
+                logits = self.model(
+                    inputs, attention_mask=masks,
+                    stm_kv_cache=stm_kv_cache, use_self_attn_cache=self.use_self_attn_cache
+                )
 
             # Get the last valid token index for each active sequence
             indices = (current_lens - 1).to(self.device)

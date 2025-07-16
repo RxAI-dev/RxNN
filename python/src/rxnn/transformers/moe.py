@@ -57,7 +57,8 @@ class MoeRouter(nn.Module):
         # Normalize weights (sum to 1 for each token)
         top_k_weights = top_k_weights / (top_k_weights.sum(dim=-1, keepdim=True) + 1e-9)
         # Load Balance Loss
-        self.aux_loss = self.calculate_aux_loss(top_k_indices, probs)
+        if self.training:
+            self.aux_loss = self.calculate_aux_loss(top_k_indices, probs)
 
         return top_k_weights, top_k_indices
 

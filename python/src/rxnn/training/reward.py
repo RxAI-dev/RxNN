@@ -17,7 +17,6 @@ class MrlRewardModel:
     def __init__(
             self,
             shared_embedding: nn.Embedding,
-            device: torch.device,
             bleu_with_saved_data: bool = False,
             bleu_factor: float = 0.5,
             bleu_ref_factor: float = 0.5,
@@ -48,8 +47,7 @@ class MrlRewardModel:
             rewards_scale: float = 1.0,
             debug_mode: int = 0,
     ):
-        self.shared_embedding = shared_embedding.to(device)
-        self.device = device
+        self.shared_embedding = shared_embedding
         self.bleu_with_saved_data = bleu_with_saved_data
 
         self.bleu_factor = bleu_factor
@@ -179,10 +177,10 @@ class MrlRewardModel:
         attention_mask = sequence['attention_mask']
 
         # Get embeddings
-        embeddings = self.shared_embedding(input_ids.to(self.device))
+        embeddings = self.shared_embedding(input_ids)
 
         # Apply attention mask
-        mask_expanded = attention_mask.unsqueeze(-1).to(self.device)
+        mask_expanded = attention_mask.unsqueeze(-1)
         masked_embeddings = embeddings * mask_expanded
 
         # Compute mean with masking
@@ -242,8 +240,8 @@ class MrlRewardModel:
         return self.neg_cos_saved_factor * (1 - gen_and_saved) + self.neg_cos_ref_factor * gen_and_ref
 
     def len_reward(self, generated: TokenizedDict, reference: TokenizedDict) -> torch.Tensor:
-        target_lens = reference['attention_mask'].to(self.device).sum(dim=1) if self.target_len_as_ref else self.max_rewarded_len
-        lens = generated['attention_mask'].to(self.device).sum(dim=1)
+        target_lens = reference['attention_mask'].sum(dim=-1) if self.target_len_as_ref else self.max_rewarded_len
+        lens = generated['attention_mask'].sum(dim=-1)
         neg_lens = target_lens / lens if self.neg_reward_len else 1.0
         len_reward = torch.where(lens >= target_lens, neg_lens, lens / target_lens)
         return len_reward
@@ -271,12 +269,14 @@ class MrlRewardModel:
             saved_data: TokenizedDict,
             prev_data: TokenizedDict = None,
             mode: MrlRewardMode = MrlRewardMode.STANDARD
-    ) -> list[float]:
+    ) -> torch.Tensor:
         if prev_data is not None:
             if self.prev_data_running_mean is None:
                 self.init_running_mean(prev_data)
             else:
                 self.update_running_mean(prev_data)
+
+        device = generated['input_ids'].device
 
         if mode == MrlRewardMode.STANDARD:
             bleu = self.batch_bleu(generated, reference, saved_data)
@@ -287,7 +287,7 @@ class MrlRewardModel:
                 print('BLEU: ', sum(bleu) / len(bleu))
                 print('COSINE: ', sum(cosine) / len(cosine))
 
-            sim_rewards = self.bleu_factor * torch.tensor(bleu, device=self.device) + self.cos_factor * cosine
+            sim_rewards = self.bleu_factor * torch.tensor(bleu, device=device) + self.cos_factor * cosine
         elif mode == MrlRewardMode.LONG_RANGE:
             bleu = self.batch_bleu(generated, reference, saved_data)
             cosine = self.batch_cosine(generated, reference, saved_data,
@@ -298,7 +298,7 @@ class MrlRewardModel:
                 print('BLEU: ', sum(bleu) / len(bleu))
                 print('COSINE: ', sum(cosine) / len(cosine))
 
-            sim_rewards = self.bleu_factor * torch.tensor(bleu, device=self.device) + self.cos_factor * cosine
+            sim_rewards = self.bleu_factor * torch.tensor(bleu, device=device) + self.cos_factor * cosine
         else:
             bleu = self.negative_bleu(generated, reference, saved_data)
             cosine = self.negative_cosine(generated, reference, saved_data)
@@ -308,7 +308,7 @@ class MrlRewardModel:
                 print('BLEU: ', sum(bleu) / len(bleu))
                 print('COSINE: ', sum(cosine) / len(cosine))
 
-            sim_rewards = self.neg_bleu_factor * torch.tensor(bleu, device=self.device) + self.neg_cos_factor * cosine
+            sim_rewards = self.neg_bleu_factor * torch.tensor(bleu, device=device) + self.neg_cos_factor * cosine
 
         if self.reward_len:
             len_reward = self.len_reward(generated, reference)
@@ -320,4 +320,4 @@ class MrlRewardModel:
         else:
             rewards = self._pre_scale_rewards(sim_rewards) * self.rewards_scale
 
-        return rewards.tolist()
+        return rewards

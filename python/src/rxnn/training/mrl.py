@@ -107,7 +107,7 @@ class MrlTrajectoryStep(TypedDict):
     state: tuple[TokenizedDict, TokenizedDict, TokenizedDict]
     action: TokenizedDict
     log_probs: torch.Tensor
-    reward: list[float]
+    reward: torch.Tensor
     reference: TokenizedDict
     done: bool
 
@@ -389,6 +389,7 @@ class MRLTrainer:
                     query['input_ids'],
                     query['attention_mask'],
                     max_gen_len=self.max_seq_len,
+                    dtype=self.dtype,
                     **self.sampler_config,
                 )
         else:
@@ -396,6 +397,7 @@ class MRLTrainer:
                 query['input_ids'],
                 query['attention_mask'],
                 max_gen_len=self.max_seq_len,
+                dtype=self.dtype,
                 **self.sampler_config,
             )
         # 2. Convert generated answer to TokenizedDict
@@ -418,22 +420,30 @@ class MRLTrainer:
 
     def compute_reward(self, generated: TokenizedDict, reference: TokenizedDict,
                        saved_data: tuple[TokenizedDict, TokenizedDict], mode: MrlRewardMode = MrlRewardMode.STANDARD,
-                       eval_mode: bool = False, prev_data: tuple[TokenizedDict, TokenizedDict] = None) -> list[float]:
+                       eval_mode: bool = False, prev_data: tuple[TokenizedDict, TokenizedDict] = None) -> torch.Tensor:
         """Compute reward based on memory retention (e.g., BLEU-4)."""
-        saved_query, saved_answer = saved_data
-        # 1. Concat saved (previous) interaction and calculate reward using generated sequence, reference and saved data - with autocast on/off
+        # 1. Move sequences to GPU for reward calculation
+        saved_query, saved_answer = self._move_multiple_batches(*saved_data)
+        reference = self._move_batch(reference)
+        prev_data = self._move_multiple_batches(*prev_data) if prev_data is not None else None
+
+        # 2. Concat saved (previous) interaction and calculate reward using generated sequence, reference and saved data - with autocast on/off
         if self.use_amp:
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
-                reward, saved_interaction = self._calculate_reward(generated, reference, saved_query, saved_answer,
-                                                                   mode=mode, prev_data=prev_data)
+                reward, saved_interaction = self._calculate_reward(
+                    generated, reference, saved_query, saved_answer,
+                    mode=mode, prev_data=prev_data
+                )
         else:
-            reward, saved_interaction = self._calculate_reward(generated, reference, saved_query, saved_answer,
-                                                               mode=mode, prev_data=prev_data)
+            reward, saved_interaction = self._calculate_reward(
+                generated, reference, saved_query, saved_answer,
+                mode=mode, prev_data=prev_data
+            )
 
-        # 2. Run 'on reward' callbacks
+        # 3. Run 'on reward' callbacks
         for cb in self.callbacks:
-            cb.on_reward(self.actor, reward, generated, reference, saved_interaction, eval_mode)
-        # 3. Return rewards for batch
+            cb.on_reward(self.actor, reward.tolist(), generated, reference, saved_interaction, eval_mode)
+        # 4. Return rewards for batch
         return reward
 
     def _move_batch(self, batch: TokenizedDict) -> TokenizedDict:
@@ -455,6 +465,12 @@ class MRLTrainer:
         return {
             'input_ids': batch['input_ids'].detach().cpu(),
             'attention_mask': batch['attention_mask'].detach().cpu(),
+        }
+
+    def _batch_detach(self, batch: TokenizedDict) -> TokenizedDict:
+        return {
+            'input_ids': batch['input_ids'].detach(),
+            'attention_mask': batch['attention_mask'].detach(),
         }
 
     def _cpu_detach_multiple(self, *batches: TokenizedDict) -> list[TokenizedDict]:
@@ -521,7 +537,7 @@ class MRLTrainer:
 
                         is_last_interaction = (i + 1) == interactions_len
 
-                        detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
+                        detached_answer = self._batch_detach(generated_answer)
 
                         # 10. Depending on strategy compute reward
                         if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
@@ -545,12 +561,14 @@ class MRLTrainer:
                                 self._move_batch(interaction['answer']) if self.teacher_forcing else generated_answer
                             )  # update with generated_answer on GPU
 
+                        cpu_detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
+
                         # 12. Store trajectory step
                         trajectory: MrlTrajectoryStep = {
                             'state': (query, answer, interaction['query']),
-                            'action': detached_answer,
+                            'action': cpu_detached_answer,
                             'log_probs': log_probs.detach().cpu(),
-                            'reward': reward,
+                            'reward': reward.detach().cpu(),
                             'reference': interaction['answer'],
                             'done': is_last_interaction,
                         }
@@ -560,7 +578,7 @@ class MRLTrainer:
                         # 13. Set previous and current interaction query and generated answer (batches), as saved data for next interaction
                         if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
                             prev_interaction = (query, answer)
-                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else detached_answer)
+                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else cpu_detached_answer)
 
                     # 14. Append full batched episode (number of steps depends on curriculum stage) to trajectories
                     episode_trajectory: MrlTrajectoryEpisode = {
@@ -569,7 +587,7 @@ class MRLTrainer:
                     }
                     trajectories.append(episode_trajectory)
 
-                    mean_episode_reward = torch.tensor(episode_rewards).mean().item()
+                    mean_episode_reward = torch.stack(episode_rewards).mean().item()
 
                     self._collect_writer(mean_episode_reward, epoch)
 
@@ -917,14 +935,14 @@ class MRLTrainer:
                 self._critic_values_with_memory(r, *self._move_multiple_batches(*t['state'])) for t, r in
                 flat_trajectories
             ]).to(self.device)
-            rewards = torch.stack([torch.tensor(t['reward']) for t, _ in flat_trajectories]).to(self.device)
+            rewards = torch.stack([t['reward'] for t, _ in flat_trajectories]).to(self.device)
             dones = torch.stack([torch.tensor(t['done']) for t, _ in flat_trajectories]).to(self.device)
         else:
             flat_trajectories = [t for episode in trajectories for t in episode['steps']]
             values = torch.stack([
                 self._critic_values(*self._move_multiple_batches(*t['state'])) for t in flat_trajectories
             ]).to(self.device)
-            rewards = torch.stack([torch.tensor(t['reward']) for t in flat_trajectories]).to(self.device)
+            rewards = torch.stack([t['reward'] for t in flat_trajectories]).to(self.device)
             dones = torch.stack([torch.tensor(t['done']) for t in flat_trajectories]).to(self.device)
         return values, rewards, dones
 
@@ -964,7 +982,9 @@ class MRLTrainer:
     def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int, use_critic_warmup: bool = False):
         """Train for one epoch."""
         # 1. Collect trajectories for current epoch
+        self.actor.eval()
         trajectories = self.collect_trajectories(dataloader, epoch, batch_size)
+        self.actor.train()
 
         if use_critic_warmup:
             self._critic_warmup_epoch(trajectories)
@@ -1036,6 +1056,8 @@ class MRLTrainer:
         total_reward = torch.tensor(0.0).to(self.device)
         count = torch.tensor(0).to(self.device)
 
+        self.actor.eval()
+
         # 2. Run evaluation on all batch episodes
         for batch in dataloader:
             with torch.no_grad():
@@ -1069,7 +1091,7 @@ class MRLTrainer:
 
                         is_last_interaction = (i + 1) == interactions_len
 
-                        detached_answer = self._cpu_detach(generated_answer)
+                        detached_answer = self._batch_detach(generated_answer)
 
                         # 9. Depending on current strategy and step, compute reward
                         if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
@@ -1092,7 +1114,7 @@ class MRLTrainer:
                             )
 
                         # 11. Accumulate rewards
-                        step_reward = torch.tensor(reward).mean().to(self.device)
+                        step_reward = reward.mean()
                         # total
                         total_reward += step_reward
                         count += 1
@@ -1102,7 +1124,7 @@ class MRLTrainer:
                         # 12. Save previous interaction
                         if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
                             prev_interaction = (query, answer)
-                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else detached_answer)
+                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else self._cpu_detach(generated_answer))
                     avg_episode_reward = (episode_reward / episode_interactions).item()
                     # 13. Run eval TensorBoard writer with average episode reward
                     self._eval_writer(avg_episode_reward, epoch)
@@ -1124,6 +1146,8 @@ class MRLTrainer:
             should_stop = cb.on_eval_end(self.actor, self.critic, epoch, avg_reward)
             if should_stop:
                 should_stop_stage = True
+
+        self.actor.train()
 
         return should_stop_stage
 
@@ -1361,6 +1385,8 @@ class MRLTrainer:
                     collate_fn=MrlCurriculumDataset.collate_mrl_batch,
                 )
 
+            self.critic.train()
+
             # 7. Run selected number of epochs for given curriculum stage
             for epoch in range(epochs):
                 # 8. Increment global epoch
@@ -1420,6 +1446,8 @@ class MRLTrainer:
             # 20. Run "on_training_end" callbacks after each curriculum stage (they have own callbacks)
             for cb in self.callbacks:
                 cb.on_training_end(self.actor, self.critic, current_curriculum_step)
+
+        self.actor.eval()
 
         # 21. Training end - finish processes after all curriculum stages
         if self.use_ddp:
