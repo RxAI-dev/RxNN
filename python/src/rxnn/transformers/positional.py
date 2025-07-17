@@ -41,25 +41,23 @@ class RotaryPositionalEmbedding(nn.Module):
         # Prepare RoPE Frequencies
         freqs = self._prepare_freqs(seq_len)
 
-        # Apply the rotation to the queries
+        # Apply the rotation to the sequence
         x_embed = self._rotate(x, freqs)
 
         return x_embed
 
     def forward_one_from(self, x: torch.Tensor, pos: int, seq_len: int) -> torch.Tensor:
-        if seq_len > self.max_seq_len:
-            self.update_max_len(seq_len)
-        freqs = self.cache[:seq_len][None, None, pos:, :]
+        freqs = self._prepare_freqs(seq_len, start_pos=pos)
 
-        # Apply the rotation to the queries
+        # Apply the rotation to the sequence
         x_embed = self._rotate(x, freqs)
 
         return x_embed
 
-    def _prepare_freqs(self, seq_len: int) -> torch.Tensor:
+    def _prepare_freqs(self, seq_len: int, start_pos: int = 0) -> torch.Tensor:
         if seq_len > self.max_seq_len:
             self.update_max_len(seq_len)
-        return self.cache[:seq_len][None, None, :, :]
+        return self.cache[None, None, start_pos:seq_len, :]
 
     def _rotate(self, x: torch.Tensor, freqs: torch.Tensor) -> torch.Tensor:
         x1 = x[..., 0::2]
