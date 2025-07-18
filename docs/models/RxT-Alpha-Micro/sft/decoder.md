@@ -10,11 +10,18 @@ language:
 - en
 datasets:
 - roneneldan/TinyStories
-- ReactiveAI/TinyStories-Interaction-SFT
+- ReactiveAI/TinyStories-Plus-Interaction-SFT
 library_name: RxNN
+base_model:
+- ReactiveAI/RxT-Alpha-Micro-Decoder
 ---
 
 # RxT-Alpha Micro Decoder (SFT)
+World's first experimental **Reactive/Real-Time Language Model** based on revolutional **Reactive Transformer** architecture - processing only single interactions/messages,
+with all the context moved to **Short-Term Memory**, managed by **Attention-Based Memory System**.
+
+> This is _SFT_ version of the model, still not able to update memory - it will be available from _MRL_ version (in training)
+
 ## Reactive Transformer Architecture
 Experimental research model made to test our Reactive Transformer architecture and Attention-based Memory System.
 
@@ -31,39 +38,40 @@ Decoder is based on Mixture-of-Experts architecture with 12 experts and 2 active
 
 <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" width="800" />
 
-Same as in the first stage, in the second stage (Supervised Fine-Tuning) Memory Cross-Attention layers are frozen and STM is in default initial random
-state (normal distribution with 0 mean and almost 0 variance), to not disturb interaction query-answer modeling. We are training decoder and encoder
-separately, using shared embeddings from encoder training. Then, in third stage - Memory Reinforcement Learning, they will be connected into bigger
-ensemble with additional Memory Norm and Memory Attention layers, and will learn how to keep and update memory.
+In first two stages - pre-training and supervised fine-tuning, decoder and encoder are trained together - encoder layer's results are used as decoder's memory
+cross-attention key/value inputs to align vector spaces between components. Then, in third stage - Memory Reinforcement Learning, they are connected with Memory Attention
+layers, and full model is trained update and use memory.
 
 > RxT-Alpha models intentionally use very short sequence length and STM size (256 tokens for Micro), but that isn't their "full" context size - it's only for single
 > message. "Full" context is theoretically infinite, restricted by STM size and memory abilites. That sizes are good for research, final models will handle SOTA contexts.
 
 <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/stm-abms.png" width="800">
 
-
-
 ## RxT-Alpha Micro Training
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
-Decoder was trained on Autoregressive Language Modelling task with embedding from [encoder pre-training](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder),
-with [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~70.7% accuracy**.
+Decoder was trained with [**RxT-Alpha-Micro-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder) and additional MLM head model [**RxT-Alpha-Micro-MLM**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-MLM),
+using Joint LM Training (with MLM and Autoregressive loss) and [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset.
+Both encoder and decoder are using shared embedding layer
 
 ### Supervised Fine-Tuning
-**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset,
-inspired by TinyStories - [**ReactiveAI/TinyStories-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Interaction-SFT).
+**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset (improved in v3), inspired by TinyStories - [**ReactiveAI/TinyStories-Plus-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Plus-Interaction-SFT).
 
-Decoder reached the best validation loss after full 30 epochs (~433M processed tokens)
+Models were fine-tuned using Joint LM Training mode (for memory cross-attention pre-training):
+- encode data with encoder and calculate MLM loss for it
+- save encoder layer's results as Short-Term Memory (available for decoder by memory cross-attention)
+- process data with decoder and calculate autoregressive loss
+
+That training results in decoder with ~95% accuracy, because it has access to all next tokens information with memory cross-attention. In next training stages it
+will access previous interactions data with those layers. After this training model is partially able to read information from memory, before **Memory Reinforcement Learning**
 
 #### Details
-- GPU: 1x L4
-- epochs: full 30/30
-- lr: 3e-4 peak, cosine annealing schedule
+- GPU: 1x L40S
+- epochs: full 8/8
+- lr: 2e-4 peak, cosine annealing schedule
 - batch size: 256
-- processed tokens: ~433M
-- loss: 0.5985 (validation) / 0.5865 (train)
-- accuracy: **85.84%**
+- processed tokens: ~200M
 
 ## Next Stage: Memory Reinforcement Learning
 The model is able to generate meaningful interactions, using grammatically correct sentences, and is ready for the memory training in the next stage. More info soon.
@@ -73,41 +81,18 @@ The model is able to generate meaningful interactions, using grammatically corre
 - layers: 6
 - heads: 8
 - self-attention: symmetric Sparse Query Attention
-  - query/key/value groups: 4
-- memory cross-attention: Sparse Query Attention
-  - query groups: 4
-  - key/value groups: 2
+  - query/key/value heads: 4
+- memory cross-attention: symmetric Sparse Query Attention
+  - query/key/value heads: 4
 - Mixture-of-Experts Feed Forward
   - experts: 12
   - active experts: 2
   - SwiGLU feed forward with 256 dim
 - RoPE
 - RMS Norm
-- vocab: 5k (english only)
+- vocab: 7.5k (english only)
 - message length: 256
 - STM size: 256 * 6 layers
-- size: ~8.77M
+- size: ~9M
 - Library: RxNN
 - Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)
-
-### Usage
-Model requires [RxNN framework](https://github.com/RxAI-dev/RxNN) for training/inference. It's integrated with HuggingFace Hub and libraries.
-
-#### Inference:
-- Install RxNN, PyTorch and dependencies: `pip install rxnn torch transformers tokenizers`
-- Install Flash Attention (optional, but recommended) - details in [RxNN framework docs](https://github.com/RxAI-dev/RxNN)
-```python
-import torch
-from rxnn.rxt.models import RxTAlphaDecoder
-from rxnn.transformers.sampler import Sampler, SampleDecoder
-from rxnn.training.tokenizer import load_tokenizer_from_hf_hub
-
-model = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Decoder-SFT')
-tokenizer = load_tokenizer_from_hf_hub('ReactiveAI/RxT-Alpha-Micro-Decoder-SFT')
-sampler = Sampler(model, torch.device('cuda' if torch.cuda.is_available() else 'cpu'), end_token_id=3)
-sample = SampleDecoder(sampler, tokenizer)
-
-# 0.1 and 0.9 are default values for temperature and top_p
-generated = sample('[Q] Tell me a story about a little black dog [A]', temperature=0.1, top_p=0.9, max_seq_len=256)
-sample('[Q] Tell me a story about a little black dog [A]', temperature=0.1, top_p=0.9, max_seq_len=256, print_stream=True)
-```

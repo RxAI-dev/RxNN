@@ -12,7 +12,10 @@ language:
 - en
 datasets:
 - roneneldan/TinyStories
+- ReactiveAI/TinyStories-Plus-Interaction-SFT
 library_name: RxNN
+base_model:
+- ReactiveAI/RxT-Alpha-Micro-MLM
 ---
 
 # RxT-Alpha Micro MLM
@@ -23,8 +26,8 @@ MLM training, so we have to include additional head model.
 ### MLM Head Details:
 - one linear layer (dim -> dim / 128 -> 128)
 - GELU activation layer
-- output linear layer (dim -> vocab / 128 -> 5000)
-- size: ~660k Params
+- output linear layer (dim -> vocab / 128 -> 7500)
+- size: ~984k Params
 
 
 ## Reactive Transformer Architecture
@@ -37,9 +40,9 @@ The goal of the architecture is to process only single messages and keep convers
 for awareness and AGI. Processing all the chat history on every interaction is not natural and that's not how human awareness is working. Then, Reactive Transformer
 architecture is a first step in transition from language models to awareness models.
 
-During first stage, Memory Cross-Attention layers are frozen and STM is in default initial random state (normal distribution with 0 mean and almost 0 variance),
-to not disturb basic language modelling training. We are training decoder and encoder separately with shared embeddings. Then, in second stage - Memory Reinforcement
-Learning, they will be connected into bigger ensemble with additional Memory Norm and Memory Attention layers, and will learn how to keep and update memory.
+In first two stages - pre-training and supervised fine-tuning, decoder and encoder are trained together - encoder layer's results are used as decoder's memory
+cross-attention key/value inputs to align vector spaces between components. Then, in third stage - Memory Reinforcement Learning, they are connected with Memory Attention
+layers, and full model is trained update and use memory.
 
 > RxT-Alpha models intentionally use very short sequence length and STM size (256 tokens for Micro), but that isn't their "full" context size - it's only for single
 > message. "Full" context is theoretically infinite, restricted by STM size and memory abilites. That sizes are good for research, final models will handle SOTA contexts.
@@ -52,40 +55,40 @@ This model (MLM Head) is not used in final Reactive Transformer system. It's mad
 Micro models from RxT-Alpha series are first PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning,
 used mainly to test library and architecture basics, before training bigger models (that are still relatively small, as it's PoC).
 
-[**RxT-Alpha-Micro-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder) was trained on Masked Language Modelling task with MLM head,
-on [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset, using **2.5B total tokens** and reached **~81.7% accuracy**.
-
-Pre-trained embeddings were then used for [**RxT-Alpha-Micro-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Decoder) training.
+[**RxT-Alpha-Micro-Encoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Encoder) was trained with this MLM head model and [**RxT-Alpha-Micro-Decoder**](https://huggingface.co/ReactiveAI/RxT-Alpha-Micro-Decoder),
+using Joint LM Training (with MLM and Autoregressive loss) and [**roneneldan/TinyStories**](https://huggingface.co/datasets/roneneldan/TinyStories) dataset.
 
 ### Supervised Fine-Tuning
-**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset, inspired by TinyStories - [**ReactiveAI/TinyStories-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Interaction-SFT).
+**RxT-Alpha-Micro** models were fine-tuned to generate real-time interactions (sequences) on our synthetic dataset (improved in v3), inspired by TinyStories - [**ReactiveAI/TinyStories-Plus-Interaction-SFT**](https://huggingface.co/datasets/ReactiveAI/TinyStories-Plus-Interaction-SFT).
 
-Encoder reached the best validation loss after full 30 epochs (~433M processed tokens)
+Models were fine-tuned using Joint LM Training mode (for memory cross-attention pre-training):
+- encode data with encoder and calculate MLM loss for it
+- save encoder layer's results as Short-Term Memory (available for decoder by memory cross-attention)
+- process data with decoder and calculate autoregressive loss
+
+That training results in decoder with ~95% accuracy, because it has access to all next tokens information with memory cross-attention. In next training stages it
+will access previous interactions data with those layers. After this training model is partially able to read information from memory, before **Memory Reinforcement Learning**
 
 #### Details
-- GPU: 1x L4
-- epochs: full 30/30
-- lr: 3e-4 peak, cosine annealing schedule
+- GPU: 1x L40S
+- epochs: full 8/8
+- lr: 2e-4 peak, cosine annealing schedule
 - batch size: 256
-- processed tokens: ~433M
-- loss: 0.6366 (validation) / 0.7131 (train)
-- accuracy: **85.69%**
+- processed tokens: ~200M
+- encoder accuracy: ~77%
 
 ### Encoder architecture details:
 - dim: 128
 - layers: 6
 - heads: 8
 - self-attention: symmetric Sparse Query Attention
-  - query/key/value groups: 4
-- memory cross-attention: Sparse Query Attention
-  - query groups: 4
-  - key/value groups: 2
+  - query/key/value heads: 4
 - SwiGLU feed forward with 384 dim
 - RoPE
 - RMS Norm
-- vocab: 5k (english only)
+- vocab: 7.5k (english only)
 - message length: 256
 - STM size: 256 * 6 layers
-- size: ~1.88M (+ ~660k MLM Head = ~2.5M for pre-training)
+- size: ~2.1M (+ ~980k MLM Head = ~3M for pre-training)
 - Library: RxNN
 - Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)
