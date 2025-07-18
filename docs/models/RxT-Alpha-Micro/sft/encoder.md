@@ -29,7 +29,7 @@ architecture is a first step in transition from language models to awareness mod
 
 This model (encoder) is the fine-tuned memory encoder for Reactive Transformer system, trained to process single interactions (sequences) in real-time.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" width="800" />
 
 Same as in the first stage, in the second stage (Supervised Fine-Tuning) Memory Cross-Attention layers are frozen and STM is in default initial random
 state (normal distribution with 0 mean and almost 0 variance), to not disturb interaction query-answer modeling. We are training decoder and encoder 

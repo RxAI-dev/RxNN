@@ -163,7 +163,7 @@ We decided, to use _**Mixture-of-Experts**_ feed forward layers for decoder, whi
 this approach, decoder could be N times bigger than encoder, and overally, Reactive Transformer will be only slightly bigger
 than classic, decoder-only MoE Transformer.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" />
 
 ### Sparse Query Attention for efficient attention in Reactive Transformer
 In our additional side research, we discovered, that reducing used query heads count (like using 8 heads from 16), instead

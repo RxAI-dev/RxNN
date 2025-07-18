@@ -49,7 +49,7 @@ additional Memory Norm and Memory Attention layers, and will learn how to keep a
 
 This model (MLM Head) is not used in final Reactive Transformer system. It's made only for first stage of training - base encoder model pre-training.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" width="800" />
 
 ## RxT-Alpha Mini Encoder + MLM Head Training
 Mini models from RxT-Alpha series are the second PoC for Reactive Transformer, Attention-Based Memory System and Memory Reinforcement Learning.

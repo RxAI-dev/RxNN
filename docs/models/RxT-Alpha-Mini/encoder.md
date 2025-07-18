@@ -28,7 +28,7 @@ architecture is a first step in transition from language models to awareness mod
 
 This model (encoder) is a memory encoder for Reactive Transformer system and is made for first stage of training - base model pre-training.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" width="800" />
 
 During first stage, Memory Cross-Attention layers are frozen and STM is in default initial random state (normal distribution with 0 mean and almost 0 variance),
 to not disturb basic language modelling training. We are training decoder and encoder separately with shared embeddings. Then, in second stage, we are fine-tuning models

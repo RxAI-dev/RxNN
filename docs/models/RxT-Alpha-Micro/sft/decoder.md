@@ -29,7 +29,7 @@ This model (decoder) is the fine-tuned generator decoder for Reactive Transforme
 
 Decoder is based on Mixture-of-Experts architecture with 12 experts and 2 active ones.
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" width="800" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" width="800" />
 
 Same as in the first stage, in the second stage (Supervised Fine-Tuning) Memory Cross-Attention layers are frozen and STM is in default initial random
 state (normal distribution with 0 mean and almost 0 variance), to not disturb interaction query-answer modeling. We are training decoder and encoder
