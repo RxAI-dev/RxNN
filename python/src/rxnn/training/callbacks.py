@@ -760,9 +760,15 @@ class MrlModelSaveCallback(MrlTrainerCallback):
                 self.best_reward = eval_mean_reward
                 if isinstance(actor, DistributedDataParallel):
                     actor = next(actor.children())
+
+                batch_size = actor.decoder.model.stm.batch_size
+                actor.decoder.model.stm.single_memory()
+
                 self._save_eval(actor.encoder, 'encoder', epoch, eval_mean_reward, hub_id=self.hub_model_encoder)
                 self._save_eval(actor.decoder, 'decoder', epoch, eval_mean_reward, hub_id=self.hub_model_decoder)
                 self._save_eval(actor.memory_attention, 'memory_attention', epoch, eval_mean_reward, hub_id=self.hub_model_memory_attention)
+                actor.decoder.model.stm.batched_memory(batch_size)
+
                 if isinstance(critic, DistributedDataParallel):
                     critic = next(critic.children())
                 self._save_eval(critic, 'critic', epoch, eval_mean_reward, hub_id=self.hub_model_critic)
@@ -812,9 +818,16 @@ class MrlModelSaveCallback(MrlTrainerCallback):
         if self.rank == 0:
             if isinstance(actor, DistributedDataParallel):
                 actor = next(actor.children())
+
+            batch_size = actor.decoder.model.stm.batch_size
+            actor.decoder.model.stm.single_memory()
+
             self._save_final(actor.encoder, 'encoder', hub_id=self.hub_model_encoder)
             self._save_final(actor.decoder, 'decoder', hub_id=self.hub_model_decoder)
             self._save_final(actor.memory_attention, 'memory_attention', hub_id=self.hub_model_memory_attention)
+
+            actor.decoder.model.stm.batched_memory(batch_size)
+
             if isinstance(critic, DistributedDataParallel):
                 critic = next(critic.children())
             self._save_final(critic, 'critic', hub_id=self.hub_model_critic)
