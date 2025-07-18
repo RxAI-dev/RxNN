@@ -40,14 +40,14 @@ Each new architecture is based on the previous one and adding new features/abili
 released with next versions of **RxNN** framework:
 - 0.1.x (Released): Reactive Transformer base models, Base Model Learning (pre-training/fine-tuning) & Transformers extensions (MoE Attention, Short-Term Memory, etc.)
 - 0.2.x (Released): Memory Reinforcement Learning (MRL) for Short-Term Memory & Reactive Transformer, Attention-based Memory System details
-- 0.3.x: Reinforcement Learning from Human Feedback for Reactive models (RxRLHF), basic Tensor Reactive
-  Extensions (TRX/Rust) for full Reactive Transformer, RxT-Alpha release (+following models - RxT-Beta, etc.)
-- 0.4.x: Preactor base models, Tensor Database (TDB/Rust) for Long-Term Memory, mxRAG/revRAG subsystems
-- 0.5.x: MRL for Long-Term Memory & Preactor, Live Learning for Preactor, PRx-Alpha release (+following models - PRx-Beta, etc.)
-- 0.6.x: Reactor base models, TRX full implementation, Receptors & Effectors Reactive RNNs
-- 0.7.x: Behavioral Reinforcement Learning (BRL) for Reactor's Infinite Chain-of-Thoughts, Continuous Live Learning for Reactor
-- 0.8.x: Rx-Alpha release
-- 0.9.x: Rx-Beta release
+- 0.3.x (August 2025): MRL Stable, RxT-Alpha PoC
+- 0.4.x: Reinforcement Learning from Human Feedback for Reactive models (RxRLHF), basic Tensor Reactive
+  Extensions (TRX/Rust) for full Reactive Transformer, RxT-Alpha/RxT-Beta release (+following models - RxT-1, etc.)
+- 0.5.x: Preactor base models, Tensor Database (TDB/Rust) for Long-Term Memory, mxRAG/revRAG subsystems
+- 0.6.x: MRL for Long-Term Memory & Preactor, Live Learning for Preactor, PRx-Alpha release (+following models - PRx-Beta, etc.)
+- 0.7.x: Reactor base models, TRX full implementation, Receptors & Effectors Reactive RNNs
+- 0.8.x: Behavioral Reinforcement Learning (BRL) for Reactor's Infinite Chain-of-Thoughts, Continuous Live Learning for Reactor
+- 0.9.x: Rx-Alpha/Rx-Beta release
 - 1.0.0: Reactor AGI official release (Expert, Assistant & Utility class models)
 - 1.x.x: Multimodal reactive models (could be released earlier, depending on progress)
 - 2.0.0: Real-Time Vision Reactor - Worker class models
