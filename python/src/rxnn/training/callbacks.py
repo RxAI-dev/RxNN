@@ -609,9 +609,14 @@ class MrlPrintCallback(MrlTrainerCallback):
                              reward: float) -> None:
         print(f'Collected {batch_idx} episode | mean reward {reward}')
 
+    def _rewards_std(self, rewards: list[float]) -> float:
+        mean_reward = sum(rewards) / len(rewards)
+        diffs = [(r - mean_reward) ** 2 for r in rewards]
+        return (sum(diffs) / len(diffs)) ** 0.5
+
     def on_reward(self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
                   reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], eval_mode: bool) -> None:
-        print(f"{'Eval' if eval_mode else 'Train'} | Mean reward: {sum(rewards) / len(rewards)} | All collected rewards: {rewards}")
+        print(f"{'Eval' if eval_mode else 'Train'} | Mean reward: {sum(rewards) / len(rewards)}, min: {min(rewards)}, max: {max(rewards)}, std: {self._rewards_std(rewards)} | All collected rewards: {rewards}")
 
     def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
         print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
