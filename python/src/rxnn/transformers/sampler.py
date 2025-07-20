@@ -265,12 +265,13 @@ def sample_batch(
 
 
 class BatchSampler:
-    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int, answer_token_id: int, use_self_attn_cache: bool = True):
+    def __init__(self, model: nn.Module, device: torch.device, end_token_id: int, answer_token_id: int, use_self_attn_cache: bool = True, first_normal_token_id: int = None):
         self.model = model.to(device)
         self.device = device
         self.end_token_id = end_token_id
         self.answer_token_id = answer_token_id
         self.use_self_attn_cache = use_self_attn_cache
+        self.first_normal_token_id = first_normal_token_id if first_normal_token_id is not None else (self.answer_token_id + 1)
 
     def __call__(
         self,
@@ -335,10 +336,22 @@ class BatchSampler:
 
                 pos = current_lens[idx].item()
                 token = next_tokens[idx]  # Use original batch index
-                working_ids[idx, pos] = token
-                working_mask[idx, pos] = 1 if token != 0 else 0
-                log_probs[idx, step] = step_log_probs[idx]  # Use original batch index
-                current_lens[idx] += 1
+
+                # fix for empty first token sampling
+                if step == 0 and token == 0:
+                    random_token = torch.randint(self.first_normal_token_id, logits.size(-1), size=(), device=self.device)
+                    random_log_prob = torch.log(torch.rand(size=(), device=self.device))
+                    working_ids[idx, pos] = random_token
+                    working_mask[idx, pos] = 1
+                    log_probs[idx, step] = random_log_prob  # Use original batch index
+                    current_lens[idx] += 1
+
+                    print(f"Empty sequence sampling error on {idx} position. Sampling random token - {random_token} with log_prob {random_log_prob}")
+                else:
+                    working_ids[idx, pos] = token
+                    working_mask[idx, pos] = 1 if token != 0 else 0
+                    log_probs[idx, step] = step_log_probs[idx]  # Use original batch index
+                    current_lens[idx] += 1
 
                 if token == self.end_token_id:
                     finished[idx] = True
@@ -362,9 +375,6 @@ class BatchSampler:
             ),
             log_probs[:, :-1]
         ], dim=-1)
-
-        if (generated_mask.sum(dim=-1) == 1).any():
-            print(f"Error: EMPTY SEQUENCES - {generated_ids}")
 
         return generated_ids, generated_mask, prepended_log_probs
 
