@@ -791,10 +791,9 @@ class RxTAlphaInterlayerMemoryAttentionConfig(TypedDict):
     debug_interval: int
 
 class RxTAlphaPretrainedConfig(TypedDict):
-    decoder: str
-    encoder: str
-    memory_attention: str
-    token: Optional[str]
+    decoder: RxTAlphaDecoder
+    encoder: RxTAlphaEncoder
+    memory_attention: RxTAlphaInterlayerMemoryAttention
 
 class RxTAlphaTokenizerConfig(TypedDict):
     bos_token_id: int
@@ -802,7 +801,6 @@ class RxTAlphaTokenizerConfig(TypedDict):
     answer_token_id: int
     query_token_id: int
     tokenizer_hub_id: str
-    token: Optional[str]
 
 class RxTAlphaForwardAction(Enum):
     DECODE = 1
@@ -824,9 +822,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.memory_attention_config = memory_attention_config
 
         if pretrained_config is not None:
-            self.decoder = RxTAlphaDecoder.from_pretrained(pretrained_config['decoder'], token=pretrained_config['token'])
-            self.encoder = RxTAlphaEncoder.from_pretrained(pretrained_config['encoder'], token=pretrained_config['token'])
-            self.memory_attention = RxTAlphaInterlayerMemoryAttention.from_pretrained(pretrained_config['memory_attention'], token=pretrained_config['token'])
+            self.decoder = pretrained_config['decoder']
+            self.encoder = pretrained_config['encoder']
+            self.memory_attention = pretrained_config['memory_attention']
         else:
             self.decoder = RxTAlphaDecoder(**decoder_config)
             self.encoder = RxTAlphaEncoder(**encoder_config)
@@ -837,7 +835,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.eos_token_id = tokenizer_config['eos_token_id']
         self.query_token_id = tokenizer_config['query_token_id']
         self.answer_token_id = tokenizer_config['answer_token_id']
-        self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'], token=tokenizer_config['token'])
+        self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'])
 
         self.bos_token = self.tokenizer.convert_ids_to_tokens(self.bos_token_id)
         self.query_token = self.tokenizer.convert_ids_to_tokens(self.query_token_id)
@@ -982,7 +980,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         with torch.no_grad():
             self.reset_self_attn_cache()
 
-            stm_kv_cache = self.model.prepare_stm_kv_cache()
+            stm_kv_cache = self.prepare_stm_kv_cache()
 
             for _ in range(max_seq_len):
                 next_token, input_ids, attention_mask = self._generate_token(
@@ -1024,9 +1022,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         working_mask = attention_mask.clone()
 
         with torch.no_grad():
-            stm_kv_cache = self.model.prepare_stm_kv_cache()
+            stm_kv_cache = self.prepare_stm_kv_cache()
 
-            self.model.reset_self_attn_cache()
+            self.reset_self_attn_cache()
 
             for step in range(max_seq_len):
                 active = (~finished) & (current_lens < max_seq_len)
