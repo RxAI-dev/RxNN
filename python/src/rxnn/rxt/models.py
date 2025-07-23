@@ -755,33 +755,3 @@ class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, lic
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
-
-class RxTAlphaCriticEncoder(RxTAlphaComponentBase, pipeline_tag="text-classification", license="apache-2.0"):
-    """RxT-Alpha (Reactive Transformer) encoder model"""
-
-    def __init__(self, **kwargs: RxTAlphaComponentConfig):
-        super(RxTAlphaCriticEncoder, self).__init__(False, **kwargs)
-
-    def _init_model(
-            self,
-            stm: ShortTermMemory,
-            layers: nn.ModuleList,
-            embedding: nn.Embedding,
-            use_flash_attention: bool,
-            embed_dim: int,
-            vocab_size: int,
-            use_moe: bool = False,
-            use_head_norm: bool = False,
-            init_identity_norm: bool = False,
-    ) -> ReactiveTransformerEncoderDetachStm:
-        return ReactiveTransformerEncoderDetachStm(
-            stm=stm,
-            embedding=embedding,
-            own_layers=layers,
-            use_flash_attention=use_flash_attention,
-            use_moe=use_moe,
-        )
-
-    def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.model(x, attention_mask=attention_mask)
-

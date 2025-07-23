@@ -77,7 +77,6 @@ class JointTrainingModel(nn.Module):
 class MrlActorAction(Enum):
     DECODE = 1
     UPDATE = 2
-    SHALLOW_UPDATE = 3
 
 
 class MrlActorModel(nn.Module):
@@ -232,10 +231,6 @@ class MrlActorModel(nn.Module):
     ) -> torch.Tensor:
         if action == MrlActorAction.DECODE:
             return self.decoder(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
-        elif action == MrlActorAction.SHALLOW_UPDATE:
-            _, ed = self.encoder(x, attention_mask=attention_mask)
-            self.memory_attention.model.stm.update_all(ed)
-            return self.memory_attention.model.stm.memory
         else:
             _, ed = self.encoder(x, attention_mask=attention_mask)
             return self.memory_attention(ed, attention_mask=attention_mask)
