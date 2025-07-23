@@ -1,18 +1,21 @@
 import torch
 from torch import nn
-from typing import TypedDict, Union
+from typing import TypedDict, Union, Optional, Iterator
+from enum import Enum
 from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.positional import RotaryPositionalEmbedding
 from ..transformers.attention import init_attention
 from ..transformers.layers import ReactiveTransformerLayer
-from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder, ReactiveTransformerEncoderDetachStm
+from ..transformers.models import ReactiveTransformerBase, ReactiveTransformerEncoder, ReactiveTransformerDecoder
 from ..transformers.ff import get_activation_layer
+from ..transformers.sampler import sample, sample_batch
 from ..memory.stm import ShortTermMemory
 from ..memory.norm import init_memory_norm
 from ..memory.attention import StmMemoryAttention, InterlayerStmMemoryAttention, SelfStmMemoryAttention, SelfInterlayerStmMemoryAttention
 from ..memory.gate import ResidualGate, ResidualGateType, SlotStatusType
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
+from ..training.tokenizer import load_tokenizer_from_hf_hub
 
 
 class RxTAlphaComponentConfig(TypedDict):
@@ -755,3 +758,327 @@ class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, lic
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
+class RxTAlphaInterlayerMemoryAttentionConfig(TypedDict):
+    num_layers: int
+    embed_dim: int
+    att_heads: int
+    seq_len: int
+    stm_size: int
+    use_flash_attention: bool
+    att_dropout: float
+    att_groups: int
+    att_type: str
+    att_experts: int
+    att_query_experts: int
+    att_query_groups: int
+    interlayer_att_dropout: float
+    interlayer_att_groups: int
+    interlayer_att_type: str
+    interlayer_att_experts: int
+    interlayer_att_query_experts: int
+    interlayer_att_query_groups: int
+    norm_type: str
+    norm_init_gate: float
+    norm_per_dim_scale: bool
+    norm_decay: float
+    use_gated_residual: bool
+    residual_per_slot_gate: bool
+    residual_gate_init: float
+    residual_gate_type: ResidualGateType
+    residual_gate_slot_status_type: SlotStatusType
+    use_tanh_residual_gate: bool
+    debug_mode: bool
+    debug_interval: int
+
+class RxTAlphaPretrainedConfig(TypedDict):
+    decoder: str
+    encoder: str
+    memory_attention: str
+    token: Optional[str]
+
+class RxTAlphaTokenizerConfig(TypedDict):
+    bos_token_id: int
+    end_token_id: int
+    answer_token_id: int
+    query_token_id: int
+    tokenizer_hub_id: str
+    token: Optional[str]
+
+class RxTAlphaForwardAction(Enum):
+    DECODE = 1
+    UPDATE = 2
+
+class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
+    def __init__(
+            self,
+            decoder_config: RxTAlphaComponentConfig,
+            encoder_config: RxTAlphaComponentConfig,
+            memory_attention_config: RxTAlphaInterlayerMemoryAttentionConfig,
+            tokenizer_config: RxTAlphaTokenizerConfig,
+            pretrained_config: RxTAlphaPretrainedConfig = None,
+            **kwargs,
+    ):
+        super(RxTAlpha, self).__init__(**kwargs)
+        self.decoder_config = decoder_config
+        self.encoder_config = encoder_config
+        self.memory_attention_config = memory_attention_config
+
+        if pretrained_config is not None:
+            self.decoder = RxTAlphaDecoder.from_pretrained(pretrained_config['decoder'], token=pretrained_config['token'])
+            self.encoder = RxTAlphaEncoder.from_pretrained(pretrained_config['encoder'], token=pretrained_config['token'])
+            self.memory_attention = RxTAlphaInterlayerMemoryAttention.from_pretrained(pretrained_config['memory_attention'], token=pretrained_config['token'])
+        else:
+            self.decoder = RxTAlphaDecoder(**decoder_config)
+            self.encoder = RxTAlphaEncoder(**encoder_config)
+            self.memory_attention = RxTAlphaInterlayerMemoryAttention(**memory_attention_config)
+
+        self.batch_size = 1
+        self.bos_token_id = tokenizer_config['bos_token_id']
+        self.end_token_id = tokenizer_config['end_token_id']
+        self.query_token_id = tokenizer_config['query_token_id']
+        self.answer_token_id = tokenizer_config['answer_token_id']
+        self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'], token=tokenizer_config['token'])
+
+    def share_components(self):
+        # 1. Load shared embeddings from encoder to decoder
+        self.decoder.load_shared_embedding(self.encoder.model.embedding)
+        # 2. Load shared STM from memory attention to decoder
+        self.decoder.load_shared_memory(self.memory_attention.model.stm)
+        # 3. Ensure correct initial memory shape
+        self.set_batch_mode(self.batch_size != 1, self.batch_size)
+
+    def set_batch_mode(self, use_batch_mode: bool, batch_size: Optional[int] = None):
+        if use_batch_mode:
+            self.memory_attention.model.stm.batched_memory(batch_size=batch_size, init_type='standard')
+            self.batch_size = batch_size
+        else:
+            self.memory_attention.model.stm.single_memory(init_type='standard')
+            self.batch_size = 1
+
+    def prepare_stm_kv_cache(self) -> list[tuple[torch.Tensor, torch.Tensor]]:
+        return self.decoder.model.prepare_stm_kv_cache()
+
+    def reset_self_attn_cache(self):
+        return self.decoder.model.reset_self_attn_cache()
+
+    def init_stm_state(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None, add_noise: float = 0.0):
+        _, ed = self.encoder(input_ids, attention_mask=attention_mask)
+        self.memory_attention.model.stm.update_all(ed if add_noise == 0.0 else ed + torch.randn_like(ed) * add_noise)
+
+    def tokenize_query(self, text: str, max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
+        tokenized = self.tokenizer(
+            f'{self.bos_token_id}{self.query_token_id}{text}',
+            max_length=max_seq_len,
+            truncation=True,
+            padding=False,
+            return_tensors='pt',
+            return_attention_mask=True,
+            add_special_tokens=False
+        )
+
+        return {
+            'input_ids': tokenized['input_ids'].to(device),
+            'attention_mask': tokenized['attention_mask'].to(device)
+        }
+
+    def tokenize_batch(self, texts: list[str], max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
+        tokenized = self.tokenizer(
+            [f'{self.bos_token_id}{self.query_token_id}{txt}' for txt in texts],
+            max_length=max_seq_len,
+            truncation=True,
+            padding='max_length',
+            return_tensors='pt',
+            return_attention_mask=True,
+            add_special_tokens=False
+        )
+
+        return {
+            'input_ids': tokenized['input_ids'].to(device),
+            'attention_mask': tokenized['attention_mask'].to(device)
+        }
+
+    def detokenize_token(self, token_id: int) -> str:
+        return self.tokenizer.decode([token_id]).replace('Ċ', '\n').replace('Ġ', ' ')
+
+    def detokenize_batch(self, generated_ids: torch.Tensor) -> list[str]:
+        decoded = []
+        for seq in generated_ids:
+            # Trim after end token
+            end_pos = (seq == self.sampler.end_token_id).nonzero()
+            if end_pos.size(0) > 0:
+                seq = seq[:end_pos[0] + 1]
+            decoded.append(self.tokenizer.decode(seq).replace('Ċ', '\n').replace('Ġ', ' '))
+
+        return decoded
+
+    def forward(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor = None,
+            stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None,
+            use_self_attn_cache: bool = False,
+            action: RxTAlphaForwardAction = RxTAlphaForwardAction.DECODE
+    ) -> torch.Tensor:
+        if action == RxTAlphaForwardAction.DECODE:
+            return self.decoder(input_ids, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
+        else:
+            _, ed = self.encoder(input_ids, attention_mask=attention_mask)
+            return self.memory_attention(ed, attention_mask=attention_mask)
+
+    def _generate_single_token(
+            self,
+            input_ids: torch.Tensor,
+            temperature: float,
+            top_k: int,
+            top_p: float,
+            attention_mask: torch.Tensor,
+            stm_kv_cache: list[tuple[torch.Tensor, torch.Tensor]] = None,
+            use_self_attn_cache: bool = True,
+    ) -> tuple[int, torch.Tensor, torch.Tensor]:
+        device = input_ids.device
+
+        # Forward pass to get next token logits
+        outputs = self.forward(
+            input_ids, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache,
+            use_self_attn_cache=use_self_attn_cache, action=RxTAlphaForwardAction.DECODE,
+        )
+        next_token_logits = outputs[:, -1, :]  # Get logits for next token
+        # Apply sampling
+        next_token = sample(
+            next_token_logits,
+            temperature=temperature,
+            top_k=top_k,
+            top_p=top_p,
+        )
+        # next_token = next_token.item()  # Extract scalar token
+        # next_token_ten = torch.tensor([[next_token]], device=device)
+        next_token_ten = next_token.unsqueeze(0).unsqueeze(0)
+        next_input_ids = torch.cat([input_ids, next_token_ten], dim=1)
+        new_one = torch.ones(1, 1, dtype=torch.bool, device=device)
+        next_mask = torch.cat([attention_mask, new_one], dim=1) if attention_mask is not None else None
+
+        # Yield the generated token
+        return (
+            next_token.item(),
+            next_input_ids,
+            next_mask
+        )
+
+    def interact(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor = None,
+            temperature: float = 1.0,
+            top_k: Optional[int] = None,
+            top_p: Optional[float] = None,
+            max_seq_len: int = 256,
+            use_self_attn_cache: bool = True,
+    ) -> Iterator[int]:
+        assert self.batch_size == 1 and input_ids.size(0) == 1, 'Batch size must be 1 in single interaction mode'
+
+        with torch.no_grad():
+            self.reset_self_attn_cache()
+
+            stm_kv_cache = self.model.prepare_stm_kv_cache()
+
+            for _ in range(max_seq_len):
+                next_token, input_ids, attention_mask = self._generate_token(
+                    input_ids, temperature, top_k, top_p, attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache
+                )
+                yield next_token
+                if next_token == self.end_token_id:
+                    break
+
+            yield -1 # start memory update
+            self.forward(input_ids, attention_mask=attention_mask, action=RxTAlphaForwardAction.UPDATE) # input_ids and attention_mask are already accumulated
+            yield -2 # finished memory update
+
+    def batch_interactions(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor = None,
+            temperature: float = 1.0,
+            top_k: Optional[int] = None,
+            top_p: Optional[float] = None,
+            max_seq_len: int = 256,
+            use_self_attn_cache: bool = True,
+            return_interactions_with_queries: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        batch_size, _ = input_ids.shape
+        device = input_ids.device
+
+        assert self.batch_size == batch_size, 'Input batch size must be the same as model (STM) batch size'
+
+        initial_lens = attention_mask.sum(dim=1)
+        for i in range(batch_size):
+            input_ids[i, initial_lens[i]] = self.answer_token_id
+            attention_mask[i, initial_lens[i]] = 1
+
+        initial_lens += 1
+        current_lens = initial_lens.clone()
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        working_ids = input_ids.clone()
+        working_mask = attention_mask.clone()
+
+        with torch.no_grad():
+            stm_kv_cache = self.model.prepare_stm_kv_cache()
+
+            self.model.reset_self_attn_cache()
+
+            for step in range(max_seq_len):
+                active = (~finished) & (current_lens < max_seq_len)
+                if not active.any():
+                    break
+
+                max_len = current_lens.max().item()
+
+                # Slice input and mask up to the current max length among active sequences
+                inputs = working_ids[:, :max_len]
+                masks = working_mask[:, :max_len]
+
+                logits = self.forward(
+                    inputs, attention_mask=masks, action=RxTAlphaForwardAction.DECODE,
+                    stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache
+                )
+
+                # Get the last valid token index for each active sequence
+                indices = (current_lens - 1).to(device)
+                last_logits = logits[torch.arange(batch_size, device=device), indices]
+
+                # Sample next tokens and log probs
+                next_tokens, _ = sample_batch(
+                    last_logits, temperature=temperature, top_k=top_k, top_p=top_p
+                )
+
+                # Update working tensors
+                for idx in range(batch_size):
+                    if finished[idx] or current_lens[idx] >= max_seq_len:
+                        continue
+
+                    pos = current_lens[idx].item()
+                    token = next_tokens[idx]  # Use original batch index
+                    working_ids[idx, pos] = token
+                    working_mask[idx, pos] = 1 if token != 0 else 0
+                    current_lens[idx] += 1
+
+                    if token == self.end_token_id:
+                        finished[idx] = True
+
+            # Update memory
+            self.forward(working_ids, attention_mask=working_mask, action=RxTAlphaForwardAction.UPDATE)
+
+            if return_interactions_with_queries:
+                return working_ids, working_mask
+            else:
+                # Extract generated tokens
+                generated_ids = torch.zeros((batch_size, max_seq_len), dtype=torch.long, device=device)
+                generated_mask = torch.zeros((batch_size, max_seq_len), dtype=torch.bool, device=device)
+                for i in range(batch_size):
+                    start = initial_lens[i].item()
+                    end = current_lens[i].item()
+                    gen_len = min(end - start + 1, max_seq_len) # +1 for added [A] token
+                    if gen_len > 0:
+                        generated_ids[i, :gen_len] = working_ids[i, start-1:end] # -1 to include [A] token
+                        generated_mask[i, :gen_len] = working_mask[i, start-1:end] # -1 to include [A] token
+
+                return generated_ids, generated_mask
