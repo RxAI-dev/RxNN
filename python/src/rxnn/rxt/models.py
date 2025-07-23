@@ -983,7 +983,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             stm_kv_cache = self.prepare_stm_kv_cache()
 
             for _ in range(max_seq_len):
-                next_token, input_ids, attention_mask = self._generate_token(
+                next_token, input_ids, attention_mask = self._generate_single_token(
                     input_ids, temperature, top_k, top_p, attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache
                 )
                 yield next_token
