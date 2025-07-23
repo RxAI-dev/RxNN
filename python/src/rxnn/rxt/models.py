@@ -798,7 +798,7 @@ class RxTAlphaPretrainedConfig(TypedDict):
 
 class RxTAlphaTokenizerConfig(TypedDict):
     bos_token_id: int
-    end_token_id: int
+    eos_token_id: int
     answer_token_id: int
     query_token_id: int
     tokenizer_hub_id: str
@@ -834,10 +834,13 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
 
         self.batch_size = 1
         self.bos_token_id = tokenizer_config['bos_token_id']
-        self.end_token_id = tokenizer_config['end_token_id']
+        self.eos_token_id = tokenizer_config['eos_token_id']
         self.query_token_id = tokenizer_config['query_token_id']
         self.answer_token_id = tokenizer_config['answer_token_id']
         self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'], token=tokenizer_config['token'])
+
+        self.bos_token = self.tokenizer.convert_ids_to_tokens(self.bos_token_id)
+        self.query_token = self.tokenizer.convert_ids_to_tokens(self.query_token_id)
 
     def share_components(self):
         # 1. Load shared embeddings from encoder to decoder
@@ -867,7 +870,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
 
     def tokenize_query(self, text: str, max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
         tokenized = self.tokenizer(
-            f'{self.bos_token_id}{self.query_token_id}{text}',
+            f'{self.bos_token}{self.query_token}{text}',
             max_length=max_seq_len,
             truncation=True,
             padding=False,
@@ -883,7 +886,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
 
     def tokenize_batch(self, texts: list[str], max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
         tokenized = self.tokenizer(
-            [f'{self.bos_token_id}{self.query_token_id}{txt}' for txt in texts],
+            [f'{self.bos_token}{self.query_token}{txt}' for txt in texts],
             max_length=max_seq_len,
             truncation=True,
             padding='max_length',
@@ -904,7 +907,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         decoded = []
         for seq in generated_ids:
             # Trim after end token
-            end_pos = (seq == self.sampler.end_token_id).nonzero()
+            end_pos = (seq == self.sampler.eos_token_id).nonzero()
             if end_pos.size(0) > 0:
                 seq = seq[:end_pos[0] + 1]
             decoded.append(self.tokenizer.decode(seq).replace('Ċ', '\n').replace('Ġ', ' '))
@@ -986,7 +989,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
                     input_ids, temperature, top_k, top_p, attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache
                 )
                 yield next_token
-                if next_token == self.end_token_id:
+                if next_token == self.eos_token_id:
                     break
 
             yield -1 # start memory update
@@ -1061,7 +1064,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
                     working_mask[idx, pos] = 1 if token != 0 else 0
                     current_lens[idx] += 1
 
-                    if token == self.end_token_id:
+                    if token == self.eos_token_id:
                         finished[idx] = True
 
             # Update memory
