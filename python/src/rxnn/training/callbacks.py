@@ -599,6 +599,7 @@ class MrlPrintCallback(MrlTrainerCallback):
             update_steps_interval: int = 10,
             print_best_and_worst_generated: bool = False,
             tokenizer: Optional[Union[PreTrainedTokenizer, PreTrainedTokenizerFast]] = None,
+            print_generated_only_on_eval: bool = False,
     ) -> None:
         super(MrlPrintCallback, self).__init__()
         self.update_steps_interval = update_steps_interval
@@ -606,6 +607,7 @@ class MrlPrintCallback(MrlTrainerCallback):
         self.critic_losses = []
         self.print_generated = print_best_and_worst_generated
         self.tokenizer = tokenizer
+        self.print_generated_only_on_eval = print_generated_only_on_eval
 
     def on_epoch_start(self, actor: nn.Module, epoch: int, stage_epochs: int, curriculum_config: dict,
                        global_epoch: int, global_epochs: int) -> None:
@@ -658,36 +660,50 @@ class MrlPrintCallback(MrlTrainerCallback):
         print('Generated:')
         print(gen)
 
+    def print_generated_texts(
+            self, rewards: list[float], generated: dict[str, torch.Tensor], reference: dict[str, torch.Tensor],
+            saved_data: dict[str, torch.Tensor], query: dict[str, torch.Tensor]
+    ):
+        rewards_arr = np.array(rewards)
+        best_index = int(np.argmax(rewards_arr))
+        worst_index = int(np.argmin(rewards_arr))
+
+        best_gen = self._get_sequence_on_index(generated, best_index)
+        best_ref = self._get_sequence_on_index(reference, best_index)
+        best_saved = self._get_sequence_on_index(saved_data, best_index)
+        best_query = self._get_sequence_on_index(query, best_index)
+
+        best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt = self._get_generated_text(
+            best_gen, best_ref, best_saved, best_query
+        )
+
+        print(f'Generated and reference results for the best reward: {max(rewards)}')
+        self._print_results(best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt)
+
+        worst_gen = self._get_sequence_on_index(generated, worst_index)
+        worst_ref = self._get_sequence_on_index(reference, worst_index)
+        worst_saved = self._get_sequence_on_index(saved_data, worst_index)
+        worst_query = self._get_sequence_on_index(query, worst_index)
+
+        worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt = self._get_generated_text(
+            worst_gen, worst_ref, worst_saved, worst_query
+        )
+
+        print(f'Generated and reference results for the worst reward: {min(rewards)}')
+        self._print_results(worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt)
+
     def on_reward(
             self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
             reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor],
             query: dict[str, torch.Tensor], eval_mode: bool
     ) -> None:
         print(f"{'Eval' if eval_mode else 'Train'} | Mean reward: {sum(rewards) / len(rewards)}, min: {min(rewards)}, max: {max(rewards)}, std: {self._rewards_std(rewards)} | All collected rewards: {rewards}")
+
         if self.print_generated and self.tokenizer is not None:
-            rewards_arr = np.array(rewards)
-            best_index = int(np.argmax(rewards_arr))
-            worst_index = int(np.argmin(rewards_arr))
+            if self.print_generated_only_on_eval and not eval_mode:
+                return
+            self.print_generated_texts(rewards, generated, reference, saved_data, query)
 
-            best_gen = self._get_sequence_on_index(generated, best_index)
-            best_ref = self._get_sequence_on_index(reference, best_index)
-            best_saved = self._get_sequence_on_index(saved_data, best_index)
-            best_query = self._get_sequence_on_index(query, best_index)
-
-            best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt = self._get_generated_text(best_gen, best_ref, best_saved, best_query)
-
-            print(f'Generated and reference results for the best reward: {max(rewards)}')
-            self._print_results(best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt)
-
-            worst_gen = self._get_sequence_on_index(generated, worst_index)
-            worst_ref = self._get_sequence_on_index(reference, worst_index)
-            worst_saved = self._get_sequence_on_index(saved_data, worst_index)
-            worst_query = self._get_sequence_on_index(query, worst_index)
-
-            worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt = self._get_generated_text(worst_gen, worst_ref, worst_saved, worst_query)
-
-            print(f'Generated and reference results for the worst reward: {min(rewards)}')
-            self._print_results(worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt)
 
     def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
         print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
