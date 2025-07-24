@@ -133,7 +133,7 @@ class InterlayerStmMemoryAttention(StmMemoryAttention):
             layer_stm = self.stm(i)
             # 7. Expand layer STM to batch size, if it's not in batch mode
             if layer_stm.size(0) == 1:
-                layer_stm = layer_stm.expand(x.size(0), -1, -1)
+                layer_stm = layer_stm.expand(x.size(1), -1, -1)
 
             # 8. Mean interlayer memory attention
             # a) normalize STM layer value

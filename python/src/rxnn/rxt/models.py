@@ -951,16 +951,15 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             top_k=top_k,
             top_p=top_p,
         )
-        # next_token = next_token.item()  # Extract scalar token
-        # next_token_ten = torch.tensor([[next_token]], device=device)
-        next_token_ten = next_token.unsqueeze(0).unsqueeze(0)
+        next_token = next_token.item()  # Extract scalar token
+        next_token_ten = torch.tensor([[next_token]], device=device)
         next_input_ids = torch.cat([input_ids, next_token_ten], dim=1)
         new_one = torch.ones(1, 1, dtype=torch.bool, device=device)
         next_mask = torch.cat([attention_mask, new_one], dim=1) if attention_mask is not None else None
 
         # Yield the generated token
         return (
-            next_token.item(),
+            next_token,
             next_input_ids,
             next_mask
         )
@@ -981,6 +980,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             self.reset_self_attn_cache()
 
             stm_kv_cache = self.prepare_stm_kv_cache()
+
+            input_ids = torch.cat([input_ids, torch.tensor([[self.answer_token_id]]).to(input_ids.device)], dim=-1)
+            attention_mask = torch.cat([attention_mask, torch.ones(1, 1, device=attention_mask.device)], dim=-1)
 
             for _ in range(max_seq_len):
                 next_token, input_ids, attention_mask = self._generate_single_token(
