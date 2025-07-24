@@ -5,6 +5,7 @@ import torch.nn as nn
 from typing import Union, Optional
 from torch.nn.parallel import DistributedDataParallel
 from huggingface_hub import PyTorchModelHubMixin
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 from ..utils import human_format
 
 
@@ -593,11 +594,18 @@ class MrlTrainerCallback:
 
 
 class MrlPrintCallback(MrlTrainerCallback):
-    def __init__(self, update_steps_interval: int = 10) -> None:
+    def __init__(
+            self,
+            update_steps_interval: int = 10,
+            print_best_and_worst_generated: bool = False,
+            tokenizer: Optional[Union[PreTrainedTokenizer, PreTrainedTokenizerFast]] = None,
+    ) -> None:
         super(MrlPrintCallback, self).__init__()
         self.update_steps_interval = update_steps_interval
         self.policy_losses = []
         self.critic_losses = []
+        self.print_generated = print_best_and_worst_generated
+        self.tokenizer = tokenizer
 
     def on_epoch_start(self, actor: nn.Module, epoch: int, stage_epochs: int, curriculum_config: dict,
                        global_epoch: int, global_epochs: int) -> None:
@@ -618,12 +626,68 @@ class MrlPrintCallback(MrlTrainerCallback):
         diffs = [(r - mean_reward) ** 2 for r in rewards]
         return (sum(diffs) / len(diffs)) ** 0.5
 
+    def _decode_sequence(self, sequence: dict[str, torch.Tensor]) -> str:
+        seq_len = sequence['attention_mask'].sum().item()
+        decoded = self.tokenizer.decode(sequence['input_ids'][:seq_len]).replace('Ċ', '\n').replace('Ġ', ' ')
+        return decoded
+
+    def _get_generated_text(
+            self, generated: dict[str, torch.Tensor], reference: dict[str, torch.Tensor],
+            saved_data: dict[str, torch.Tensor], query: dict[str, torch.Tensor]
+    ):
+        gen = self._decode_sequence(generated)
+        ref = self._decode_sequence(reference)
+        saved = self._decode_sequence(saved_data)
+        query = self._decode_sequence(query)
+
+        return gen, ref, saved, query
+
+    def _get_sequence_on_index(self, batch: dict[str, torch.Tensor], index: int) -> dict[str, torch.Tensor]:
+        return {
+            'input_ids': batch['input_ids'][index],
+            'attention_mask': batch['attention_mask'][index],
+        }
+
+    def _print_results(self, gen: str, ref: str, saved: str, query: str):
+        print('Saved data (previous interaction):')
+        print(saved)
+        print('Query:')
+        print(query)
+        print('Reference:')
+        print(ref)
+        print('Generated:')
+        print(gen)
+
     def on_reward(
             self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
             reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor],
             query: dict[str, torch.Tensor], eval_mode: bool
     ) -> None:
         print(f"{'Eval' if eval_mode else 'Train'} | Mean reward: {sum(rewards) / len(rewards)}, min: {min(rewards)}, max: {max(rewards)}, std: {self._rewards_std(rewards)} | All collected rewards: {rewards}")
+        if self.print_generated and self.tokenizer is not None:
+            rewards_arr = np.array(rewards)
+            best_index = int(np.argmax(rewards_arr))
+            worst_index = int(np.argmin(rewards_arr))
+
+            best_gen = self._get_sequence_on_index(generated, best_index)
+            best_ref = self._get_sequence_on_index(reference, best_index)
+            best_saved = self._get_sequence_on_index(saved_data, best_index)
+            best_query = self._get_sequence_on_index(query, best_index)
+
+            best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt = self._get_generated_text(best_gen, best_ref, best_saved, best_query)
+
+            print(f'Generated and reference results for the best reward: {max(rewards)}')
+            self._print_results(best_gen_txt, best_ref_txt, best_saved_txt, best_query_txt)
+
+            worst_gen = self._get_sequence_on_index(generated, worst_index)
+            worst_ref = self._get_sequence_on_index(reference, worst_index)
+            worst_saved = self._get_sequence_on_index(saved_data, worst_index)
+            worst_query = self._get_sequence_on_index(query, worst_index)
+
+            worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt = self._get_generated_text(worst_gen, worst_ref, worst_saved, worst_query)
+
+            print(f'Generated and reference results for the worst reward: {min(rewards)}')
+            self._print_results(worst_gen_txt, worst_ref_txt, worst_saved_txt, worst_query_txt)
 
     def on_update_epoch_start(self, actor: nn.Module, critic: nn.Module, global_epoch: int, update_epoch: int) -> None:
         print(f'Epoch {global_epoch} | Starting update epoch {update_epoch}')
@@ -845,13 +909,13 @@ class MrlModelSaveCallback(MrlTrainerCallback):
             self._save_final(critic, 'critic', hub_id=self.hub_model_critic)
 
 class MrlGeneratedTokensCallback(MrlTrainerCallback):
-    def __init__(self, steps_log_interval: int = 100):
+    def __init__(self, steps_log_interval: int = 10):
         self.total_tokens = 0
         self.steps_log_interval = steps_log_interval
         self.step = 0
 
     def on_reward(self, actor: nn.Module, rewards: list[float], generated: dict[str, torch.Tensor],
-                  reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], eval_mode: bool) -> None:
+                  reference: dict[str, torch.Tensor], saved_data: dict[str, torch.Tensor], query: dict[str, torch.Tensor], eval_mode: bool) -> None:
         self.step += 1
         attention_mask = generated['attention_mask']
         batch_tokens = attention_mask.sum().item()

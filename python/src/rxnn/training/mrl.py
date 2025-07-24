@@ -382,7 +382,7 @@ class MRLTrainer:
         return self.reward(generated, reference, saved_interaction, mode=mode, prev_data=prev_data), saved_interaction
 
     def compute_reward(self, generated: TokenizedDict, reference: TokenizedDict,
-                       saved_data: tuple[TokenizedDict, TokenizedDict], mode: MrlRewardMode = MrlRewardMode.STANDARD,
+                       saved_data: tuple[TokenizedDict, TokenizedDict], query: TokenizedDict, mode: MrlRewardMode = MrlRewardMode.STANDARD,
                        eval_mode: bool = False, prev_data: tuple[TokenizedDict, TokenizedDict] = None) -> torch.Tensor:
         """Compute reward based on memory retention (e.g., BLEU-4)."""
         # 1. Move sequences to GPU for reward calculation
@@ -405,7 +405,7 @@ class MRLTrainer:
 
         # 3. Run 'on reward' callbacks
         for cb in self.callbacks:
-            cb.on_reward(self.actor, reward.tolist(), generated, reference, saved_interaction, eval_mode)
+            cb.on_reward(self.actor, reward.tolist(), generated, reference, saved_interaction, query, eval_mode)
         # 4. Return rewards for batch
         return reward
 
@@ -523,17 +523,22 @@ class MRLTrainer:
                         # 10. Depending on strategy compute reward
                         if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
                             # a) long-range - first interaction - change topic - negative reward (it shouldn't include saved data)
-                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                         mode=MrlRewardMode.NEGATIVE)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (query, answer),
+                                interaction['query'], mode=MrlRewardMode.NEGATIVE
+                            )
                         elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
                             # b) long-range - last interaction - first interaction topic - long-range reward (it should include content from first interaction)
-                            reward = self.compute_reward(detached_answer, interaction['answer'],
-                                                         (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE,
-                                                         prev_data=prev_interaction)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (first_query, first_answer),
+                                interaction['query'], mode=MrlRewardMode.LONG_RANGE, prev_data=prev_interaction
+                            )
                         else:
                             # c) standard reward - generated answer should include some content from previous interaction (saved data), like reference answer
-                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                         mode=MrlRewardMode.STANDARD, prev_data=prev_interaction)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (query, answer),
+                                interaction['query'], mode=MrlRewardMode.STANDARD, prev_data=prev_interaction
+                            )
 
                         # 11. Update STM with generated response (except last interaction, it's not needed)
                         if not is_last_interaction:
@@ -991,16 +996,22 @@ class MRLTrainer:
 
                         # 9. Depending on current strategy and step, compute reward
                         if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
-                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                         mode=MrlRewardMode.NEGATIVE, eval_mode=True)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (query, answer),
+                                interaction['query'], mode=MrlRewardMode.NEGATIVE, eval_mode=True
+                            )
                         elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
-                            reward = self.compute_reward(detached_answer, interaction['answer'],
-                                                         (first_query, first_answer), mode=MrlRewardMode.LONG_RANGE,
-                                                         eval_mode=True, prev_data=prev_interaction)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (first_query, first_answer),
+                                interaction['query'], mode=MrlRewardMode.LONG_RANGE, eval_mode=True,
+                                prev_data=prev_interaction,
+                            )
                         else:
-                            reward = self.compute_reward(detached_answer, interaction['answer'], (query, answer),
-                                                         mode=MrlRewardMode.STANDARD, eval_mode=True,
-                                                         prev_data=prev_interaction)
+                            reward = self.compute_reward(
+                                detached_answer, interaction['answer'], (query, answer),
+                                interaction['query'], mode=MrlRewardMode.STANDARD, eval_mode=True,
+                                prev_data=prev_interaction
+                            )
 
                         # 10. Encode and update memory for the next interaction
                         if not is_last_interaction:

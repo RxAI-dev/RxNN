@@ -970,7 +970,7 @@ class MrlCurriculumDataset(Dataset):
             interactions = item[self.interactions_field]
 
             initial = self._tokenize_manual_interaction(query, answer)
-            follow_ups = [self._tokenize_manual_interaction(inter['query'], inter['answer']) for inter in interactions]
+            follow_ups = [self._tokenize_manual_interaction(inter[self.query_field], inter[self.answer_field]) for inter in interactions]
 
             return {
                 **initial,
