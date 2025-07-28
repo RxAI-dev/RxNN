@@ -183,7 +183,9 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                 self._valid_writer(epoch, val_loss, val_metrics)
 
             for callback in self.callbacks:
-                callback.on_validation_end(self.model, epoch, val_loss, val_metrics)
+                should_stop = callback.on_validation_end(self.model, epoch, val_loss, val_metrics)
+                if should_stop:
+                    self.is_running = False
 
         for callback in self.callbacks:
             should_stop = callback.on_epoch_end(self.model, epoch)
@@ -570,7 +572,9 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                 self._valid_writer(epoch, val_loss, val_metrics)
 
             for callback in self.callbacks:
-                callback.on_validation_end(self.model, epoch, val_loss, val_metrics)
+                should_stop = callback.on_validation_end(self.model, epoch, val_loss, val_metrics)
+                if should_stop:
+                    self.is_running = False
 
         for callback in self.callbacks:
             should_stop = callback.on_epoch_end(self.model, epoch)
