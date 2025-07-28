@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from typing import Callable
+from typing import Callable, Any
 from .callbacks import TrainerCallback
 from .ddp import get_os_ddp_config, distributed_value_mean
 
@@ -27,6 +27,8 @@ class BaseTrainer(ABC):
             target_field_name: str = 'labels',
             get_batch_size: Callable[[dict], int] = None,
             gradient_accumulation_steps: int = 1,
+            tensorboard_interval: int = 10,
+            dataset_collate_fn: Callable[[list[Any]], dict[str, Any]] = None,
     ):
         if get_batch_size is None:
             self.get_batch_size = lambda batch: batch['attention_mask'].size(0)
@@ -60,6 +62,8 @@ class BaseTrainer(ABC):
         self.gradient_accumulation_steps = gradient_accumulation_steps
         self.accumulated_loss = 0.0
         self.optimizer_step_count = 0
+        self.tensorboard_interval = tensorboard_interval
+        self.dataset_collate_fn = dataset_collate_fn
 
     @abstractmethod
     def compute_loss(self, batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -80,6 +84,7 @@ class BaseTrainer(ABC):
             epochs: int,
             batch_size: int,
             dataset: torch.utils.data.Dataset = None,
+            validation_dataset: torch.utils.data.Dataset = None,
             optimizer: torch.optim.Optimizer = None,
             scheduler: torch.optim.lr_scheduler.LRScheduler = None,
             ddp_find_unused_parameters: bool = False,
@@ -91,6 +96,9 @@ class BaseTrainer(ABC):
         if optimizer is None:
             assert self.optimizer is not None, 'You have to specify an optimizer for training'
             optimizer = self.optimizer
+        # Set validation dataset
+        if validation_dataset is not None:
+            self.validation_dataset = validation_dataset
 
         if self.use_ddp:
             rank, world_size = get_os_ddp_config()
@@ -102,6 +110,7 @@ class BaseTrainer(ABC):
                 batch_size=batch_size,
                 sampler=train_sampler,
                 pin_memory=True,
+                collate_fn=self.dataset_collate_fn,
             )
         else:
             train_sampler = None
@@ -109,7 +118,8 @@ class BaseTrainer(ABC):
                 dataset,
                 batch_size=batch_size,
                 shuffle=True,
-                pin_memory=True
+                pin_memory=True,
+                collate_fn=self.dataset_collate_fn,
             )
 
         scaler = torch.amp.GradScaler() if self.use_amp else None
@@ -130,6 +140,7 @@ class BaseTrainer(ABC):
         if self.use_ddp:
             dist.destroy_process_group()
         self.is_running = False
+        self.model.eval()
         self.on_training_end()
 
     def _run_epoch(
@@ -183,7 +194,7 @@ class BaseTrainer(ABC):
                         if scheduler is not None:
                             scheduler.step()
 
-                        if self.writer:
+                        if self.writer and self.total_steps % self.tensorboard_interval == 0:
                             loss_item = self.accumulated_loss / self.gradient_accumulation_steps
                             self.writer.add_scalar(
                                 'Loss/train',
@@ -200,6 +211,7 @@ class BaseTrainer(ABC):
                                 torch.exp(torch.tensor(loss_item)),
                                 self.total_steps,
                             )
+
                         self.accumulated_loss = 0.0
                         self.optimizer_step_count = 0
 
@@ -270,13 +282,15 @@ class BaseTrainer(ABC):
                 batch_size=batch_size,
                 pin_memory=True,
                 sampler=val_sampler,
+                collate_fn=self.dataset_collate_fn,
             )
         else:
             return torch.utils.data.DataLoader(
                 val_dataset,
                 batch_size=batch_size,
                 shuffle=False,
-                pin_memory=True
+                pin_memory=True,
+                collate_fn=self.dataset_collate_fn,
             )
 
     def validate(self, batch_size: int) -> tuple[float, dict]:
@@ -296,3 +310,22 @@ class BaseTrainer(ABC):
         metrics = {}
         self.model.train()
         return avg_loss, metrics
+
+    def evaluate(self, batch_size: int, test_dataset: torch.utils.data.Dataset = None) -> tuple[float, dict]:
+        valid_dataset = self.validation_dataset
+        if test_dataset is not None:
+            self.validation_dataset = test_dataset
+        else:
+            assert self.validation_dataset is not None, 'Test or validation dataset have to be provided for evaluation'
+
+        self.validation_steps = 0
+        val_loss, val_metrics = self.validate(batch_size)
+        if self.use_ddp:
+            val_loss = distributed_value_mean(val_loss, device=self.device)
+
+        for callback in self.callbacks:
+            callback.on_validation_end(self.model, -1, val_loss, val_metrics)
+
+        self.validation_dataset = valid_dataset
+
+        return val_loss, val_metrics

@@ -1,28 +1,18 @@
 # Reactive Transformer: Real-time processing for language models
-by Adam Filipek/Reactive AI
+## Architecture introduction
+Draft by Adam Filipek/Reactive AI (adamfilipek@rxai.dev)
 
-> During in-depth experiments on memory systems and Memory Reinforcement Learning, we had to make several key architectural changes,
-> the most important of which are:
-> - remove memory cross-attention from encoder - it's causing vector space misalignment (memory is connected with vector space from
->   encoder layer's feed forward results, but it's also passed to memory cross-attention, that is before feed forward). Generally,
->   for **Reactive Transformer**, encoder doesn't need access to current Short-Term Memory state (it was originally designed
->   for **Long-Term Memory** architectures), because it's accessed later in **Memory Attention**
-> - introduce gated residual connections for **Memory Attention** - standard residuals could lead to exploding memory updates,
->   because of state accumulation in each step - [more details](./memory-attention.md)
-> - change pre-training/fine-tuning methods - use Joint Language Model pre-training and fine-tuning to align vector spaces
->   between encoder and decoder, and pre-train memory cross-attention in decoder
-> - replace PPO with its custom variant made for memory systems - Implicit Memory Policy Optimization (IMPO)
-> - lot of changes in MRL algorithm itself
-> 
-> So, this documentation is a little outdated - we'll edit it and include new information in next few days. And finally,
-> we will publish it in detailed research papers after finalizing MRL in first PoC model (planned for August 2025)
+> This is the first article from Reactive Transformer series and is introducing the architecture. In next articles, we
+> will describe all the training stages and inference process. Drafts are available in RxNN docs:
+> - [Supervised Training stages](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/supervised-training.md)
+> - [Reinforcement Learning stages](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/mrl.md)
 
 ## Abstract
-Language models based on Transformer architecture are industry standard in Natural Language Processing. They are great
+Large Language Models (LLM) based on Transformer architecture are industry standard in Natural Language Processing. They are great
 in language modelling and generative tasks. However, Transformers are completely stateless, and they are only emulating Short-Term
 Memory with their long contexts — every processed sequence is completely separate. Conversational models based on this concept,
 are processing all the conversation history on each message/interaction. Despite it being extremely inefficient, it's not how humans
-thinking and communicating. Awareness is a stateful and continuous process that requires _Real-time Processing_, which is completely
+thinking and communicating. Awareness is a stateful and continuous process that requires _Real-Time Processing_, which is completely
 opposite to how transformers are working.
 
 Previous approaches to memory in NLP, based on RNNs or even Neural Turing Machines, were concentrated on keeping state between
@@ -30,25 +20,32 @@ tokens in sequence, because it was the main problem for research in pre-transfor
 it no longer requires memory, thanks to attention layers. Then, it looks like the research community forgot about memory and
 agreed that it's no longer necessary.
 
+Instead, the research community focused on continually increasing context length, which only made sense up to a point. Due to
+the exponential growth of LLM inference costs (each message is the cost of that message and all previous ones), in a very
+long conversation, each subsequent message, even the shortest, carries a disproportionately large cost. This makes context
+lengths of a million tokens or more completely pointless, because by the time you reach those million tokens in a conversation,
+you'll have lost your entire budget.
+
 Someone even believed that transformers would achieve awareness only by scaling it furthermore to even bigger sizes. No, they
 wouldn't, it's **impossible**. The key "feature" of awareness is that I rather know what I was doing or thinking 10 minutes
 ago, without a need to read my whole-day history.
 
-Awareness requires keeping state between sequences/interactions instead and processing only single messages in real-time,
+Awareness requires keeping state between sequences/interactions instead, and processing only single messages in real-time,
 with access to previous interactions by memory. It's only the first step to awareness, but this step is crucial.
 
 Those features are partially covered by agentic frameworks, like LangChain, that are integrating LLM models with external
 tools, including memory or databases, through _prompt engineering_. But the models, even if agents are called "reactive",
-still processing whole histories, instead working in real time. Our new **Reactive Neural Networks** and **Event-driven AI**
-paradigms are moving those agentic features into the models architectures.
+still processing whole histories, instead working in real time. Their memory is not the model's memory, but the agent's memory.
+Our new **Reactive Neural Networks** and **Event-driven AI** paradigms are moving those agentic features into the models architectures.
 
-In this research, we are introducing **Reactive Transformer** architecture and **Attention-based Memory System for Short-Term
+In this research, we are introducing **Reactive Transformer** architecture with **Attention-based Memory System for Short-Term
 Memory**, that's processing only single messages in real time and moving conversation history into separate memory layers,
-accessed and updated by specialized attention layers.
+accessed and updated by specialized attention layers. **Reactive Language Models** based on this architecture have linear
+costs scaling and are `number_of_messages` times cheaper and faster than LLMs.
 
 ## Reactive Neural Networks and Event-driven AI
 _Reactive neural networks (RxNN)_ are event-driven, memory-aware neural networks with stateful real-time processing and infinite
-inter-sequence recursion (while RNN recurrence is mainly intra-sequence). While our new reactive architectures are based
+inter-sequence recurrence (while RNN recurrence is mainly intra-sequence). While our new reactive architectures are based
 on Transformers (that handle intra-sequence dependencies), it's not a strict requirement - it's possible for RNN to act
 as RxNN, and it should be possible to create reactive Diffusion Language Model or other architecture - it's not a part of this research.
 
@@ -80,7 +77,7 @@ According to this naming:
 concept is called **Live Learning**, and in the case of **Reactor**, it is extended to **Continuous Live Learning**, where the model
 is even able to initiate interactions on its own and learn from them autonomously, without human intervention.
 
-> **Strong Reactive Neural Networks (called also Proactive Neural Networks)**, like Reactor, have additional internal
+> **Strong Reactive Neural Networks (called also Infinite Reactive Neural Networks)**, like Reactor, have additional internal
 > event loop, where they are both listeners and emitters. They are listening to both external and internal query events
 > at once, and they are also emitting both external and internal response events at once, combining and processing
 > everything in single interaction. External events are interpreted as a spoken words, while the internal events
@@ -101,45 +98,98 @@ Compared to original Transformer, **Reactive Transformer** has reversed executio
 - first, decoder is generating _answer_, based on input _query_ and _STM state_ (from previous interaction)
 - then, encoder is transforming both _query_ and _answer_ to latent memory spaces and memory attention is updating memory
 
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer.png" />
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-moe.png" />
 
-Models based on RxT architecture are called **Reactive Language Models (RxLM)**
+Models based on **Reactive Transformer** architecture are called **Reactive Language Models (RxLM)**
 
 ### Shared Embedding
 Both encoder and decoder have to share the same _embedding_ layer - they both have access to STM, that's connected to the
 same _embedding_ space. It will reduce the parameter count in the final architecture and slightly improve a decoder quality (using
 bidirectional MLM embeddings from encoder), but it's making the _tied embedding_ concept hard to implement (we're not using
-it in our models). Embedding layer is pre-trained with encoder, then it's frozen for decoder pre-training. It's getting
-unfrozen after initial steps of Memory Reinforcement Learning and is trained with all the other components.
+it in our models). Embedding layer is pre-trained and fine-tuned with decoder and encoder in _Joint LM Training_. Then it
+could be frozen or trained furthermore in Reinforcement Learning stages.
 
 ### Memory Cross-Attention
-Most important and noticeable difference between Reactive Transformer layers and classic Transformer layers are the additional
-_**Memory Cross-Attention**_ layers between self-attention and feed forward net. They are included in both decoder and encoder,
-as encoder should be also memory-aware, when it's encoding new data to update the memory.
+As in original encoder-decoder Transformer, decoder in Reactive Transformer has additional cross-attention layers between
+self-attention and feed forward net, but it has a little different function - it's called _**Memory Cross-Attention**_.
 
 In original Transformer, cross-attention in decoder is used to access the data encoded by encoder layers. In **RxT** it's
 similar, memory cross-attention is still accessing encoder hidden states, but combined (accumulated) with all states from previous
 interactions (by memory-attention). It has one crucial implication - _positional encoding_ - memory shouldn't have positional
 encoding and should be treated rather as a _set_ than a _sequence_, because it's all updated incrementally - in each step
-the message will include some different information on each position, so it shouldn't be reflected in the STM memory.
-
-Then, as the _**Rotary Positional Embedding (RoPE)**_ is currently industry standard, in RxT's memory cross-attention we are
-applying RoPE rotation only to _queries_ (input sequence) and not to _keys_ (STM layer state).
+the message will include some different information on each position, so it shouldn't be reflected in the STM memory. Then,
+as the _**Rotary Positional Embedding (RoPE)**_ is currently industry standard, in RxT's memory cross-attention we are applying
+RoPE rotation only to _queries_ (input sequence) and not to _keys_ (STM layer state).
 
 > Legacy positional embedding solutions (absolute/relative) aren't considered for Reactive Transformer. They will add,
 > explicitly (relative) or implicitly (absolute), positional encoding to Short-Term Memory layers, then it shouldn't be
 > a good choice.
 
+#### Encoder Memory Cross-Attention in original architecture design
+Initially, we planned to use **Memory Cross-Attention** also in encoder, to include information about current memory state
+in encoded data. It was originally designed for upcoming **Long-Term Memory (LTM)** architectures (as **Reactive Transformer** is
+the simplified **Reactor**, not the opposite), where encoded data is used not only to update **Short-Term Memory**, but also
+for search in **Long-Term Memory** - then it will be good to not look for information already included in **STM**. But for
+Reactive Transformer that has no **LTM**, it's not needed, because current **STM** state is normally accessed in **Memory
+Attention**.
+
+After experiments with **Memory Reinforcement Learning** we decided to remove **Memory Cross-Attention** from encoders
+in all architectures, because of the crucial vector space misalignment issue that it's causing. The problem is that encoded
+data of each layer and corresponding STM layer are connected to vector space of feed-forward layer results, but memory
+cross-attention is before feed-forward - it breaks the encoder results and all the training. As I stated, it's not required
+for **Reactive Transformer** and for the later **LTM** architectures it will be replaced by new **Long-Term Gates**.
+
 ### Memory Attention & Attention-based Memory System
-Memory cross-attention provides the access to Short-Term Memory layers and integration with Transformer architecture. But
-how to update memory? The _**Attention-based Memory System (ABMS)**_ assumes that attention mechanisms are also responsible
+Memory cross-attention provides the access to **Short-Term Memory** layers and integration with Transformer architecture. But
+how to update memory? The _**Attention-Based Memory System (ABMS)**_ assumes that attention mechanisms are also responsible
 for updating the memory state, in a process that is opposite to the memory cross-attention. In **Memory Attention** STM
 states becoming _queries_, while the encoded sequences (encoder hidden states) are treated as _keys/values_. Before passing
-STM to attention layers, it's normalized by _RMS_ based **Memory Norm** and the attention layer's result is added to current
-STM layer's state in residual connection - this design should ensure incremental STM state building.
+STM to attention layers, it's normalized by _RMS_ based **Memory Norm** and the attention layer's result is combined with current
+STM layer's state in **Residual Gate** - this design should ensure incremental STM state building.
 
 As memory shouldn't be positionally encoded, in **Memory Attention** RoPE only _keys_ are rotated.
 
+#### Memory Attention variants
+We have designed multiple Memory Attention Network variants, with different attention layers configuration
+- simple variant with single Memory Attention layer, combining STM state with encoded data (encoder layer's results)
+- Memory Self-Attention variant with additional self-attention layer before, that's using STM layer data as query/keys/values
+- Interlayer Memory Attention, that's combining STM layer data with mean from all layers, instead of self-attention
+- Gated Self/Interlayer Memory Attention - first attention layer's keys/values are selected from mean STM interlayer data
+  and current layer data by Residual Gate
+
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/stm-memory-attention.png" />
+
+Memory Self-Attention variant has been introduced to balance the contribution of data from the current and new states (the
+first simple variant may favor the new data too much). Interlayer variant should help reducing duplication of information
+in STM layers, while the Gated Self/Interlayer variant combines both approaches.
+
+> In first experiments with **Memory Reinforcement Learning**, **Interlayer Memory Attention** variant achieved the best
+> results in early training stages, so we selected it as a default variant for **RxT-Alpha** models.
+
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" />
+
+#### Residual Gate
+**Residual Gate** is introducing additional control mechanism after the attention layers, and is made to improve the
+balance of new and previous states in updates, and to improve the gradients flow in training. The gate decides how much
+data from new updates state and previous state it should use for new memory state - it could be per layer or per memory
+slot (recommended).
+
+Additionally, using normal residual connections (or tanh gate activation) for STM, that is accumulated on each step leads
+to exploding STM updates. Each next STM update results in about 2x bigger numbers. Regularization based on MSE between new
+and old STM state (implemented in Implicit Memory Policy Optimization algorithm) could fix this problem, by ensuring correct
+balance of negative and positive values, but it could be also achieved naturally with sigmoid gate activation - it's using
+weighted mean, instead of sum/weighted sum. In our **RxT-Alpha** models we are using sigmoid gate activation with small
+memory diff regularization.
+
+The most simple static gate result is based only on trained weights, and could be used to explicitly enforce the flow
+through memory-connected components in first training stages, by setting initial weights values.
+
+Dynamic gates are more complex and expressive - they calculate gate results from updated memory states and trained weights,
+either by elementwise multiplication or by linear layer.
+
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/residual-gate.png" />
+
+#### Memory Layers
 **Short-Term Memory** is divided into layers - each Reactive Transformer component's layer has corresponding STM layer, with
 saved data on different levels of abstraction. While each STM layer has almost the same shape as the input sequence, with only
 the second dimension different (sequence length/STM size - in sequence it could be variable, but STM has always same, constant size),
@@ -160,40 +210,41 @@ and decoder should have the same number of layers and model/embedding dimensiona
 also need a strong encoder, with the same knowledge as decoder, to correctly transform data to memory spaces.
 
 We decided, to use _**Mixture-of-Experts**_ feed forward layers for decoder, while encoder has regular dense feed forward. With
-this approach, decoder could be N times bigger than encoder, and overally, Reactive Transformer will be only slightly bigger
+this approach, decoder could be N times bigger than encoder, so finally Reactive Transformer will be only slightly bigger
 than classic, decoder-only MoE Transformer.
-
-<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/reactive-transformer-interlayer.png" />
 
 ### Sparse Query Attention for efficient attention in Reactive Transformer
 In our additional side research, we discovered, that reducing used query heads count (like using 8 heads from 16), instead
 furthermore reduction of key/value heads from GQA level, up to MQA, leads to a lot better computational efficiency, and
 almost the same model quality (loss/accuracy/perplexity, etc.) - we called this solution _**Sparse Query Attention**_. All
-the SQA variants are about ~5-15% faster than GQA/MQA, while they performance is always somewhere between GQA and MQA.
-Symmetric variants of SQA, that's using exactly 50% of query and key/value heads (use full MHA optimizations) are still
-a lot faster than GQA with much smaller number of key/value heads, while their performance is almost exactly the same.
-Extreme SQA variants, when there are used less than 50% heads for both query and key/value, are still on MQA's performance
-level with the best possible computational efficiency. However, after some level - about 25% of each heads, further reduction
-doesn't improve training times and performance is noticeable worse. SQA has also the smallest number of parameters, because
-of an additional output projection input dimensionality reduction. The time differences between SQA variants and GQA/MQA are
-getting greater with longer sequences, while the performance is still on the same level, so SQA could be even better for very
-long contexts, however, we didn't run detailed tests for long context models, because of the limited budget, so it's still
-something to explore.
+the SQA variants are a lot faster than GQA/MQA (even 2-3x for 128k tokens), while they performance is always somewhere
+between GQA and MQA. Symmetric variants of SQA, that's using exactly 50% of query and key/value heads (use full MHA
+optimizations) are still a lot faster than GQA with much smaller number of key/value heads, while their performance is almost
+exactly the same. Extreme SQA variants, when there are used less than 50% heads for both query and key/value, are still on
+MQA's performance level with the best possible computational efficiency. However, after some level - about 25% of each heads,
+further reduction doesn't improve training times and performance is noticeable worse. SQA has also the smallest number of
+parameters, because of an additional output projection input dimensionality reduction.
 
-In summary, SQA seems to be the most cost-effective variant of Grouped Query Attention, reducing training time/cost by ~5-15%,
-while staying on GQA/MQA performance level, and will be implemented in our **Reactive Transformer** models.
+In summary, SQA seems to be the most cost-effective variant of Grouped Query Attention and the fastest attention mechanism
+for 0-128k tokens - after 128k spatially sparse attention (Flex Attention) is becoming faster. However, symmetric variant of
+**Sparse Query Attention** could be easily combined with **Flex Attention**, to enable 4-8x greater sliding window lengths.
+**SQA** is a default choice in our experimental **Reactive Transformer** models - **RxT-Alpha**.
 
 More about [Sparse Query Attention](../sparse_query_attention.md)
 
 #### Spatially sparse attention for memory
 Spatially sparse attention mechanisms, based on sliding local windows, especially _**Flex Attention**_, are becoming more
 popular, because of their ability to handle very long sequences with `O(N * log N)` complexity. They are excellent for very
-long contexts extending a million tokens, but like I said before - it's rather the opposite direction of research. I don't
-know if "over 1M tokens" sequence length will be ever needed for single message processing (it's against the real-time
-processing - reading a book in real-time mode will be rather partial, and it's natural - people rather don't read whole
-books at once), because we want to achieve those conversation lengths differently with memory - "million-token like" conversation
+long contexts extending a million tokens, but as I mentioned in the introduction, the usefulness of such a long context is
+highly questionable due to the exponential growth of inference costs - and it's rather the opposite direction of research.
+
+In **Reactive Transformer** that lengths, like million or more tokens, for single messages, are rather against the real-time
+processing concepts (reading a book in real-time mode will be rather partial, and it's natural - people rather don't read whole
+books at once). We want to achieve those conversation lengths differently with memory - "million-token like" conversation
 should be achieved with about 32k message length and 32-64k memory layer size. Then, **Reactive Transformer** may just not need
-spatial sparsity for self-attention, except some rare cases with very long single interactions.
+spatial sparsity for self-attention, except some rare cases with very long single interactions - it will be handled by the
+combination of **Flex Attention** and memory attention/cross-attention (sliding windows for input sequences, that are attending
+to memory states of constant size).
 
 While spatial sparsity could be optionally used for self-attention, it rather isn't a good idea for memory. Spatial sparsity
 is based on positional relations, but memory doesn't have positional encoding and could have completely different spatial
@@ -206,11 +257,8 @@ Additionally, STM has always full, constant size (opposite to input sequence, th
 so memory cross-attention and memory attention computational cost will be almost always higher, than self-attention, so it
 has to be as fast as possible, so SQA seems to be the best option.
 
-> Before SQA discovery, we considered using GQA for self-attention and MQA for memory cross-attention and memory attention. They
-> should be of course still viable, but SQA just fits better to the overall architecture.
-
-We consider using Symmetric Sparse Query Attention (sSQA) for model's self-attention and regular SQA (GQA with reduced active
-query heads) for memory cross-attention and memory attention in **Reactive Transformer**.
+> Before SQA discovery, we considered using GQA for self-attention, memory cross-attention and memory attention. They are
+> of course still viable and available in our RxNN framework, but SQA just fits better to the overall architecture.
 
 ### Sampler
 As **Reactive Transformer** algorithm includes accumulating generated tokens, it needs the **Sampler** as a core architecture
@@ -220,7 +268,7 @@ also in Reinforcement Learning stages.
 ### Quasi Live Learning and Pseudo-Infinite Context
 As the first event-driven reactive neural network, **Reactive Transformer** has no overall context limitation (only single
 message/interaction length is limited) and the ability to learn from interactions, but it's limited by the memory capacity,
-which according to the name is "short-term" and it's size is not extendable. Although the RxT memory is many thousands of
+that according to its name is "short-term" and it's size is not extendable. Although the RxT memory is many thousands of
 times larger than a typical RNN memory (in large-scale reactive models STM can reach gigabytes), it is still limited,
 so even if the model learns new things that it stores in the memory, it will forget them after a certain number of subsequent
 interactions. So even if the overall context is theoretically infinite, this does not guarantee a completely fluid conversation
@@ -241,8 +289,8 @@ In the inference, full model flow is following:
 0. Model has some initial STM state (random initialization or loaded pre-trained STM - it will extend the idea of system prompt from LLMs)
 1. The input _query_ sequence is passed to the model and is being embedded
 2. Embedded _query_ is processed by decoder, that's accessing current STM state with memory cross-attention and is autoregressively generating answer (with Sampler)
-3. Generated answer is **streamed/returned** to the environment (in separate thread), but is also accumulated into the _answer_ sequence, that's being embedded
-4. Embedded _query_ and _answer_ sequences are concatenated and processed by encoder, with the same STM access through memory cross-attention as decoder
+3. Generated answer is **streamed/returned** to the environment, but is also accumulated into the _answer_ sequence, that's being embedded
+4. Embedded _query_ and _answer_ sequences are concatenated and processed by encoder
 5. _Encoded data_ - hidden states from each encoder's layer, are combined with previous STM state by memory attention layers.
 6. When memory is updated, model is ready for next interaction - so we are back in the step 0.
 
@@ -250,10 +298,6 @@ This approach require using asynchronous reactive communication patterns - when 
 the answer, it still has to update memory for the next interaction (in background, from user's perspective). So the model has to
 send some additional communicates to the UI, to display/hide the information about memory update and/or enqueue new message/interaction,
 when it's send before it finished memory update.
-
-We are using solutions based on _Reactive Programming_ like signals or observables to handle asynchronous communication in
-_Reactive Neural Networks_. It's handled on the low level (without moving data between devices and only minimal overhead) in a dedicated
-**Rust** library - **Tensor Reactive Extensions (TRx)**, inspired on Reactive Extensions (like RxPy), but dedicated to work with tensors.
 
 ### Cloud-based Reactive Models
 The stateful nature of reactive models may suggest that they are local-only models and aren't compatible with cloud-based
@@ -281,50 +325,68 @@ Answering (QA) models with implicit access to previous questions and answers, so
 it's just: `[BOS] [Q] User's query... [A] Model's answer... [EOS]` - it also make the supervised fine-tuning datasets much
 simpler and readable.
 
+> For reasoning template is extended to: `[BOS] [Q] User's query... [R] Model's reasoning... [A] Model's answer... [EOS]`
+
 ## Training
 As the **Reactive Transformer** is a connected ensemble of cooperating models, its training process is more complicated,
-then standard LLM training. It requires more careful pre-training and additional **Memory Reinforcement Learning (MRL)**
-stage, but also simplifies some stages, like fine-tuning, because of single interaction processing. Our progressive learning
-process is designed as an extension to existing **Transformer** learning algorithms. It's divided into four separate steps:
-1. Base Models Pre-Training on autoregressive language modeling and masked language modeling
-2. Components Supervised Fine-Tuning (SFT) on Instruct-QA and/or Chain-of-Thoughts-QA tasks
-3. Memory Reinforcement Learning (MRL) for Short-Term Memory
-4. Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
+then standard LLM training. It requires more careful pre-training, fine-tuning and additional **Memory Reinforcement Learning (MRL)**
+stage. Our progressive learning process is designed as an extension to existing **Transformer** learning algorithms.
+It's divided into six separate stages:
+1. Joint LM Pre-Training for encoder and decoder, on autoregressive language modeling and masked language modeling at once
+2. Joint Components Interaction Supervised Fine-Tuning (SFT)
+3. Memory Attention Self-Supervised Pre-Training
+4. Decoder's Memory-aware Supervised Fine-Tuning
+5. Memory Reinforcement Learning (MRL) for Short-Term Memory
+6. Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
 
-In first two stages, memory cross-attention layers are frozen (and skipped by initial residual connections), to not disrupt
-language modeling training. Memory attention layers are not even used - they are introduced from MRL stage.
+In addition to standard language modelling training, first four stages are designed to connect vector spaces between components,
+and provide great initial results in **Memory Reinforcement Learning**.
 
 > ### Transfer learning from classic transformers
 > Thanks to the residual connections, and the fact that with initial, very small random weights, the attention layer output
 > is almost completely skipped by residuals, it should be possible to extend the pre-trained classic transformer (with
 > corresponding QA fine-tuning) with memory cross-attention and use it in MRL. However, most current LLMs are decoder-only,
 > and it's almost impossible to find the encoder with the same number of layers and same model dimensionality, so you will
-> still have to pre-train the encoder using at least partially the same dataset. It's still a cost reduction, but will require
-> much more careful encoder pre-training and could be less stable
+> still have to pre-train the encoder using at least partially the same dataset. Additionally, it will require careful
+> training to connect vector spaces and finally, may be harder than training new model from scratch - it's the topic for
+> another research
 
-### Base Models Pre-Training
-That stage is based on standard language modeling, and there isn't anything new, except shared embeddings and frozen, or
-even skipped memory cross-attention. As encoder's bidirectional masked language modeling could result in better embedding
-quality, the training is started from encoder:
-1. Pre-train encoder on masked language modeling, with trainable embedding layer
-2. Load pre-trained encoder's embedding layer and randomly initialized STM into decoder
-3. Pre-train decoder on autoregressive language modeling, with frozen embedding layer
+## Inference Speed and Cost
+As **Reactive Transformer** is processing single interactions instead of conversation history, each message processing have
+similar speed and cost - it's increase with number of messages is linear. That's one of the biggest practical advantages
+over LLMs or even Diffusion Language Models, that are also based on full conversation processing. For **Reactive Language
+Models**, only the first interaction could be a little more expensive than for the same size LLM, because of the encoder,
+memory attention and memory cross-attention overhead. Then, for next messages, it's about `N` times faster and cheaper, where
+`N` is the number of messages.
 
-### Supervised Fine-Tuning (SFT)
-In this stage, we have to fit the models (both decoder and encoder) to process the data in single interaction format - question
-and answer. We have to provide the examples of interactions from the start of conversation and from the middle of conversation,
-but it doesn't require any connections between consecutive interactions. Each example interaction could be independent, but there
-should be examples that looks as taken from different stage of conversation, like follow-up questions or topic changes. The goal
-is to tune the model to basic conversational interaction format and keep connections between questions and answers. The inter-sequence
-memory dependencies are added in the next stage.
+> Encoder and Memory Attention overhead is almost unnoticeable, because it's used once for each interaction, when decoder
+> is used once per generated token. So, decoder autoregressive processing is taking `N_tokens` times more time, than encoder
+> and memory attention. On the other hand, Memory Cross-Attention overhead is noticeable, as it's used in decoder, but it's
+> still nothing compared to full conversation processing, and it's optimized with full KV pre-caching (more details below)
+> and fast **Sparse Query Attention** layers.
 
-#### SFT Datasets
-Dataset for Supervised Fine-Tuning for Reactive Transformer includes simple Question-Answer (Query-Response) interactions, from
-different stages of dialog/conversation. They don't need to be connected, because they will be just shuffled in different epochs.
+### Attention Key/Value Cache for autoregressive generation
+LLM autoregressive generation is optimized by the attention key/value heads cache (KV cache) to reduce the number of duplicated
+operations for each generated tokens - previous tokens results of key/value linear projections with RoPE encoding are stored
+and re-used in next steps. In case of full conversation processing, it results in meaningful savings, but it's less useful
+for real-time single interaction processing - just because it's almost always a lot shorter. However, duplicated operations
+still have no sense, so KV cache is implemented in our models, just like in LLMs.
 
-Single record - interaction - could be a single text sequence in format `[Q] User's question [A] Model's answer` or it could
-be divided into two separate fields. First option is simpler, but the second is easier to customize, so it should be recommended.
+On the other hand, during the autoregressive answer generation, **Memory Cross-Attention** is always accessing the same
+static STM state (that is updated between generating answers) as keys/values, so it all could be initially pre-cached
+at once - then we completely skip all key/value linear projections in cross-attention. It results in about 20-25% faster
+generation.
 
-More for [Reinforcement Learning Stages](./mrl.md)
+## Summary
+**Reactive Transformer** is the first groundbreaking **Event-Driven AI** architecture that redefines the conversational NLP,
+by introducing the **Real-Time Processing** to language models. It's a crucial milestone on the road to real awareness models.
+Based on the state-of-the-art **Transformer** architecture it doesn't reinvent the wheel in language modelling, but extends the
+LLM concepts with dedicated memory layers to keep all the context. It results in natural, human-like conversation mode, opposite
+to simulated nature of LLM full conversation processing.
 
-[Memory Attention variants](./memory-attention.md)
+Models based on **Reactive Transformer** should be about `N` times cheaper and faster than the same size LLMs, where `N`
+is the number of messages. That's only a guess, but that models could also achieve better task performance, just because
+the isolation of processed interaction from the previous ones - that should be checked in further experiments.
+
+After this introduction, in next articles we will describe all the training process of **Reactive Transformer**, starting
+from the supervised stages.

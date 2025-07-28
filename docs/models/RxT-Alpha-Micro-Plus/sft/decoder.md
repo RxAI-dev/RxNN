@@ -106,11 +106,11 @@ Model requires [RxNN framework](https://github.com/RxAI-dev/RxNN) for training/i
 - Install Flash Attention (optional, but recommended) - details in [RxNN framework docs](https://github.com/RxAI-dev/RxNN)
 ```python
 import torch
-from rxnn.rxt.models import RxTAlphaDecoder
+from rxnn.rxt.models import RxTDecoder
 from rxnn.transformers.sampler import Sampler, SampleDecoder
 from rxnn.training.tokenizer import load_tokenizer_from_hf_hub
 
-model = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT')
+model = RxTDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT')
 tokenizer = load_tokenizer_from_hf_hub('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder')
 sampler = Sampler(model, torch.device('cuda' if torch.cuda.is_available() else 'cpu'), end_token_id=3)
 sample = SampleDecoder(sampler, tokenizer)

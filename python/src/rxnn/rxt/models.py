@@ -18,7 +18,7 @@ from ..experimental.attention import init_experimental_attention
 from ..training.tokenizer import load_tokenizer_from_hf_hub
 
 
-class RxTAlphaComponentConfig(TypedDict):
+class RxTComponentConfig(TypedDict):
     num_layers: int
     vocab_size: int
     embed_dim: int
@@ -47,7 +47,7 @@ class RxTAlphaComponentConfig(TypedDict):
     init_identity_norm: bool
 
 
-class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
+class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
     """Base class for RxT-Alpha (Reactive Transformer) components (encoder and decoder)"""
 
     def __init__(
@@ -81,7 +81,7 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
             init_identity_norm: bool = False,
             **kwargs
     ):
-        super(RxTAlphaComponentBase, self).__init__(**kwargs)
+        super(RxTComponentBase, self).__init__(**kwargs)
         assert ff_activation in ['relu', 'gelu',
                                  'swish', 'silu', 'linear',
                                  'sigmoid'], 'Feed-forward activation could be "relu", "gelu", "swish", "silu", "linear", "sigmoid".'
@@ -184,11 +184,11 @@ class RxTAlphaComponentBase(nn.Module, PyTorchModelHubMixin):
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTAlphaEncoder(RxTAlphaComponentBase, pipeline_tag="fill-mask", license="apache-2.0"):
+class RxTEncoder(RxTComponentBase, pipeline_tag="fill-mask", license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) encoder model"""
 
-    def __init__(self, **kwargs: RxTAlphaComponentConfig):
-        super(RxTAlphaEncoder, self).__init__(False, **kwargs)
+    def __init__(self, **kwargs: RxTComponentConfig):
+        super(RxTEncoder, self).__init__(False, **kwargs)
 
     def _init_model(
             self,
@@ -214,11 +214,11 @@ class RxTAlphaEncoder(RxTAlphaComponentBase, pipeline_tag="fill-mask", license="
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", license="apache-2.0"):
+class RxTDecoder(RxTComponentBase, pipeline_tag="text-generation", license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) decoder model"""
 
     def __init__(self, **kwargs):
-        super(RxTAlphaDecoder, self).__init__(True, **kwargs)
+        super(RxTDecoder, self).__init__(True, **kwargs)
 
     def _init_model(
             self, stm: ShortTermMemory,
@@ -247,7 +247,7 @@ class RxTAlphaDecoder(RxTAlphaComponentBase, pipeline_tag="text-generation", lic
         return self.model(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
 
 
-class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) memory attention model"""
 
     def __init__(
@@ -279,7 +279,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTAlphaMemoryAttention, self).__init__(**kwargs)
+        super(RxTMemoryAttention, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -344,7 +344,7 @@ class RxTAlphaMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) memory attention model with interlayer STM attention"""
 
     def __init__(
@@ -381,7 +381,7 @@ class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTAlphaInterlayerMemoryAttention, self).__init__(**kwargs)
+        super(RxTInterlayerMemoryAttention, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -480,7 +480,7 @@ class RxTAlphaInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
-class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) memory attention model with STM layer self-attention"""
 
     def __init__(
@@ -518,7 +518,7 @@ class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apac
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTAlphaSelfMemoryAttention, self).__init__(**kwargs)
+        super(RxTSelfMemoryAttention, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -613,7 +613,7 @@ class RxTAlphaSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apac
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     """RxT-Alpha (Reactive Transformer) memory attention model with interlayer STM attention"""
 
     def __init__(
@@ -650,7 +650,7 @@ class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, lic
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTAlphaSelfInterlayerMemoryAttention, self).__init__(**kwargs)
+        super(RxTSelfInterlayerMemoryAttention, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -758,7 +758,7 @@ class RxTAlphaSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, lic
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
-class RxTAlphaInterlayerMemoryAttentionConfig(TypedDict):
+class RxTInterlayerMemoryAttentionConfig(TypedDict):
     num_layers: int
     embed_dim: int
     att_heads: int
@@ -791,9 +791,9 @@ class RxTAlphaInterlayerMemoryAttentionConfig(TypedDict):
     debug_interval: int
 
 class RxTAlphaPretrainedConfig(TypedDict):
-    decoder: RxTAlphaDecoder
-    encoder: RxTAlphaEncoder
-    memory_attention: RxTAlphaInterlayerMemoryAttention
+    decoder: RxTDecoder
+    encoder: RxTEncoder
+    memory_attention: RxTInterlayerMemoryAttention
 
 class RxTAlphaTokenizerConfig(TypedDict):
     bos_token_id: int
@@ -809,9 +809,9 @@ class RxTAlphaForwardAction(Enum):
 class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
     def __init__(
             self,
-            decoder_config: RxTAlphaComponentConfig,
-            encoder_config: RxTAlphaComponentConfig,
-            memory_attention_config: RxTAlphaInterlayerMemoryAttentionConfig,
+            decoder_config: RxTComponentConfig,
+            encoder_config: RxTComponentConfig,
+            memory_attention_config: RxTInterlayerMemoryAttentionConfig,
             tokenizer_config: RxTAlphaTokenizerConfig,
             pretrained_config: RxTAlphaPretrainedConfig = None,
             **kwargs,
@@ -826,9 +826,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             self.encoder = pretrained_config['encoder']
             self.memory_attention = pretrained_config['memory_attention']
         else:
-            self.decoder = RxTAlphaDecoder(**decoder_config)
-            self.encoder = RxTAlphaEncoder(**encoder_config)
-            self.memory_attention = RxTAlphaInterlayerMemoryAttention(**memory_attention_config)
+            self.decoder = RxTDecoder(**decoder_config)
+            self.encoder = RxTEncoder(**encoder_config)
+            self.memory_attention = RxTInterlayerMemoryAttention(**memory_attention_config)
 
         self.batch_size = 1
         self.bos_token_id = tokenizer_config['bos_token_id']

@@ -182,7 +182,7 @@ class YourReactiveTransformerDecoder(nn.Module, PyTorchModelHubMixin):
 ```
 
 #### RxT-Alpha
-`RxTAlphaEncoder` and `RxTAlphaDecoder` are ready to use **Reactive Transformer** components, compatible with Hugging Face
+`RxTEncoder` and `RxTDecoder` are ready to use **Reactive Transformer** components, compatible with Hugging Face
 Hub (the above example is based on their code), so it could be used instead of creating custom class. Example usage could
 be found in [pre-training docs](#pre-training)
 
@@ -320,7 +320,7 @@ class YourMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0")
 > **Gated residual** is currently in tests - we are not sure if it will provide better results, so **it's not recommended**
 
 ##### RxT-Alpha Memory Attention
-`RxTAlphaMemoryAttention` is ready to use Memory Attention network for **Reactive Transformer** Proof-of-Concept, that
+`RxTMemoryAttention` is ready to use Memory Attention network for **Reactive Transformer** Proof-of-Concept, that
 could be used instead of creating custom class. Example is in [Memory Reinforcement Learning docs](#memory-reinforcement-learning)
 
 ### Training
@@ -351,6 +351,10 @@ Submodules:
 - `rxnn.training.brl` - Behavioral Reinforcement Learning module (Reactor / from 0.7.x)
 
 #### Base Model Learning
+
+> Pre-training/fine-tuning process for Reactive Transformer is completely modified and this section is outdated. We will
+> update it soon. More details in [Supervised Training stages docs](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/supervised-training.md)
+
 **Base Model Learning (BML)** module is made for both pre-training and fine-tuning base models, that will be used as components
 in reactive models. Generally the only two differences between pre-training and supervised fine-tuning are different dataset
 classes and trainer/callbacks hyperparams config.
@@ -373,7 +377,7 @@ We have to start with importing required modules/libraries, initializing the mod
 use _RxT-Alpha-Micro-Plus_ models as example:
 ```python
 import torch
-from rxnn.rxt.models import RxTAlphaDecoder, RxTAlphaEncoder
+from rxnn.rxt.models import RxTDecoder, RxTEncoder
 from rxnn.training.dataset import AutoregressiveLMDataset, MaskedLMDataset
 from rxnn.training.bml import AutoregressiveTrainer, MLMTrainer
 from rxnn.training.models import MLMHead, MLMTrainingModel
@@ -418,8 +422,8 @@ decoder_config = {
   **config
 }
 
-encoder = RxTAlphaEncoder(**encoder_config)
-decoder = RxTAlphaDecoder(**decoder_config)
+encoder = RxTEncoder(**encoder_config)
+decoder = RxTDecoder(**decoder_config)
 head = MLMHead(embed_dim, vocab_size)
 
 # Tokenizer is the same for encoder and decoder
@@ -592,8 +596,8 @@ For _**Interaction Supervised Fine-Tuning**_, the code is almost the same as for
 
 First, we have to load pre-trained models, instead of initializing them with configs:
 ```python
-encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder', token='HF_TOKEN')
-decoder = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder', token='HF_TOKEN')
+encoder = RxTEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder', token='HF_TOKEN')
+decoder = RxTDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder', token='HF_TOKEN')
 head = MLMHead.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-MLM', token='HF_TOKEN')
 ```
 
@@ -647,7 +651,7 @@ In practice, algorithm has over 50 hyperparams, so it require careful handling. 
 pre-trained models from SFT stage, initializing new Memory Attention, and actor and critic models:
 ```python
 import torch
-from rxnn.rxt.models import RxTAlphaDecoder, RxTAlphaEncoder, RxTAlphaMemoryAttention
+from rxnn.rxt.models import RxTDecoder, RxTEncoder, RxTMemoryAttention
 from rxnn.training.tokenizer import load_tokenizer_from_hf_hub
 from rxnn.training.dataset import MrlDatasets
 from rxnn.training.models import MrlActorModel, MrlCriticModel
@@ -663,10 +667,10 @@ batch_size = 64
 embed_dim = 128
 
 # 2. Get pre-trained microscale PoC models
-decoder = RxTAlphaDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT', token='HF_TOKEN')
-encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
+decoder = RxTDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT', token='HF_TOKEN')
+encoder = RxTEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
 # 3. Init Memory Attention Network
-mem_attn = RxTAlphaMemoryAttention(
+mem_attn = RxTMemoryAttention(
     num_layers=10,
     embed_dim=embed_dim,
     att_heads=8,
@@ -689,7 +693,7 @@ mem_attn.load_shared_memory(encoder.model.stm)
 actor = MrlActorModel(encoder, decoder, mem_attn)
 
 # 6. Get pre-trained encoder, extend its context size, freeze memory and use as a body for Critic model
-critic_encoder = RxTAlphaEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
+critic_encoder = RxTEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
 
 critic_encoder.update_max_len(512)
 critic_encoder.freeze_memory()

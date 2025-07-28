@@ -3,7 +3,6 @@ import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel
 import math
 from typing import Union
-import torch.distributed as dist
 from ..transformers.models import ReactiveTransformerDecoder
 from ..training.base import BaseTrainer
 from .models import MLMTrainingModel, JointTrainingModel
@@ -214,8 +213,11 @@ class AutoregressiveTrainer(BaseTrainer):
 
 
 class JointLMTrainer(BaseTrainer):
-    """"
-    It's not recommended to use Joint LM Training in current implementation. More info soon
+    """
+    Joint LM Trainer is made for decoder and encoder training on MLM and autoregressive objectives. Training
+    includes memory cross-attention, that works like in original encoder-decoder transformer in this stage.
+
+    It's recommended for pre-training and fine-tuning Reactive Transformer components
     """
 
     def __init__(

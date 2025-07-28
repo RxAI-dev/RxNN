@@ -35,3 +35,26 @@ def calculate_steps(
         print(f'Warmup steps: {warmup_steps}')
         print(f'Total steps per epoch: {steps_per_epoch}')
     return { 'total': total_steps, 'warmup': warmup_steps, 'epoch': steps_per_epoch}
+
+def calculate_steps_for_smst(
+        dataset_size: int,
+        epochs: int,
+        curriculum_steps: int,
+        batch_size: int,
+        warmup_ratio: float = 0.0,
+        num_workers: int = 1,
+        gradient_accumulation_steps: int = 1,
+        verbose: bool = True,
+):
+    batches_per_epoch = int(((dataset_size / batch_size - 1) // num_workers))
+    inner_steps_per_epoch = int(batches_per_epoch * curriculum_steps)
+
+    total_steps = int((epochs * inner_steps_per_epoch) / gradient_accumulation_steps)
+    warmup_steps = int(warmup_ratio * total_steps)
+    if verbose:
+        print(f'Total steps: {total_steps}')
+        print(f'Warmup steps: {warmup_steps}')
+        print(f'Total batches per epoch: {batches_per_epoch}')
+        print(f'Total steps per epoch: {inner_steps_per_epoch}')
+    return { 'total': total_steps, 'warmup': warmup_steps, 'epoch': inner_steps_per_epoch, 'batch': batches_per_epoch }
+

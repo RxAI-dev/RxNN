@@ -1,5 +1,7 @@
 # Reactive Transformer Training: Memory Reinforcement Learning & Reinforcement Learning From Human Feedback for Reactive Models
-by Adam Filipek/Reactive AI
+Draft by Adam Filipek/Reactive AI (adamfilipek@rxai.dev)
+
+> After MRL experiments this draft is little outdated - it will be updated soon
 
 ### Memory Reinforcement Learning (MRL)
 **Memory Reinforcement Learning** is a crucial step for all the reactive models, as it finally training models for inter-sequence memory
@@ -9,10 +11,6 @@ interactions. Then, rewards and advantages are not calculated from STM states, b
 
 Technically, it's very similar to RLHF, but with different goals and rewards - remember the previous interactions, instead of more human-like
 text processing in RLHF.
-
-> First micro size model was intentionally trained on simple synthetic dataset that doesn't include any real world knowledge, because it
-> will be easier for MRL to update the memory with some real world knowledge, without a risk of being biased by pre-training knowledge
-> from model params
 
 #### MRL Training Curriculum
 The flow of Memory Reinforcement Learning is rather simple and has a little reversed order. We are starting from passing a complete interaction

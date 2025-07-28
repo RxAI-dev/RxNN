@@ -1,11 +1,18 @@
 import torch
 import torch.nn as nn
 from enum import Enum
-from typing import Literal, Iterator, Optional
+from typing import Literal, Iterator, Optional, TypeAlias, Union
 from huggingface_hub import PyTorchModelHubMixin
-from ..transformers.models import ReactiveTransformerEncoder, ReactiveTransformerDecoder
 from ..transformers.ff import GatedLinearUnit, get_activation_layer
+from ..rxt.models import (
+    RxTDecoder, RxTEncoder, RxTMemoryAttention,
+    RxTSelfMemoryAttention, RxTInterlayerMemoryAttention, RxTSelfInterlayerMemoryAttention
+)
 
+RxTMemoryAttentionType: TypeAlias = Union[
+    RxTMemoryAttention, RxTSelfMemoryAttention,
+    RxTInterlayerMemoryAttention, RxTSelfInterlayerMemoryAttention
+]
 
 class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
     def __init__(self, embed_dim: int, vocab_size: int, *args, **kwargs):
@@ -25,7 +32,7 @@ class MLMHead(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
 class MLMTrainingModel(nn.Module):
     def __init__(
             self,
-            encoder: ReactiveTransformerEncoder,
+            encoder: RxTEncoder,
             mlm_head: MLMHead,
             *args,
             **kwargs
@@ -43,8 +50,8 @@ class MLMTrainingModel(nn.Module):
 class JointTrainingModel(nn.Module):
     def __init__(
             self,
-            encoder: ReactiveTransformerEncoder,
-            decoder: ReactiveTransformerDecoder,
+            encoder: RxTEncoder,
+            decoder: RxTDecoder,
             mlm_head: MLMHead,
             *args,
             **kwargs
@@ -74,6 +81,68 @@ class JointTrainingModel(nn.Module):
         return y_e, y_d
 
 
+class SupervisedMemoryAwareModel(nn.Module):
+    def __init__(
+            self,
+            encoder: RxTEncoder,
+            decoder: RxTDecoder,
+            memory_attention: RxTMemoryAttentionType,
+            *args,
+            **kwargs
+    ):
+        super(SupervisedMemoryAwareModel, self).__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.memory_attention = memory_attention
+
+    def decoder_parameters(self) -> Iterator[torch.Tensor]:
+        return self.decoder.parameters()
+
+    def reset_memory(self, init_type: str = None):
+        self.memory_attention.reset_memory(init_type)
+
+    def forward(self, x_e: torch.Tensor, x_d: torch.Tensor, encoder_mask: torch.Tensor = None, decoder_mask: torch.Tensor = None) -> torch.Tensor:
+        with torch.no_grad():
+            _, encoded_layers = self.encoder(x_e, attention_mask=encoder_mask)
+            self.memory_attention(encoded_layers, attention_mask=encoder_mask)
+
+        logits = self.decoder(x_d, attention_mask=decoder_mask)
+        return logits
+
+
+class MemoryAttentionTrainingModel(nn.Module):
+    def __init__(
+            self,
+            encoder: RxTEncoder,
+            memory_attention: RxTMemoryAttentionType,
+            *args,
+            **kwargs
+    ):
+        super(MemoryAttentionTrainingModel, self).__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.memory_attention = memory_attention
+
+    def trainable_parameters(self) -> Iterator[torch.Tensor]:
+        return self.memory_attention.parameters()
+
+    def reset_memory(self, init_type: str = None):
+        self.memory_attention.reset_memory(init_type)
+
+    def clone_reset_memory(self):
+        self.memory_attention.clone_reset_memory()
+
+    def get_memory_state(self):
+        return self.memory_attention.model.stm.memory
+
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None, noise_level: float = 0.0) -> tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            _, encoded_layers = self.encoder(input_ids, attention_mask=attention_mask)
+            noisy_encoded_data = encoded_layers + noise_level * torch.randn_like(encoded_layers)
+
+        new_stm = self.memory_attention(noisy_encoded_data, attention_mask=attention_mask)
+        return new_stm, encoded_layers
+
+
 class MrlActorAction(Enum):
     DECODE = 1
     UPDATE = 2
@@ -82,9 +151,9 @@ class MrlActorAction(Enum):
 class MrlActorModel(nn.Module):
     def __init__(
             self,
-            encoder: nn.Module,
-            decoder: nn.Module,
-            memory_attention: nn.Module,
+            encoder: RxTEncoder,
+            decoder: RxTDecoder,
+            memory_attention: RxTMemoryAttentionType,
             **kwargs
     ):
         super(MrlActorModel, self).__init__(**kwargs)
