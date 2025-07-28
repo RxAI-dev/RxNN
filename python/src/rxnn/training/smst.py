@@ -19,12 +19,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
             self,
             model: MemoryAttentionTrainingModel,
             device: torch.device,
-            vocab_size: int,
             label_weights: Union[list[tuple[float, float]], Callable[[int], tuple[float, float]]],
-            use_amp: bool = False,
-            dtype: torch.dtype = None,
-            use_moe_aux_loss: bool = False,
-            moe_aux_loss_scale: float = 0.01,
             max_seq_len: int = 256,
             pad_token_id: int = 0,
             noise_levels: tuple[float, float] = (0.0, 0.0),
@@ -33,11 +28,8 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
             **kwargs
     ):
         super(SupervisedMemoryAttentionTrainer, self).__init__(
-            model, device, use_amp=use_amp, dtype=dtype, dataset_collate_fn=dataset_collate_fn, **kwargs
+            model, device, dataset_collate_fn=dataset_collate_fn, **kwargs
         )
-        self.vocab_size = vocab_size
-        self.use_moe_aux_loss = use_moe_aux_loss
-        self.moe_aux_loss_scale = moe_aux_loss_scale
         self.get_batch_size = lambda batch: batch['query']['attention_mask'].size(0)
         self.total_inner_steps = 0
         self.valid_inner_steps = 0
@@ -384,8 +376,6 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
             model: SupervisedMemoryAwareModel,
             device: torch.device,
             vocab_size: int,
-            use_amp: bool = False,
-            dtype: torch.dtype = None,
             use_moe_aux_loss: bool = False,
             moe_aux_loss_scale: float = 0.01,
             max_seq_len: int = 256,
@@ -394,7 +384,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
             **kwargs
     ):
         super(SupervisedMemoryAwareTrainer, self).__init__(
-            model, device, use_amp=use_amp, dtype=dtype, dataset_collate_fn=dataset_collate_fn, **kwargs
+            model, device, dataset_collate_fn=dataset_collate_fn, **kwargs
         )
         self.vocab_size = vocab_size
         self.use_moe_aux_loss = use_moe_aux_loss
@@ -514,7 +504,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                             )
 
                         for callback in self.callbacks:
-                            should_stop = callback.on_batch_end(self.model, (batch_idx * number_of_inner_steps) + inner_step_idx, orig_loss, train_batch)
+                            should_stop = callback.on_batch_end(self.model, (batch_idx * number_of_inner_steps) + inner_step_idx, orig_loss, train_batch['next'])
                             if should_stop:
                                 self.is_running = False
 
