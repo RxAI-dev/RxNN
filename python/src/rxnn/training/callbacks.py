@@ -469,23 +469,23 @@ class JointModelSaveCallback(TrainerCallback):
                 if isinstance(model, DistributedDataParallel):
                     model = next(model.children())
 
-            if 'decoder' in self.save_models:
-                batch_size = model.decoder.model.stm.batch_size
-                model.decoder.model.stm.single_memory()
-                self._save_validation(model.decoder, 'decoder', epoch, val_loss, hub_id=self.hub_model_decoder)
-                model.decoder.model.stm.batched_memory(batch_size)
+                if 'decoder' in self.save_models:
+                    batch_size = model.decoder.model.stm.batch_size
+                    model.decoder.model.stm.single_memory()
+                    self._save_validation(model.decoder, 'decoder', epoch, val_loss, hub_id=self.hub_model_decoder)
+                    model.decoder.model.stm.batched_memory(batch_size)
 
-            if 'encoder' in self.save_models:
-                self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
+                if 'encoder' in self.save_models:
+                    self._save_validation(model.encoder, 'encoder', epoch, val_loss, hub_id=self.hub_model_encoder)
 
-            if 'head' in self.save_models:
-                self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
+                if 'head' in self.save_models:
+                    self._save_validation(model.mlm_head, 'head', epoch, val_loss, hub_id=self.hub_model_head)
 
-            if 'mem_attn' in self.save_models:
-                batch_size = model.memory_attention.model.stm.batch_size
-                model.memory_attention.model.stm.single_memory()
-                self._save_validation(model.memory_attention, 'mem_attn', epoch, val_loss, hub_id=self.hub_model_mem_attn)
-                model.memory_attention.model.stm.batched_memory(batch_size)
+                if 'mem_attn' in self.save_models:
+                    batch_size = model.memory_attention.model.stm.batch_size
+                    model.memory_attention.model.stm.single_memory()
+                    self._save_validation(model.memory_attention, 'mem_attn', epoch, val_loss, hub_id=self.hub_model_mem_attn)
+                    model.memory_attention.model.stm.batched_memory(batch_size)
 
     def _save_final(self, model: Union[nn.Module, PyTorchModelHubMixin], component: str, hub_id: str = None):
         try:

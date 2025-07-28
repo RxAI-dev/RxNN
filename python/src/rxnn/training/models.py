@@ -81,35 +81,6 @@ class JointTrainingModel(nn.Module):
         return y_e, y_d
 
 
-class SupervisedMemoryAwareModel(nn.Module):
-    def __init__(
-            self,
-            encoder: RxTEncoder,
-            decoder: RxTDecoder,
-            memory_attention: RxTMemoryAttentionType,
-            *args,
-            **kwargs
-    ):
-        super(SupervisedMemoryAwareModel, self).__init__(*args, **kwargs)
-        self.encoder = encoder
-        self.decoder = decoder
-        self.memory_attention = memory_attention
-
-    def decoder_parameters(self) -> Iterator[torch.Tensor]:
-        return self.decoder.parameters()
-
-    def reset_memory(self, init_type: str = None):
-        self.memory_attention.reset_memory(init_type)
-
-    def forward(self, x_e: torch.Tensor, x_d: torch.Tensor, encoder_mask: torch.Tensor = None, decoder_mask: torch.Tensor = None) -> torch.Tensor:
-        with torch.no_grad():
-            _, encoded_layers = self.encoder(x_e, attention_mask=encoder_mask)
-            self.memory_attention(encoded_layers, attention_mask=encoder_mask)
-
-        logits = self.decoder(x_d, attention_mask=decoder_mask)
-        return logits
-
-
 class MemoryAttentionTrainingModel(nn.Module):
     def __init__(
             self,
@@ -141,6 +112,46 @@ class MemoryAttentionTrainingModel(nn.Module):
 
         new_stm = self.memory_attention(noisy_encoded_data, attention_mask=attention_mask)
         return new_stm, encoded_layers
+
+
+class SupervisedMemoryAwareModel(nn.Module):
+    def __init__(
+            self,
+            encoder: RxTEncoder,
+            decoder: RxTDecoder,
+            memory_attention: RxTMemoryAttentionType,
+            train_only_decoder: bool = False,
+            *args,
+            **kwargs
+    ):
+        super(SupervisedMemoryAwareModel, self).__init__(*args, **kwargs)
+        self.encoder = encoder
+        self.decoder = decoder
+        self.memory_attention = memory_attention
+        self.train_only_decoder = train_only_decoder
+
+    def trainable_parameters(self) -> Iterator[torch.Tensor]:
+        if self.train_only_decoder:
+            return self.decoder.parameters()
+        else:
+            params_set = set(
+                list(self.decoder.parameters()) + list(self.encoder.parameters()) + list(self.memory_attention.parameters())
+            )
+            return iter(params_set)
+
+    def clone_reset_memory(self):
+        self.memory_attention.clone_reset_memory()
+
+    def reset_memory(self, init_type: str = None):
+        self.memory_attention.reset_memory(init_type)
+
+    def forward(self, x_e: torch.Tensor, x_d: torch.Tensor, encoder_mask: torch.Tensor = None, decoder_mask: torch.Tensor = None) -> torch.Tensor:
+        with torch.set_grad_enabled(not self.train_only_decoder):
+            _, encoded_layers = self.encoder(x_e, attention_mask=encoder_mask)
+            self.memory_attention(encoded_layers, attention_mask=encoder_mask)
+
+        logits = self.decoder(x_d, attention_mask=decoder_mask)
+        return logits
 
 
 class MrlActorAction(Enum):

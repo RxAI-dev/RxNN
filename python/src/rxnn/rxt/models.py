@@ -171,9 +171,16 @@ class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
     def freeze_memory(self, with_norms: bool = True):
         self.model.trainable_cross_attention_(False, with_norms=with_norms)
 
-    def unfreeze_all(self):
+    def freeze_all(self):
+        for param in self.model.parameters():
+            param.requires_grad_(False)
+
+    def unfreeze_all(self, freeze_memory: bool = False, freeze_memory_norms: bool = True):
         for param in self.model.parameters():
             param.requires_grad_(True)
+
+        if freeze_memory:
+            self.freeze_memory(with_norms=freeze_memory_norms)
 
     def update_max_len(self, max_seq_len: int):
         for layer in self.model.layers:

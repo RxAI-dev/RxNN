@@ -9,6 +9,7 @@ from .ddp import distributed_value_mean, distributed_mean
 from .utils import TokenizedDict, smart_concat
 from .dataset import MrlCurriculumDataset
 
+
 class SupervisedMemoryAttentionTrainer(BaseTrainer):
     """
     Supervised Memory Aware Trainer - made to train decoder memory cross-attention to use correct accumulated memory
@@ -24,6 +25,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
             pad_token_id: int = 0,
             noise_levels: tuple[float, float] = (0.0, 0.0),
             label_weights_random_factor: float = None,
+            stm_diff_factor: float = None,
             dataset_collate_fn: Callable[[list[Any]], dict[str, Any]] = MrlCurriculumDataset.collate_mrl_batch,
             **kwargs
     ):
@@ -38,6 +40,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
         self.label_weights = label_weights
         self.noise_levels = noise_levels
         self.label_weights_random_factor = label_weights_random_factor
+        self.stm_diff_factor = stm_diff_factor
 
     def reset_stm(self):
         self.model.reset_memory()
@@ -71,9 +74,9 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
 
                     first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
 
-                    number_of_inner_steps = len(interactions)
+                    number_of_inner_steps = len(interactions) + 1
 
-                    for inner_step_idx in range(1 + number_of_inner_steps):
+                    for inner_step_idx in range(number_of_inner_steps):
                         self.total_inner_steps += 1
                         if inner_step_idx == 0:
                             next_query, next_answer = self._move_multiple_batches(first_query, first_answer)
@@ -85,7 +88,8 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                         self.model.clone_reset_memory()
                         accumulated_stm = self.model.get_memory_state()
 
-                        label_weights = self.label_weights(inner_step_idx) if callable(self.label_weights) else self.label_weights(inner_step_idx)
+                        label_weights = self.label_weights(inner_step_idx) if callable(self.label_weights) else \
+                            self.label_weights[inner_step_idx]
 
                         # Randomize label weights, when factor is set
                         if self.label_weights_random_factor is not None:
@@ -102,15 +106,16 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                                                    pad_token_id=self.pad_token_id),
                                     'acc_stm': accumulated_stm,
                                 }
-                                loss, cosine_sim = self.compute_loss(train_batch, weights=label_weights)
+                                loss, cosine_sim = self.compute_loss(train_batch, weights=label_weights,
+                                                                     inner_step_idx=inner_step_idx)
                         else:
                             train_batch = {
                                 **smart_concat(next_query, next_answer, max_length=self.max_seq_len,
                                                pad_token_id=self.pad_token_id),
                                 'acc_stm': accumulated_stm,
                             }
-                            loss, cosine_sim = self.compute_loss(train_batch, weights=label_weights)
-
+                            loss, cosine_sim = self.compute_loss(train_batch, weights=label_weights,
+                                                                 inner_step_idx=inner_step_idx)
 
                         orig_loss = loss.item()
                         self.accumulated_loss += orig_loss
@@ -159,10 +164,11 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                             )
 
                         for callback in self.callbacks:
-                            should_stop = callback.on_batch_end(self.model, (batch_idx * (number_of_inner_steps + 1)) + inner_step_idx, orig_loss, train_batch)
+                            should_stop = callback.on_batch_end(self.model, (
+                                    batch_idx * (number_of_inner_steps + 1)) + inner_step_idx, orig_loss,
+                                                                train_batch)
                             if should_stop:
                                 self.is_running = False
-
 
         if self.validation_dataset:
             self.validation_steps = 0
@@ -206,6 +212,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
             self,
             batch: dict[str, torch.Tensor],
             weights: tuple[float, float] = (0.5, 0.5),
+            inner_step_idx: int = 0,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         encoder_inputs = batch['input_ids']
         encoder_mask = batch['attention_mask']
@@ -220,7 +227,8 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
         )
 
         acc_weight, new_weight = weights
-        labels = (acc_weight * accumulated_stm + new_weight * new_stm_state) + label_noise * torch.randn_like(new_stm_state)
+        labels = (acc_weight * accumulated_stm + new_weight * new_stm_state) + label_noise * torch.randn_like(
+            new_stm_state)
 
         cosine_sim = F.cosine_similarity(
             new_stm_state,
@@ -229,6 +237,12 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
         )
 
         loss = -cosine_sim.mean()
+
+        if self.stm_diff_factor is not None:
+            updated_stm = self.model.get_memory_state()
+            step_diff = F.mse_loss(updated_stm, accumulated_stm, reduction='mean')
+            step_diff_factor = self.stm_diff_factor * torch.sqrt(torch.tensor(inner_step_idx + 1).to(self.device))
+            loss += step_diff_factor * step_diff
 
         return loss, cosine_sim.mean()
 
@@ -283,32 +297,41 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
 
     def validate(self, batch_size: int) -> tuple[float, dict]:
         self.model.eval()
-        val_loss = torch.tensor(0.0).to(self.device)
-        val_cosine = torch.tensor(0.0).to(self.device)
-        val_stm_diff = torch.tensor(0.0).to(self.device)
+        all_val_loss = torch.tensor(0.0).to(self.device)
+        all_val_cosine = torch.tensor(0.0).to(self.device)
+        all_val_stm_diff = torch.tensor(0.0).to(self.device)
 
         val_dataloader = self._valid_loader(batch_size)
 
         with torch.no_grad():
             for batch in val_dataloader:
                 if self.get_batch_size(batch) == batch_size:
+                    val_loss = torch.tensor(0.0).to(self.device)
+                    val_cosine = torch.tensor(0.0).to(self.device)
+                    val_stm_diff = torch.tensor(0.0).to(self.device)
+
                     self.reset_stm()
 
                     first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
 
-                    number_of_inner_steps = len(interactions)
+                    number_of_inner_steps = len(interactions) + 1
 
-                    for inner_step_idx in range(1 + number_of_inner_steps):
+                    for inner_step_idx in range(number_of_inner_steps):
                         self.valid_inner_steps += 1
                         if inner_step_idx == 0:
                             next_query, next_answer = self._move_multiple_batches(first_query, first_answer)
                         else:
-                            next_query, next_answer = self._move_multiple_batches(interactions[inner_step_idx]['query'], interactions[inner_step_idx]['answer'])
+                            next_query, next_answer = self._move_multiple_batches(
+                                interactions[inner_step_idx - 1]['query'], interactions[inner_step_idx - 1]['answer'])
 
                         self.model.clone_reset_memory()
                         accumulated_stm = self.model.get_memory_state()
 
-                        label_weights = self.label_weights(inner_step_idx) if callable(self.label_weights) else self.label_weights[inner_step_idx]
+                        label_weights = self.label_weights(inner_step_idx) if callable(self.label_weights) else \
+                            self.label_weights[inner_step_idx]
+
+                        train_noises = self.noise_levels
+                        self.noise_levels = (0.0, 0.0)
 
                         if self.use_amp:
                             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
@@ -317,14 +340,18 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                                                    pad_token_id=self.pad_token_id),
                                     'acc_stm': accumulated_stm,
                                 }
-                                loss, cosine_sim = self.compute_loss(valid_batch, weights=label_weights)
+                                loss, cosine_sim = self.compute_loss(valid_batch, weights=label_weights,
+                                                                     inner_step_idx=inner_step_idx)
                         else:
                             valid_batch = {
                                 **smart_concat(next_query, next_answer, max_length=self.max_seq_len,
                                                pad_token_id=self.pad_token_id),
                                 'acc_stm': accumulated_stm,
                             }
-                            loss, cosine_sim = self.compute_loss(valid_batch, weights=label_weights)
+                            loss, cosine_sim = self.compute_loss(valid_batch, weights=label_weights,
+                                                                 inner_step_idx=inner_step_idx)
+
+                        self.noise_levels = train_noises
 
                         val_loss += loss
                         val_cosine += cosine_sim
@@ -341,14 +368,14 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                                 'loss': loss.item()
                             }, inner_step=inner_step_idx)
 
-                    val_loss = val_loss / number_of_inner_steps
-                    val_cosine = val_cosine / number_of_inner_steps
-                    val_stm_diff = val_stm_diff / number_of_inner_steps
+                    all_val_loss += val_loss / number_of_inner_steps
+                    all_val_cosine += val_cosine / number_of_inner_steps
+                    all_val_stm_diff += val_stm_diff / number_of_inner_steps
 
         loader_len = len(val_dataloader)
-        avg_loss = val_loss / loader_len
-        avg_cosine = val_cosine / loader_len
-        avg_stm_diff = val_stm_diff / loader_len
+        avg_loss = all_val_loss / loader_len
+        avg_cosine = all_val_cosine / loader_len
+        avg_stm_diff = all_val_stm_diff / loader_len
 
         if self.use_ddp:
             avg_loss = distributed_mean(avg_loss)
@@ -362,7 +389,6 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
         }
         self.model.train()
         return avg_loss, metrics
-
 
 
 class SupervisedMemoryAwareTrainer(BaseTrainer):
@@ -380,6 +406,8 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
             moe_aux_loss_scale: float = 0.01,
             max_seq_len: int = 256,
             pad_token_id: int = 0,
+            train_only_decoder: bool = False,
+            unfreeze_epochs: tuple[int, int] = (0, 0),
             dataset_collate_fn: Callable[[list[Any]], dict[str, Any]] = MrlCurriculumDataset.collate_mrl_batch,
             **kwargs
     ):
@@ -394,6 +422,16 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
         self.valid_inner_steps = 0
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
+        self.train_only_decoder = train_only_decoder
+        self.unfreeze_epochs = unfreeze_epochs
+
+        if not self.train_only_decoder:
+            mem_attn_unfreeze_epoch, encoder_unfreeze_epoch = self.unfreeze_epochs
+            if mem_attn_unfreeze_epoch != 0:
+                self.model.memory_attention.freeze()
+
+            if encoder_unfreeze_epoch != 0:
+                self.model.encoder.freeze_all()
 
     def reset_stm(self):
         self.model.reset_memory()
@@ -409,6 +447,14 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
     ) -> None:
         for callback in self.callbacks:
             callback.on_epoch_start(self.model, epoch)
+
+        if not self.train_only_decoder:
+            mem_attn_unfreeze_epoch, encoder_unfreeze_epoch = self.unfreeze_epochs
+            if mem_attn_unfreeze_epoch == epoch:
+                self.model.memory_attention.unfreeze()
+
+            if encoder_unfreeze_epoch == epoch:
+                self.model.encoder.unfreeze_all(True, True) # TODO: Remove freeze memory after removing cross-attn from encoder
 
         self.accumulated_loss = 0.0
         self.optimizer_step_count = 0
@@ -433,7 +479,8 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
 
                     for inner_step_idx in range(number_of_inner_steps):
                         self.total_inner_steps += 1
-                        next_query, next_answer = self._move_multiple_batches(interactions[inner_step_idx]['query'], interactions[inner_step_idx]['answer'])
+                        next_query, next_answer = self._move_multiple_batches(interactions[inner_step_idx]['query'],
+                                                                              interactions[inner_step_idx]['answer'])
 
                         self.model.clone_reset_memory()
 
@@ -469,7 +516,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                             # Clip gradients after accumulation
                             if self.use_amp:
                                 scaler.unscale_(optimizer)
-                            torch.nn.utils.clip_grad_norm_(self.model.decoder_parameters(), max_norm=1.0,
+                            torch.nn.utils.clip_grad_norm_(self.model.trainable_parameters(), max_norm=1.0,
                                                            error_if_nonfinite=False)
                             if self.use_amp:
                                 scaler.step(optimizer)
@@ -504,10 +551,11 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                             )
 
                         for callback in self.callbacks:
-                            should_stop = callback.on_batch_end(self.model, (batch_idx * number_of_inner_steps) + inner_step_idx, orig_loss, train_batch['next'])
+                            should_stop = callback.on_batch_end(self.model,
+                                                                (batch_idx * number_of_inner_steps) + inner_step_idx,
+                                                                orig_loss, train_batch['next'])
                             if should_stop:
                                 self.is_running = False
-
 
         if self.validation_dataset:
             self.validation_steps = 0
@@ -638,7 +686,8 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
             self.writer.add_scalar('Decoder node accuracy/Valid step', val_metrics['node_accuracy'], step)
             self.writer.add_scalar('Decoder avg. accuracy/Valid', val_metrics['accuracy'], step)
 
-            self.writer.add_scalar(f'Decoder node accuracy/Valid step (step: {inner_step})', val_metrics['node_accuracy'], step)
+            self.writer.add_scalar(f'Decoder node accuracy/Valid step (step: {inner_step})',
+                                   val_metrics['node_accuracy'], step)
             self.writer.add_scalar(f'Decoder avg. accuracy/Valid (step: {inner_step})', val_metrics['accuracy'], step)
 
     def evaluate(self, batch_size: int, test_dataset: torch.utils.data.Dataset = None) -> tuple[float, dict]:
@@ -647,7 +696,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
 
     def validate(self, batch_size: int) -> tuple[float, dict]:
         self.model.eval()
-        val_loss = torch.tensor(0.0).to(self.device)
+        all_val_loss = torch.tensor(0.0).to(self.device)
         correct_alm = torch.tensor(0).to(self.device)
         total_alm = torch.tensor(0).to(self.device)
 
@@ -656,6 +705,8 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
         with torch.no_grad():
             for batch in val_dataloader:
                 if self.get_batch_size(batch) == batch_size:
+                    val_loss = torch.tensor(0.0).to(self.device)
+
                     self.reset_stm()
 
                     first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
@@ -666,7 +717,8 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
 
                     for inner_step_idx in range(number_of_inner_steps):
                         self.total_inner_steps += 1
-                        next_query, next_answer = self._move_multiple_batches(interactions[inner_step_idx]['query'], interactions[inner_step_idx]['answer'])
+                        next_query, next_answer = self._move_multiple_batches(interactions[inner_step_idx]['query'],
+                                                                              interactions[inner_step_idx]['answer'])
 
                         self.model.clone_reset_memory()
 
@@ -693,7 +745,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                         prev_query, prev_answer = self._move_multiple_batches(next_query, next_answer)
 
                         shifted_logits = decoder_logits[:, :-1].contiguous()
-                        shifted_targets = batch['decoder']['targets'][:, 1:].to(self.device).contiguous()
+                        shifted_targets = valid_batch['next']['input_ids'][:, 1:].to(self.device).contiguous()
                         valid_alm_indices = shifted_targets != -100
 
                         if valid_alm_indices.any():
@@ -719,10 +771,10 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                                 'loss': decoder_loss.item()
                             }, inner_step=inner_step_idx)
 
-                    val_loss = val_loss / number_of_inner_steps
+                    all_val_loss += val_loss / number_of_inner_steps
 
         loader_len = len(val_dataloader)
-        avg_loss = val_loss / loader_len
+        avg_loss = all_val_loss / loader_len
         alm_acc = (correct_alm / total_alm * 100) if total_alm > 0 else torch.tensor(0.0).to(self.device)
         node_alm_acc = alm_acc.item()
 
