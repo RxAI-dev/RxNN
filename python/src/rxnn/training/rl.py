@@ -185,6 +185,7 @@ class IMPOConfig(TypedDict):
     debug_interval: Optional[int]
     kl_coeff: Optional[float]
     stm_diff_coeff: Optional[float]
+    scale_stm_diff_with_cosine_sim: Optional[bool]
 
 
 class IMPOAlgorithm(RlAlgorithm):
@@ -219,6 +220,7 @@ class IMPOAlgorithm(RlAlgorithm):
         self.skip_gae = config.get('skip_gae', False)
         self.kl_coeff = config.get('kl_coeff', 0.001)
         self.stm_diff_coeff = config.get('stm_diff_coeff', 0.0001) # should be higher for non-sigmoid residual gates
+        self.scale_stm_diff_with_cosine_sim = config.get('scale_stm_diff_with_cosine_sim', False)
         self.debug_step = 0
         
         # Additional losses
@@ -309,6 +311,10 @@ class IMPOAlgorithm(RlAlgorithm):
 
         # 10. Calculate STM diff loss
         mem_diff_scale = torch.sqrt(torch.tensor(step + 1).to(new_stm_state.device)) * self.stm_diff_coeff
+        if self.scale_stm_diff_with_cosine_sim:
+            mem_sim = F.cosine_similarity(new_stm_state, prev_stm_state, dim=-1).mean()
+            mem_diff_scale *= mem_sim
+
         mem_diff_loss = self.stm_diff_loss_fn(new_stm_state, prev_stm_state)
         policy_loss += mem_diff_scale * mem_diff_loss
 

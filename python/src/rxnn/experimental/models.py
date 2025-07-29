@@ -84,10 +84,10 @@ class ExperimentalAttentionTransformer(nn.Module, PyTorchModelHubMixin, pipeline
 
         ff_activation = get_activation_layer(ff_activation)
 
-        if att_type in ['mha', 'gqa', 'mqa']:
+        if att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=True)
+                                              max_seq_len=seq_len, is_causal=True, num_query_groups=att_num_query_groups)
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,

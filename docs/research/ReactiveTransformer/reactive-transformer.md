@@ -21,14 +21,16 @@ it no longer requires memory, thanks to attention layers. Then, it looks like th
 agreed that it's no longer necessary.
 
 Instead, the research community focused on continually increasing context length, which only made sense up to a point. Due to
-the exponential growth of LLM inference costs (each message is the cost of that message and all previous ones), in a very
+the quadratic growth (`O(N²T)` for conversation, where `N` is the number of messages/interactions and `T` is the number of
+tokens in interaction) of LLM inference costs (each message is the cost of that message and all previous ones), in a very
 long conversation, each subsequent message, even the shortest, carries a disproportionately large cost. This makes context
 lengths of a million tokens or more completely pointless, because by the time you reach those million tokens in a conversation,
 you'll have lost your entire budget.
 
 Someone even believed that transformers would achieve awareness only by scaling it furthermore to even bigger sizes. No, they
 wouldn't, it's **impossible**. The key "feature" of awareness is that I rather know what I was doing or thinking 10 minutes
-ago, without a need to read my whole-day history.
+ago, without a need to read my whole-day history. Awareness is a continuous, stateful and real-time process, while LLMs are
+neither continuous, stateful nor real-time.
 
 Awareness requires keeping state between sequences/interactions instead, and processing only single messages in real-time,
 with access to previous interactions by memory. It's only the first step to awareness, but this step is crucial.
@@ -41,7 +43,7 @@ Our new **Reactive Neural Networks** and **Event-driven AI** paradigms are movin
 In this research, we are introducing **Reactive Transformer** architecture with **Attention-based Memory System for Short-Term
 Memory**, that's processing only single messages in real time and moving conversation history into separate memory layers,
 accessed and updated by specialized attention layers. **Reactive Language Models** based on this architecture have linear
-costs scaling and are `number_of_messages` times cheaper and faster than LLMs.
+costs scaling (`O(NT)`) and are `N` times cheaper and faster than LLMs (`N` is the number of messages/interactions).
 
 ## Reactive Neural Networks and Event-driven AI
 _Reactive neural networks (RxNN)_ are event-driven, memory-aware neural networks with stateful real-time processing and infinite
@@ -236,7 +238,7 @@ More about [Sparse Query Attention](../sparse_query_attention.md)
 Spatially sparse attention mechanisms, based on sliding local windows, especially _**Flex Attention**_, are becoming more
 popular, because of their ability to handle very long sequences with `O(N * log N)` complexity. They are excellent for very
 long contexts extending a million tokens, but as I mentioned in the introduction, the usefulness of such a long context is
-highly questionable due to the exponential growth of inference costs - and it's rather the opposite direction of research.
+highly questionable due to the quadratic growth of inference costs - and it's rather the opposite direction of research.
 
 In **Reactive Transformer** that lengths, like million or more tokens, for single messages, are rather against the real-time
 processing concepts (reading a book in real-time mode will be rather partial, and it's natural - people rather don't read whole
@@ -335,7 +337,7 @@ It's divided into six separate stages:
 1. Joint LM Pre-Training for encoder and decoder, on autoregressive language modeling and masked language modeling at once
 2. Joint Components Interaction Supervised Fine-Tuning (SFT)
 3. Memory Attention Self-Supervised Pre-Training
-4. Decoder's Memory-aware Supervised Fine-Tuning
+4. Supervised Memory-Aware Training
 5. Memory Reinforcement Learning (MRL) for Short-Term Memory
 6. Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
 
@@ -358,6 +360,16 @@ over LLMs or even Diffusion Language Models, that are also based on full convers
 Models**, only the first interaction could be a little more expensive than for the same size LLM, because of the encoder,
 memory attention and memory cross-attention overhead. Then, for next messages, it's about `N` times faster and cheaper, where
 `N` is the number of messages.
+
+The computational costs (and inference costs as well) growth, where `N` is the number of messages/interactions in conversation
+and `T` is the number of tokens for single interaction:
+- conversation cost:
+  - for LLMs it's quadratic growth - `O(N * T + (N - 1) * T + (N - 2) * T + ... + T)` simplified to `O(N²T)`
+  - for RxLMs it's linear growth - `O(T + T + T + ... + T)`, which is just `O(NT)`
+- each single interaction cost
+  - for LLMs it's the interaction and all previous ones cost - `O(NT)`
+  - for RxLMs it's just the number of tokens in current interaction - `O(T)`
+- it's proving that RxLMs are `N` times faster and cheaper than LLMs
 
 > Encoder and Memory Attention overhead is almost unnoticeable, because it's used once for each interaction, when decoder
 > is used once per generated token. So, decoder autoregressive processing is taking `N_tokens` times more time, than encoder

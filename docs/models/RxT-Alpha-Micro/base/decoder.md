@@ -54,7 +54,7 @@ Both encoder and decoder are using shared embedding layer
 
 ## Next Stage: Interaction Supervised Fine-Tuning
 The model is able to generate meaningful short stories, using grammatically correct sentences, and is ready for the fine-tuning to interaction (single query + answer)
-fine tuning in next stage.
+fine-tuning in next stage.
 
 ### Decoder architecture details:
 - dim: 128
@@ -73,6 +73,6 @@ fine tuning in next stage.
 - vocab: 7.5k (english only)
 - message length: 256
 - STM size: 256 * 6 layers
-- size: ~9M
+- size: ~9M (~3.5M Activated)
 - Library: RxNN
 - Docs: [draft/in progress](https://github.com/RxAI-dev/RxNN/blob/main/docs/research/ReactiveTransformer/reactive-transformer.md)

@@ -47,7 +47,7 @@ class RxTComponentConfig(TypedDict):
     init_identity_norm: bool
 
 
-class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
+class RxTComponentBase(nn.Module):
     """Base class for RxT-Alpha (Reactive Transformer) components (encoder and decoder)"""
 
     def __init__(
@@ -79,6 +79,7 @@ class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
             cross_att_query_groups: int = None,
             use_head_norm: bool = False,
             init_identity_norm: bool = False,
+            skip_memory_cross_attention: bool = False,
             **kwargs
     ):
         super(RxTComponentBase, self).__init__(**kwargs)
@@ -96,10 +97,11 @@ class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
 
         ff_activation = get_activation_layer(ff_activation)
 
-        if self_att_type in ['mha', 'gqa', 'mqa']:
+        if self_att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=is_causal)
+                                              max_seq_len=seq_len, is_causal=is_causal, num_query_groups=att_query_groups,
+                                              )
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, self_att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
@@ -108,36 +110,57 @@ class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
                                                            num_query_experts=att_query_experts,
                                                            num_query_groups=att_query_groups)
 
-        if cross_att_type in ['mha', 'gqa', 'mqa']:
-            cross_att_init = lambda: init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
-                                                    use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                                    max_seq_len=seq_len, is_causal=False, rope_only_for_query=True)
-        else:
-            cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type,
-                                                                 cross_att_groups or att_groups, rope=rope,
-                                                                 use_flash_attention=use_flash_attention,
-                                                                 dropout=att_dropout,
-                                                                 max_seq_len=seq_len, is_causal=False,
-                                                                 num_experts=att_experts,
-                                                                 num_query_experts=att_query_experts,
-                                                                 num_query_groups=cross_att_query_groups or att_query_groups,
-                                                                 rope_only_for_query=True)
 
-        layers = nn.ModuleList([
-            ReactiveTransformerLayer(
-                embed_dim,
-                ff_dim,
-                use_gated=use_gated,
-                use_moe=use_moe,
-                num_experts=num_experts,
-                moe_top_k=moe_top_k,
-                ff_activation=ff_activation,
-                ff_dropout=ff_dropout,
-                use_rms_norm=use_rms_norm,
-                self_attention=att_init(),
-                memory_cross_attention=cross_att_init(),
-            ) for _ in range(num_layers)
-        ])
+        if not skip_memory_cross_attention:
+            if cross_att_type in ['mha', 'gqa', 'mqa', 'sqa']:
+                cross_att_init = lambda: init_attention(embed_dim, att_heads, cross_att_type, att_groups, rope=rope,
+                                                        use_flash_attention=use_flash_attention, dropout=att_dropout,
+                                                        max_seq_len=seq_len, is_causal=False, rope_only_for_query=True,
+                                                        num_query_groups=cross_att_query_groups or att_query_groups)
+            else:
+                cross_att_init = lambda: init_experimental_attention(embed_dim, att_heads, cross_att_type,
+                                                                     cross_att_groups or att_groups, rope=rope,
+                                                                     use_flash_attention=use_flash_attention,
+                                                                     dropout=att_dropout,
+                                                                     max_seq_len=seq_len, is_causal=False,
+                                                                     num_experts=att_experts,
+                                                                     num_query_experts=att_query_experts,
+                                                                     num_query_groups=cross_att_query_groups or att_query_groups,
+                                                                     rope_only_for_query=True)
+
+            layers = nn.ModuleList([
+                ReactiveTransformerLayer(
+                    embed_dim,
+                    ff_dim,
+                    use_gated=use_gated,
+                    use_moe=use_moe,
+                    num_experts=num_experts,
+                    moe_top_k=moe_top_k,
+                    ff_activation=ff_activation,
+                    ff_dropout=ff_dropout,
+                    use_rms_norm=use_rms_norm,
+                    self_attention=att_init(),
+                    memory_cross_attention=cross_att_init(),
+                ) for _ in range(num_layers)
+            ])
+        else:
+            layers = nn.ModuleList([
+                ReactiveTransformerLayer(
+                    embed_dim,
+                    ff_dim,
+                    use_gated=use_gated,
+                    use_moe=use_moe,
+                    num_experts=num_experts,
+                    moe_top_k=moe_top_k,
+                    ff_activation=ff_activation,
+                    ff_dropout=ff_dropout,
+                    use_rms_norm=use_rms_norm,
+                    self_attention=att_init(),
+                    memory_cross_attention=None,
+                    skip_memory_cross_attention=skip_memory_cross_attention,
+                ) for _ in range(num_layers)
+            ])
+
         self.model = self._init_model(
             stm, layers, embedding, use_flash_attention, embed_dim, vocab_size, use_moe,
             use_head_norm=use_head_norm, init_identity_norm=init_identity_norm,
@@ -191,11 +214,11 @@ class RxTComponentBase(nn.Module, PyTorchModelHubMixin):
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTEncoder(RxTComponentBase, pipeline_tag="fill-mask", license="apache-2.0"):
+class RxTEncoderComponent(RxTComponentBase):
     """RxT-Alpha (Reactive Transformer) encoder model"""
 
     def __init__(self, **kwargs: RxTComponentConfig):
-        super(RxTEncoder, self).__init__(False, **kwargs)
+        super(RxTEncoderComponent, self).__init__(False, **kwargs)
 
     def _init_model(
             self,
@@ -221,11 +244,11 @@ class RxTEncoder(RxTComponentBase, pipeline_tag="fill-mask", license="apache-2.0
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTDecoder(RxTComponentBase, pipeline_tag="text-generation", license="apache-2.0"):
+class RxTDecoderComponent(RxTComponentBase):
     """RxT-Alpha (Reactive Transformer) decoder model"""
 
     def __init__(self, **kwargs):
-        super(RxTDecoder, self).__init__(True, **kwargs)
+        super(RxTDecoderComponent, self).__init__(True, **kwargs)
 
     def _init_model(
             self, stm: ShortTermMemory,
@@ -254,7 +277,7 @@ class RxTDecoder(RxTComponentBase, pipeline_tag="text-generation", license="apac
         return self.model(x, attention_mask=attention_mask, stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache)
 
 
-class RxTMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTSimpleMemoryAttentionComponent(nn.Module):
     """RxT-Alpha (Reactive Transformer) memory attention model"""
 
     def __init__(
@@ -286,7 +309,7 @@ class RxTMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTMemoryAttention, self).__init__(**kwargs)
+        super(RxTSimpleMemoryAttentionComponent, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -294,10 +317,11 @@ class RxTMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
 
-        if att_type in ['mha', 'gqa', 'mqa']:
+        if att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                               use_flash_attention=use_flash_attention, dropout=att_dropout,
-                                              max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True)
+                                              max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True,
+                                              num_query_groups=att_query_groups)
         else:
             att_init = lambda: init_experimental_attention(embed_dim, att_heads, att_type, att_groups, rope=rope,
                                                            use_flash_attention=use_flash_attention, dropout=att_dropout,
@@ -351,7 +375,7 @@ class RxTMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTInterlayerMemoryAttentionComponent(nn.Module):
     """RxT-Alpha (Reactive Transformer) memory attention model with interlayer STM attention"""
 
     def __init__(
@@ -388,7 +412,7 @@ class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apa
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTInterlayerMemoryAttention, self).__init__(**kwargs)
+        super(RxTInterlayerMemoryAttentionComponent, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -396,11 +420,12 @@ class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apa
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
 
-        if att_type in ['mha', 'gqa', 'mqa']:
+        if att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(
                 embed_dim, att_heads, att_type, att_groups, rope=rope,
                 use_flash_attention=use_flash_attention, dropout=att_dropout,
-                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True
+                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True,
+                num_query_groups=att_query_groups
             )
         else:
             att_init = lambda: init_experimental_attention(
@@ -426,10 +451,11 @@ class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apa
         ])
 
         # Interlayer attention
-        if interlayer_att_type in ['mha', 'gqa', 'mqa']:
+        if interlayer_att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             interlayer_att_init = lambda: init_attention(
                 embed_dim, att_heads, interlayer_att_type, interlayer_att_groups, rope=None,
-                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False
+                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False,
+                num_query_groups=interlayer_att_query_groups
             )
         else:
             interlayer_att_init = lambda: init_experimental_attention(
@@ -487,7 +513,7 @@ class RxTInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apa
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
-class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTSelfMemoryAttentionComponent(nn.Module):
     """RxT-Alpha (Reactive Transformer) memory attention model with STM layer self-attention"""
 
     def __init__(
@@ -525,7 +551,7 @@ class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTSelfMemoryAttention, self).__init__(**kwargs)
+        super(RxTSelfMemoryAttentionComponent, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -533,11 +559,12 @@ class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
 
-        if att_type in ['mha', 'gqa', 'mqa']:
+        if att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(
                 embed_dim, att_heads, att_type, att_groups, rope=rope,
                 use_flash_attention=use_flash_attention, dropout=att_dropout,
-                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True
+                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True,
+                num_query_groups=att_query_groups,
             )
         else:
             att_init = lambda: init_experimental_attention(
@@ -563,10 +590,11 @@ class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.
         ])
 
         # Self attention
-        if self_att_type in ['mha', 'gqa', 'mqa']:
+        if self_att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             self_att_init = lambda: init_attention(
                 embed_dim, att_heads, self_att_type, self_att_groups, rope=None,
-                use_flash_attention=use_flash_attention, dropout=self_att_dropout, is_causal=False
+                use_flash_attention=use_flash_attention, dropout=self_att_dropout,
+                is_causal=False, num_query_groups=self_att_query_groups
             )
         else:
             self_att_init = lambda: init_experimental_attention(
@@ -620,7 +648,7 @@ class RxTSelfMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.
         return self.model(x, attention_mask=attention_mask)
 
 
-class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0"):
+class RxTSelfInterlayerMemoryAttentionComponent(nn.Module):
     """RxT-Alpha (Reactive Transformer) memory attention model with interlayer STM attention"""
 
     def __init__(
@@ -657,7 +685,7 @@ class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license=
             debug_interval: int = 10,
             **kwargs,
     ):
-        super(RxTSelfInterlayerMemoryAttention, self).__init__(**kwargs)
+        super(RxTSelfInterlayerMemoryAttentionComponent, self).__init__(**kwargs)
 
         assert att_type in ['mha', 'gqa', 'mqa', 'gma', 'dma',
                             'sqa'], 'Memory attention type could be "mha", "gqa", "mqa", "gma", "dma", "sqa".'
@@ -665,11 +693,11 @@ class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license=
         rope = RotaryPositionalEmbedding(embed_dim // att_heads, seq_len)
         stm = ShortTermMemory(num_layers, embed_dim, stm_size)
 
-        if att_type in ['mha', 'gqa', 'mqa']:
+        if att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             att_init = lambda: init_attention(
                 embed_dim, att_heads, att_type, att_groups, rope=rope,
                 use_flash_attention=use_flash_attention, dropout=att_dropout,
-                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True
+                max_seq_len=seq_len, is_causal=False, rope_only_for_keys=True, num_query_groups=att_query_groups,
             )
         else:
             att_init = lambda: init_experimental_attention(
@@ -695,10 +723,10 @@ class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license=
         ])
 
         # Interlayer attention
-        if interlayer_att_type in ['mha', 'gqa', 'mqa']:
+        if interlayer_att_type in ['mha', 'gqa', 'mqa', 'sqa']:
             interlayer_att_init = lambda: init_attention(
                 embed_dim, att_heads, interlayer_att_type, interlayer_att_groups, rope=None,
-                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False
+                use_flash_attention=use_flash_attention, dropout=interlayer_att_dropout, is_causal=False, num_query_groups=interlayer_att_query_groups
             )
         else:
             interlayer_att_init = lambda: init_experimental_attention(
@@ -765,6 +793,32 @@ class RxTSelfInterlayerMemoryAttention(nn.Module, PyTorchModelHubMixin, license=
     def forward(self, x: torch.Tensor, attention_mask: torch.Tensor = None) -> torch.Tensor:
         return self.model(x, attention_mask=attention_mask)
 
+
+# Serializable component models
+class RxTDecoder(RxTDecoderComponent, PyTorchModelHubMixin, pipeline_tag="text-generation", license="apache-2.0"):
+    pass
+
+
+class RxTEncoder(RxTEncoderComponent, PyTorchModelHubMixin, pipeline_tag="fill-mask", license="apache-2.0"):
+    pass
+
+
+class RxTSimpleMemoryAttention(RxTSimpleMemoryAttentionComponent, PyTorchModelHubMixin, license="apache-2.0"):
+    pass
+
+
+class RxTInterlayerMemoryAttention(RxTInterlayerMemoryAttentionComponent, PyTorchModelHubMixin, license="apache-2.0"):
+    pass
+
+
+class RxTSelfMemoryAttention(RxTSelfMemoryAttentionComponent, PyTorchModelHubMixin, license="apache-2.0"):
+    pass
+
+
+class RxTSelfInterlayerMemoryAttention(RxTSelfInterlayerMemoryAttentionComponent, PyTorchModelHubMixin, license="apache-2.0"):
+    pass
+
+
 class RxTInterlayerMemoryAttentionConfig(TypedDict):
     num_layers: int
     embed_dim: int
@@ -827,9 +881,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.encoder_config = encoder_config
         self.memory_attention_config = memory_attention_config
 
-        self.decoder = RxTDecoder(**decoder_config)
-        self.encoder = RxTEncoder(**encoder_config)
-        self.memory_attention = RxTInterlayerMemoryAttention(**memory_attention_config)
+        self.decoder = RxTDecoderComponent(**decoder_config)
+        self.encoder = RxTEncoderComponent(**encoder_config)
+        self.memory_attention = RxTInterlayerMemoryAttentionComponent(**memory_attention_config)
 
         self.batch_size = 1
         self.bos_token_id = tokenizer_config['bos_token_id']
@@ -838,10 +892,14 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.answer_token_id = tokenizer_config['answer_token_id']
         self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'])
 
-        self.bos_token = self.tokenizer.convert_ids_to_tokens(self.bos_token_id)
-        self.query_token = self.tokenizer.convert_ids_to_tokens(self.query_token_id)
+        self.bos_token, self.query_token, self.answer_token, self.eos_token = self.tokenizer.convert_ids_to_tokens(
+            [self.bos_token_id, self.query_token_id, self.answer_token_id, self.eos_token_id]
+        )
 
-    def load_pretrained_weights(self, decoder: RxTDecoder, encoder: RxTEncoder, memory_attention: RxTInterlayerMemoryAttention):
+    def load_pretrained_weights(
+            self, decoder: RxTDecoderComponent, encoder: RxTEncoderComponent,
+            memory_attention: RxTInterlayerMemoryAttentionComponent
+    ):
         self.decoder.load_state_dict(decoder.state_dict())
         self.encoder.load_state_dict(encoder.state_dict())
         self.memory_attention.load_state_dict(memory_attention.state_dict())
@@ -868,9 +926,13 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
     def reset_self_attn_cache(self):
         return self.decoder.model.reset_self_attn_cache()
 
-    def init_stm_state(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None, add_noise: float = 0.0):
+    def init_stm_state(self, input_ids: torch.Tensor, attention_mask: torch.Tensor = None, add_noise: float = 0.0, force: bool = False):
         _, ed = self.encoder(input_ids, attention_mask=attention_mask)
-        self.memory_attention.model.stm.update_all(ed if add_noise == 0.0 else ed + torch.randn_like(ed) * add_noise)
+        new_stm = ed if add_noise == 0.0 else ed + torch.randn_like(ed) * add_noise
+        if force:
+            self.memory_attention.model.stm.update_all(new_stm)
+        else:
+            self.memory_attention(new_stm, attention_mask=attention_mask)
 
     def tokenize_query(self, text: str, max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
         tokenized = self.tokenizer(
@@ -904,10 +966,34 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             'attention_mask': tokenized['attention_mask'].to(device)
         }
 
-    def detokenize_token(self, token_id: int) -> str:
+    def tokenize_full_interaction(self, query: str, answer: str, max_seq_len: int = 256, device: torch.device = torch.device("cpu")):
+        tokenized = self.tokenizer(
+            f'{self.bos_token}{self.query_token}{query}{self.answer_token}{answer}{self.eos_token}',
+            max_length=max_seq_len,
+            truncation=True,
+            padding=False,
+            return_tensors='pt',
+            return_attention_mask=True,
+            add_special_tokens=False
+        )
+
+        return {
+            'input_ids': tokenized['input_ids'].to(device),
+            'attention_mask': tokenized['attention_mask'].to(device)
+        }
+
+    def stringify_token(self, token_id: int) -> str:
         return self.tokenizer.decode([token_id]).replace('Ċ', '\n').replace('Ġ', ' ')
 
-    def detokenize_batch(self, generated_ids: torch.Tensor) -> list[str]:
+    def stringify_tokens(self, generated_ids: torch.Tensor) -> list[str]:
+        decoded = []
+        for token_id in generated_ids:
+            # Trim after end token
+            decoded.append(self.tokenizer.decode([token_id]).replace('Ċ', '\n').replace('Ġ', ' '))
+
+        return decoded
+
+    def stringify_batch(self, generated_ids: torch.Tensor) -> list[str]:
         decoded = []
         for seq in generated_ids:
             # Trim after end token
@@ -1001,6 +1087,84 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             yield -1 # start memory update
             self.forward(input_ids, attention_mask=attention_mask, action=RxTAlphaForwardAction.UPDATE) # input_ids and attention_mask are already accumulated
             yield -2 # finished memory update
+
+    def batch_interact(
+            self,
+            input_ids: torch.Tensor,
+            attention_mask: torch.Tensor = None,
+            temperature: float = 1.0,
+            top_k: Optional[int] = None,
+            top_p: Optional[float] = None,
+            max_seq_len: int = 256,
+            use_self_attn_cache: bool = True,
+    ) -> Iterator[torch.Tensor]:
+        batch_size, _ = input_ids.shape
+        device = input_ids.device
+
+        assert self.batch_size == batch_size, 'Input batch size must be the same as model (STM) batch size'
+
+        initial_lens = attention_mask.sum(dim=1)
+        for i in range(batch_size):
+            input_ids[i, initial_lens[i]] = self.answer_token_id
+            attention_mask[i, initial_lens[i]] = 1
+
+        initial_lens += 1
+        current_lens = initial_lens.clone()
+        finished = torch.zeros(batch_size, dtype=torch.bool, device=device)
+        working_ids = input_ids.clone()
+        working_mask = attention_mask.clone()
+
+        with torch.no_grad():
+            stm_kv_cache = self.prepare_stm_kv_cache()
+
+            self.reset_self_attn_cache()
+
+            for step in range(max_seq_len):
+                active = (~finished) & (current_lens < max_seq_len)
+                if not active.any():
+                    break
+
+                max_len = current_lens.max().item()
+
+                # Slice input and mask up to the current max length among active sequences
+                inputs = working_ids[:, :max_len]
+                masks = working_mask[:, :max_len]
+
+                logits = self.forward(
+                    inputs, attention_mask=masks, action=RxTAlphaForwardAction.DECODE,
+                    stm_kv_cache=stm_kv_cache, use_self_attn_cache=use_self_attn_cache
+                )
+
+                # Get the last valid token index for each active sequence
+                indices = (current_lens - 1).to(device)
+                last_logits = logits[torch.arange(batch_size, device=device), indices]
+
+                # Sample next tokens and log probs
+                next_tokens, _ = sample_batch(
+                    last_logits, temperature=temperature, top_k=top_k, top_p=top_p
+                )
+
+                # Update working tensors
+                for idx in range(batch_size):
+                    if finished[idx] or current_lens[idx] >= max_seq_len:
+                        continue
+
+                    pos = current_lens[idx].item()
+                    token = next_tokens[idx]  # Use original batch index
+                    working_ids[idx, pos] = token
+                    working_mask[idx, pos] = 1 if token != 0 else 0
+                    current_lens[idx] += 1
+
+                    if token == self.eos_token_id:
+                        finished[idx] = True
+
+                yield working_ids[torch.arange(batch_size), current_lens - 1].squeeze(-1)
+
+            yield torch.full((batch_size,), -1, dtype=torch.long) # start memory update
+            # Update memory
+            self.forward(working_ids, attention_mask=working_mask, action=RxTAlphaForwardAction.UPDATE)
+            yield torch.full((batch_size,), -2, dtype=torch.long) # finished memory update
+
 
     def batch_interactions(
             self,

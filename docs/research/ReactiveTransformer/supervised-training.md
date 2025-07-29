@@ -26,7 +26,7 @@ Generally, **Reactive Transformer** training has six stages - four supervised st
 1. Joint LM Pre-Training for encoder and decoder, on autoregressive language modeling and masked language modeling at once
 2. Joint LM Interaction Supervised Fine-Tuning (SFT) for encoder and decoder
 3. Memory Attention Self-Supervised Pre-Training
-4. Decoder's Memory-aware Supervised Fine-Tuning
+4. Supervised Memory-Aware Training
 5. Memory Reinforcement Learning (MRL) for Short-Term Memory
 6. Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
 
@@ -39,9 +39,9 @@ Third stage is for memory attention and memory updates. It's connecting memory a
 as in language components and is training the model to combine different encoder's results.
 
 When we have pre-trained encoder, decoder and memory attention, in fourth stage we are going back to supervised fine-tuning.
-In this stage encoder and memory attention are frozen, and only the decoder is trained, but now it's cross-attention input
-is not from the same data as decoder's main input (as before) - it's combined state of the previous interactions. It of course
-require, that decoder's main input is some follow-up interaction, connected with previous ones stored in STM.
+In this stage encoder and memory attention could be trained with decoder or frozen (with gradual unfreezing), but now decoder's
+cross-attention input is not from the same data as decoder's main input (as before) - it's combined state of the previous
+interactions. It of course require, that decoder's main input is some follow-up interaction, connected with previous ones stored in STM.
 
 Both third and fourth stages are using **Memory Reinforcement Learning** curriculum datasets, based on series of interconnected
 interactions.
@@ -126,12 +126,17 @@ in MRL - randomly initialized memory attention completely breaks generated answe
 interaction as decoder's memory cross-attention input results in initial rewards in the middle of the scale (about ~4.5-5.5/10
 in **RxT-Alpha-Micro**), but with added memory attention it dropped almost to zero, so we have to connect vector spaces before.
 
+> In **RxNN framework** this stage is implemented in:
+> - `SupervisedMemoryAttentionTrainer` from `rxnn.training.smst`
+> - `MrlCurriculumDataset` from `rxnn.training.dataset`
+> - `MemoryAttentionTrainingModel` from `rxnn.training.models`
+
 #### MRL Curriculum Datasets
 MRL Datasets, originally designed for Memory Reinforcement Learning are based on series of `N` interconnected interactions,
 where each interaction includes some questions about previous interaction. `N` depending on the curriculum stage - starting
 from small number of steps, it's increased in each stage. It will be described with details in next article.
 
-### Memory-Aware Supervised Fine-Tuning
+### Supervised Memory-Aware Training
 In first stages, decoder and encoder are using the same input (masked for encoder), so initially memory cross-attention is not
 working correctly, using current interaction data instead of previous ones. In fourth stage, when we have pre-trained memory
 attention, we have to refine memory cross-attention layers to use accumulated memory states instead. So now, components will
@@ -139,8 +144,22 @@ have different inputs - processing previous interaction with encoder, then combi
 and finally decoder is processing next interaction - connected to previous ones.
 
 Again, it's made for cold start problem in MRL and generate better initial answers. After this training, memory system will
-be still "static", based on arbitrary combinations of data, but all the vector spaces are connected and model could be finally
-refined in reinforcement learning stages to provide full functionality
+be still "weak", but all the vector spaces are connected and model could be finally refined in reinforcement learning stages
+to provide full functionality
+
+Algorithm steps:
+1. Starting from random (normal) STM state, save first interaction from batch as previous interaction
+2. For `N` steps:
+   - get next interaction from batch
+   - process previous interaction with encoder and save results in STM with memory attention
+   - process next interaction with decoder to get logits
+   - calculate cross entropy loss, run backpropagation and optimization step
+   - save next interaction as previous one
+
+> In our **RxNN framework** this stage is implemented in:
+> - `SupervisedMemoryAwareTrainer` from `rxnn.training.smst`
+> - `MrlCurriculumDataset` from `rxnn.training.dataset`
+> - `SupervisedMemoryAwareModel` from `rxnn.training.models`
 
 ## Summary
 **Reactive Transformer** supervised training is a more complex process than training decoder-only LLM. The main challenge

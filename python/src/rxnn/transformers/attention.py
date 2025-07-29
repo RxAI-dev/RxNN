@@ -361,6 +361,103 @@ class MultiQueryAttention(MultiHeadAttention):
             return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=True)
 
 
+class SparseQueryAttention(MultiHeadAttention):
+    """Sparse Grouped Query attention layer, with RoPE support"""
+
+    def __init__(
+            self,
+            embed_dim: int,
+            num_heads: int,
+            num_groups: int,
+            num_query_groups: int,
+            dropout: float = 0.0,
+            rope: RotaryPositionalEmbedding = None,
+            rope_only_for_query: bool = False,
+            use_relative_embeddings: bool = False,
+            max_seq_len: int = 1024,
+            use_flash_attention: bool = False,
+            is_causal: bool = False,
+            use_bias: bool = False,
+            *args,
+            **kwargs,
+    ):
+        self.num_groups = num_groups
+        self.num_query_groups = num_query_groups
+        super(SparseQueryAttention, self).__init__(
+            embed_dim,
+            num_heads,
+            dropout=dropout,
+            rope=rope,
+            rope_only_for_query=rope_only_for_query,
+            use_relative_embeddings=use_relative_embeddings,
+            max_seq_len=max_seq_len,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+            *args,
+            **kwargs,
+        )
+        assert num_heads % num_groups == 0, "num_heads must be divisible by num_groups"
+
+    def _init_kv(self, embed_dim: int):
+        self.k_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
+        self.v_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_groups), bias=self.use_bias)
+
+    def _init_q(self, embed_dim: int):
+        self.q_proj = nn.Linear(embed_dim, embed_dim // (self.num_heads // self.num_query_groups), bias=self.use_bias)
+
+    def _init_out(self, embed_dim: int):
+        """Initialize output projection"""
+        self.out_proj = nn.Linear(embed_dim // (self.num_heads // self.num_query_groups), embed_dim)
+
+    def _transpose_output(self, attn_output: torch.Tensor, b: int, t: int, d: int):
+        """Transpose attention output back to (B, T, D) shape"""
+        return attn_output.transpose(1, 2).contiguous().view(b, t, d // (self.num_heads // self.num_query_groups))
+
+    def split_kv_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
+        return projected.view(b, -1, self.num_groups, d // self.num_heads).transpose(1, 2)
+
+    def _split_q_head(self, projected: torch.Tensor, b: int, t: int, d: int) -> torch.Tensor:
+        return projected.view(b, t, self.num_query_groups, d // self.num_heads).transpose(1, 2)
+
+    def _forward_qkv(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, b: int, t: int, d: int, stm_kv_cache: tuple[torch.Tensor, torch.Tensor] = None):
+        """Override query, key, and value projections for GQA case - split data into heads and groups"""
+        if not self.rel_embed:
+            q = self._split_q_head(self.q_proj(query), b, t, d)
+            k = self.split_kv_head(self.k_proj(key), b, t, d) if stm_kv_cache is None else stm_kv_cache[0]
+            v = self.split_kv_head(self.v_proj(value), b, t, d) if stm_kv_cache is None else stm_kv_cache[1]
+        else:
+            # Relative embedding version is not working without this strange mapping - it will be removed in next versions
+            group_heads = self.num_heads // self.num_groups
+            query_heads = self.num_heads // self.num_query_groups
+            head_dim = d // self.num_heads
+            # Process Q
+            q = self._split_q_head(self.q_proj(query), b, t, d)  # (B, Q_G, T, head_dim)
+
+            # Process K and V
+            k = self.split_kv_head(self.k_proj(key), b, t, d) if stm_kv_cache is None else stm_kv_cache[0]  # (B, G, S, head_dim)
+            v = self.split_kv_head(self.v_proj(value), b, t, d) if stm_kv_cache is None else stm_kv_cache[1]  # (B, G, S, head_dim)
+
+            # Expand and flatten to 4D tensors
+            q = q.unsqueeze(2).expand(-1, -1, query_heads, -1, -1)  # (B, Q_G, query_heads, T, head_dim)
+            k = k.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
+            v = v.unsqueeze(2).expand(-1, -1, group_heads, -1, -1)  # (B, G, group_heads, S, head_dim)
+
+            q = q.flatten(start_dim=1, end_dim=2)  # (B, Q, T, head_dim)
+            k = k.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
+            v = v.flatten(start_dim=1, end_dim=2)  # (B, H, S, head_dim)
+        return q, k, v
+
+    def _calculate_attention(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, b: int, t: int, d: int, mask: torch.Tensor = None):
+        is_gqa = self.num_query_groups != self.num_groups
+        if self.use_flash_attention:
+            # Compute attention with FlashAttention
+            return self._flash_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=is_gqa)
+        else:
+            # Compute attention using optimized PyTorch implementation
+            return self._torch_attention(q.contiguous(), k.contiguous(), v.contiguous(), b, t, d, mask=mask, enable_gqa=is_gqa)
+
+
 def init_attention(
         embed_dim: int,
         num_heads: int,
@@ -375,11 +472,27 @@ def init_attention(
         use_flash_attention: bool = False,
         is_causal: bool = False,
         use_bias: bool = False,
+        num_query_groups: int = 1,
 ) -> MultiHeadAttention:
-    assert attention_type == 'mha' or attention_type == 'gqa' or attention_type == 'mqa', \
-        "Error, attention type should be one of: 'mha', 'gqa', 'mqa'"
+    assert attention_type in ['mha', 'gqa', 'mqa', 'sqa'], "Error, attention type should be one of: 'mha', 'gqa', 'mqa' or 'sqa'"
 
-    if attention_type == "gqa":
+    if attention_type == 'sqa':
+        return SparseQueryAttention(
+            embed_dim,
+            num_heads,
+            gqa_groups,
+            num_query_groups,
+            dropout=dropout,
+            rope=rope,
+            use_relative_embeddings=use_relative_embeddings,
+            max_seq_len=max_seq_len,
+            rope_only_for_query=rope_only_for_query,
+            rope_only_for_keys=rope_only_for_keys,
+            use_flash_attention=use_flash_attention,
+            is_causal=is_causal,
+            use_bias=use_bias,
+        )
+    elif attention_type == "gqa":
         return GroupedQueryAttention(
             embed_dim,
             num_heads,
