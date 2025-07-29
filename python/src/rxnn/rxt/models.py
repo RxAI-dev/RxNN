@@ -820,7 +820,6 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             encoder_config: RxTComponentConfig,
             memory_attention_config: RxTInterlayerMemoryAttentionConfig,
             tokenizer_config: RxTAlphaTokenizerConfig,
-            pretrained_config: RxTAlphaPretrainedConfig = None,
             **kwargs,
     ):
         super(RxTAlpha, self).__init__(**kwargs)
@@ -828,14 +827,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.encoder_config = encoder_config
         self.memory_attention_config = memory_attention_config
 
-        if pretrained_config is not None:
-            self.decoder = pretrained_config['decoder']
-            self.encoder = pretrained_config['encoder']
-            self.memory_attention = pretrained_config['memory_attention']
-        else:
-            self.decoder = RxTDecoder(**decoder_config)
-            self.encoder = RxTEncoder(**encoder_config)
-            self.memory_attention = RxTInterlayerMemoryAttention(**memory_attention_config)
+        self.decoder = RxTDecoder(**decoder_config)
+        self.encoder = RxTEncoder(**encoder_config)
+        self.memory_attention = RxTInterlayerMemoryAttention(**memory_attention_config)
 
         self.batch_size = 1
         self.bos_token_id = tokenizer_config['bos_token_id']
@@ -846,6 +840,11 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
 
         self.bos_token = self.tokenizer.convert_ids_to_tokens(self.bos_token_id)
         self.query_token = self.tokenizer.convert_ids_to_tokens(self.query_token_id)
+
+    def load_pretrained_weights(self, decoder: RxTDecoder, encoder: RxTEncoder, memory_attention: RxTInterlayerMemoryAttention):
+        self.decoder.load_state_dict(decoder.state_dict())
+        self.encoder.load_state_dict(encoder.state_dict())
+        self.memory_attention.load_state_dict(memory_attention.state_dict())
 
     def share_components(self):
         # 1. Load shared embeddings from encoder to decoder

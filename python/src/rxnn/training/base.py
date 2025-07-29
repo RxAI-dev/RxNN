@@ -7,7 +7,7 @@ from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from typing import Callable, Any
-from .callbacks import TrainerCallback
+from .callbacks import TrainerCallback, ModelSaveCallback, JointModelSaveCallback
 from .ddp import get_os_ddp_config, distributed_value_mean
 
 
@@ -325,7 +325,12 @@ class BaseTrainer(ABC):
         if self.use_ddp:
             val_loss = distributed_value_mean(val_loss, device=self.device)
 
-        for callback in self.callbacks:
+        # Filter model save callbacks to not duplicate models
+        for callback in [
+            cb for cb in self.callbacks if not (
+                isinstance(cb, JointModelSaveCallback) or isinstance(cb, ModelSaveCallback)
+            )
+        ]:
             callback.on_validation_end(self.model, -1, val_loss, val_metrics)
 
         self.validation_dataset = valid_dataset

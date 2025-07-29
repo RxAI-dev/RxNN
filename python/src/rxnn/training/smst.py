@@ -148,7 +148,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                                 loss_item = self.accumulated_loss / self.gradient_accumulation_steps
                                 self._train_writer(
                                     loss_item, cosine_sim.item(),
-                                    epoch_step=(batch_idx * (number_of_inner_steps + 1)) + inner_step_idx,
+                                    epoch_step=(batch_idx * number_of_inner_steps) + inner_step_idx,
                                     inner_step=inner_step_idx,
                                 )
 
@@ -164,9 +164,10 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                             )
 
                         for callback in self.callbacks:
-                            should_stop = callback.on_batch_end(self.model, (
-                                    batch_idx * (number_of_inner_steps + 1)) + inner_step_idx, orig_loss,
-                                                                train_batch)
+                            should_stop = callback.on_batch_end(
+                                self.model, (batch_idx * number_of_inner_steps) + inner_step_idx,
+                                orig_loss, train_batch
+                            )
                             if should_stop:
                                 self.is_running = False
 
@@ -281,7 +282,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
         if val_metrics['cosine_sim']:
             self.writer.add_scalar('Cosine sim/Valid', val_metrics['cosine_sim'], epoch)
         if val_metrics['rmse_diff']:
-            self.writer.add_scalar('Cosine sim/Valid', val_metrics['rmse_diff'], epoch)
+            self.writer.add_scalar('RMSE STM Diff/Valid', val_metrics['rmse_diff'], epoch)
 
     def _valid_step_writer(self, step: int, val_loss: float, val_metrics: dict, inner_step: int):
         self.writer.add_scalar('Loss/Valid step', val_loss, step)
@@ -290,8 +291,8 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
             self.writer.add_scalar('Cosine sim/Valid step', val_metrics['cosine_sim'], step)
             self.writer.add_scalar(f'Cosine sim/Valid step (step: {inner_step})', val_metrics['cosine_sim'], step)
         if val_metrics['rmse_diff']:
-            self.writer.add_scalar('Cosine sim/Valid step', val_metrics['rmse_diff'], step)
-            self.writer.add_scalar(f'Cosine sim/Valid step (step: {inner_step})', val_metrics['rmse_diff'], step)
+            self.writer.add_scalar('RMSE STM Diff/Valid step', val_metrics['rmse_diff'], step)
+            self.writer.add_scalar(f'RMSE STM Diff/Valid step (step: {inner_step})', val_metrics['rmse_diff'], step)
 
     def evaluate(self, batch_size: int, test_dataset: torch.utils.data.Dataset = None) -> tuple[float, dict]:
         self.valid_inner_steps = 0
