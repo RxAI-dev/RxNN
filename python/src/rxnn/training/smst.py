@@ -306,9 +306,12 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
 
         val_dataloader = self._valid_loader(batch_size)
 
+        processed = 0
+
         with torch.no_grad():
             for batch in val_dataloader:
                 if self.get_batch_size(batch) == batch_size:
+                    processed += 1
                     val_loss = torch.tensor(0.0).to(self.device)
                     val_cosine = torch.tensor(0.0).to(self.device)
                     val_stm_diff = torch.tensor(0.0).to(self.device)
@@ -365,7 +368,7 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                         val_stm_diff += step_diff
 
                         if self.writer is not None:
-                            self._valid_step_writer(self.valid_inner_steps, val_loss, {
+                            self._valid_step_writer(self.valid_inner_steps, loss.item(), {
                                 'cosine_sim': cosine_sim.item(),
                                 'rmse_diff': step_diff.item(),
                                 'loss': loss.item()
@@ -375,10 +378,9 @@ class SupervisedMemoryAttentionTrainer(BaseTrainer):
                     all_val_cosine += val_cosine / number_of_inner_steps
                     all_val_stm_diff += val_stm_diff / number_of_inner_steps
 
-        loader_len = len(val_dataloader)
-        avg_loss = all_val_loss / loader_len
-        avg_cosine = all_val_cosine / loader_len
-        avg_stm_diff = all_val_stm_diff / loader_len
+        avg_loss = all_val_loss / processed
+        avg_cosine = all_val_cosine / processed
+        avg_stm_diff = all_val_stm_diff / processed
 
         if self.use_ddp:
             avg_loss = distributed_mean(avg_loss)
@@ -707,9 +709,12 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
 
         val_dataloader = self._valid_loader(batch_size)
 
+        processed = 0
+
         with torch.no_grad():
             for batch in val_dataloader:
                 if self.get_batch_size(batch) == batch_size:
+                    processed += 1
                     val_loss = torch.tensor(0.0).to(self.device)
 
                     self.reset_stm()
@@ -770,7 +775,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
                             avg_step_acc = step_acc
 
                         if self.writer is not None:
-                            self._valid_step_writer(self.valid_inner_steps, val_loss, {
+                            self._valid_step_writer(self.valid_inner_steps, decoder_loss.item(), {
                                 'accuracy': avg_step_acc,
                                 'node_accuracy': step_acc,
                                 'loss': decoder_loss.item()
@@ -778,8 +783,7 @@ class SupervisedMemoryAwareTrainer(BaseTrainer):
 
                     all_val_loss += val_loss / number_of_inner_steps
 
-        loader_len = len(val_dataloader)
-        avg_loss = all_val_loss / loader_len
+        avg_loss = all_val_loss / processed
         alm_acc = (correct_alm / total_alm * 100) if total_alm > 0 else torch.tensor(0.0).to(self.device)
         node_alm_acc = alm_acc.item()
 
