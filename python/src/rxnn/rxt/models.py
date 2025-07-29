@@ -3,6 +3,8 @@ from torch import nn
 from typing import TypedDict, Union, Optional, Iterator
 from enum import Enum
 from huggingface_hub import PyTorchModelHubMixin
+from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
+
 from ..transformers.positional import RotaryPositionalEmbedding
 from ..transformers.attention import init_attention
 from ..transformers.layers import ReactiveTransformerLayer
@@ -861,7 +863,6 @@ class RxTAlphaTokenizerConfig(TypedDict):
     eos_token_id: int
     answer_token_id: int
     query_token_id: int
-    tokenizer_hub_id: str
 
 class RxTAlphaForwardAction(Enum):
     DECODE = 1
@@ -874,6 +875,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             encoder_config: RxTComponentConfig,
             memory_attention_config: RxTInterlayerMemoryAttentionConfig,
             tokenizer_config: RxTAlphaTokenizerConfig,
+            tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast] = None,
             **kwargs,
     ):
         super(RxTAlpha, self).__init__(**kwargs)
@@ -890,8 +892,17 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
         self.eos_token_id = tokenizer_config['eos_token_id']
         self.query_token_id = tokenizer_config['query_token_id']
         self.answer_token_id = tokenizer_config['answer_token_id']
-        self.tokenizer = load_tokenizer_from_hf_hub(tokenizer_config['tokenizer_hub_id'])
+        self.tokenizer = tokenizer
 
+        if self.tokenizer is not None:
+            self.bos_token, self.query_token, self.answer_token, self.eos_token = self.tokenizer.convert_ids_to_tokens(
+                [self.bos_token_id, self.query_token_id, self.answer_token_id, self.eos_token_id]
+            )
+        else:
+            self.bos_token, self.query_token, self.answer_token, self.eos_token = None, None, None, None
+
+    def set_tokenizer(self, tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast]):
+        self.tokenizer = tokenizer
         self.bos_token, self.query_token, self.answer_token, self.eos_token = self.tokenizer.convert_ids_to_tokens(
             [self.bos_token_id, self.query_token_id, self.answer_token_id, self.eos_token_id]
         )
@@ -900,9 +911,9 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             self, decoder: RxTDecoderComponent, encoder: RxTEncoderComponent,
             memory_attention: RxTInterlayerMemoryAttentionComponent
     ):
-        self.decoder.load_state_dict(decoder.state_dict())
-        self.encoder.load_state_dict(encoder.state_dict())
-        self.memory_attention.load_state_dict(memory_attention.state_dict())
+        self.decoder.load_state_dict(decoder.state_dict(), assign=True)
+        self.encoder.load_state_dict(encoder.state_dict(), assign=True)
+        self.memory_attention.load_state_dict(memory_attention.state_dict(), assign=True)
 
     def share_components(self):
         # 1. Load shared embeddings from encoder to decoder
