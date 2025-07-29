@@ -320,7 +320,7 @@ class YourMemoryAttention(nn.Module, PyTorchModelHubMixin, license="apache-2.0")
 > **Gated residual** is currently in tests - we are not sure if it will provide better results, so **it's not recommended**
 
 ##### RxT-Alpha Memory Attention
-`RxTMemoryAttention` is ready to use Memory Attention network for **Reactive Transformer** Proof-of-Concept, that
+`RxTSimpleMemoryAttention` is ready to use Memory Attention network for **Reactive Transformer** Proof-of-Concept, that
 could be used instead of creating custom class. Example is in [Memory Reinforcement Learning docs](#memory-reinforcement-learning)
 
 ### Training

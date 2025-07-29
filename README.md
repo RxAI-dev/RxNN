@@ -670,7 +670,7 @@ embed_dim = 128
 decoder = RxTDecoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Decoder-SFT', token='HF_TOKEN')
 encoder = RxTEncoder.from_pretrained('ReactiveAI/RxT-Alpha-Micro-Plus-Encoder-SFT', token='HF_TOKEN')
 # 3. Init Memory Attention Network
-mem_attn = RxTMemoryAttention(
+mem_attn = RxTSimpleMemoryAttention(
     num_layers=10,
     embed_dim=embed_dim,
     att_heads=8,

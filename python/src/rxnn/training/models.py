@@ -5,12 +5,12 @@ from typing import Literal, Iterator, Optional, TypeAlias, Union
 from huggingface_hub import PyTorchModelHubMixin
 from ..transformers.ff import GatedLinearUnit, get_activation_layer
 from ..rxt.models import (
-    RxTDecoder, RxTEncoder, RxTMemoryAttention,
+    RxTDecoder, RxTEncoder, RxTSimpleMemoryAttention,
     RxTSelfMemoryAttention, RxTInterlayerMemoryAttention, RxTSelfInterlayerMemoryAttention
 )
 
 RxTMemoryAttentionType: TypeAlias = Union[
-    RxTMemoryAttention, RxTSelfMemoryAttention,
+    RxTSimpleMemoryAttention, RxTSelfMemoryAttention,
     RxTInterlayerMemoryAttention, RxTSelfInterlayerMemoryAttention
 ]
 
