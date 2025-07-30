@@ -185,7 +185,8 @@ class IMPOConfig(TypedDict):
     debug_interval: Optional[int]
     kl_coeff: Optional[float]
     stm_diff_coeff: Optional[float]
-    scale_stm_diff_with_cosine_sim: Optional[bool]
+    use_stm_cosine_sim: Optional[bool]
+    cosine_sim_coeff: Optional[float]
 
 
 class IMPOAlgorithm(RlAlgorithm):
@@ -220,7 +221,8 @@ class IMPOAlgorithm(RlAlgorithm):
         self.skip_gae = config.get('skip_gae', False)
         self.kl_coeff = config.get('kl_coeff', 0.001)
         self.stm_diff_coeff = config.get('stm_diff_coeff', 0.0001) # should be higher for non-sigmoid residual gates
-        self.scale_stm_diff_with_cosine_sim = config.get('scale_stm_diff_with_cosine_sim', False)
+        self.use_stm_cosine_sim = config.get('use_stm_cosine_sim', False)
+        self.cosine_sim_coeff = config.get('cosine_sim_coeff', 0.01)
         self.debug_step = 0
         
         # Additional losses
@@ -311,14 +313,16 @@ class IMPOAlgorithm(RlAlgorithm):
 
         # 10. Calculate STM diff loss
         mem_diff_scale = torch.sqrt(torch.tensor(step + 1).to(new_stm_state.device)) * self.stm_diff_coeff
-        if self.scale_stm_diff_with_cosine_sim:
+        if self.use_stm_cosine_sim:
             mem_sim = F.cosine_similarity(new_stm_state, prev_stm_state, dim=-1).mean()
-            mem_diff_scale *= mem_sim
+            policy_loss -= mem_sim
+        else:
+            mem_sim = torch.tensor(0.0)
 
         mem_diff_loss = self.stm_diff_loss_fn(new_stm_state, prev_stm_state)
         policy_loss += mem_diff_scale * mem_diff_loss
 
-        return policy_loss, new_log_probs.clone().detach(), { 'stm_diff_loss': mem_diff_loss, 'policy_consistency_loss': kl_loss }
+        return policy_loss, new_log_probs.clone().detach(), { 'stm_diff_loss': mem_diff_loss, 'policy_consistency_loss': kl_loss, 'stm_cosine_sim_loss': mem_sim }
 
     def policy_consistency_loss(self, prev_step_log_probs: torch.Tensor, this_step_probs: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         # 1. Apply mask to both distributions

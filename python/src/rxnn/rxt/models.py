@@ -17,7 +17,6 @@ from ..memory.attention import StmMemoryAttention, InterlayerStmMemoryAttention,
 from ..memory.gate import ResidualGate, ResidualGateType, SlotStatusType
 from ..utils import get_model_size
 from ..experimental.attention import init_experimental_attention
-from ..training.tokenizer import load_tokenizer_from_hf_hub
 
 
 class RxTComponentConfig(TypedDict):
