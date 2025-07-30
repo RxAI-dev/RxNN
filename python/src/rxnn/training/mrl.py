@@ -1,5 +1,5 @@
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
@@ -45,6 +45,7 @@ class MrlConfig(TypedDict):
     clamp_logits: Optional[float]
     max_grad_norm: Optional[float]
     use_self_attn_cache: Optional[bool]
+    log_probs_source: Optional[Literal['collect', 'update']]
 
 
 class MrlStrategy(Enum):
@@ -156,6 +157,7 @@ class MRLTrainer:
         self.debug_interval = config.get('debug_interval', 10)
         self.clamp_logits = config.get('clamp_logits', None)
         self.max_grad_norm = config.get('max_grad_norm', 1.0)
+        self.log_probs_source = config.get('log_probs_source', 'collect')
 
         self.base_memory_warmup_config = {
             'use_memory_warmup': config.get('use_memory_warmup', False),
@@ -885,11 +887,104 @@ class MRLTrainer:
             return self.critic(inputs['input_ids'],
                                attention_mask=inputs['attention_mask']).squeeze()
 
+    def get_pre_update_log_probs(self, trajectories: list[MrlTrajectoryEpisode]) -> list[MrlTrajectoryEpisode]:
+        new_trajectories = []
+        for episode_idx, episode in enumerate(trajectories):
+            episode_steps = episode['steps']
+            should_reset_stm = episode['reset_stm']
+
+            # 2. Get advantages and reference values for current full episode (batch_size * episode_steps)
+            num_steps = len(episode_steps)
+
+            # 3. Reset memory for current batch episode
+            if should_reset_stm:
+                self.reset_stm(force=True)
+
+            new_episode_steps = []
+
+            # 4. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
+            for step_idx, step in enumerate(episode_steps):
+                # self._increment_steps('train')
+                # 5. Get and move to device collected states, action and log probs
+                state, action = step['state'], step['action']
+                query, answer, next_query = self._move_multiple_batches(*state)
+                action = self._move_batch(action)
+
+                self.actor.clone_reset_memory()
+
+                if should_reset_stm and step_idx == 0:
+                    self.memory_warmup(query, answer)
+
+                self.encode_and_update_stm(query, answer)
+
+                if self.use_amp:
+                    with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                        # 6.1 Concatenate next query and action and get action logits from decoder
+                        inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
+                                              pad_token_id=self.pad_token_id)
+                        logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                                            action=MrlActorAction.DECODE)
+                        if self.clamp_logits is not None:
+                            logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
+                        log_probs = self._get_answer_log_probs(next_query, action, logits)
+                else:
+                    # 6.1 Concatenate next query and action and get action logits from decoder
+                    inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
+                                          pad_token_id=self.pad_token_id)
+                    logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                                        action=MrlActorAction.DECODE)
+                    if self.clamp_logits is not None:
+                        logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
+                    log_probs = self._get_answer_log_probs(next_query, action, logits)
+
+                new_episode_steps.append({
+                    **step,
+                    'log_probs': log_probs.detach().cpu(),
+                })
+            new_trajectories.append({
+                **episode,
+                'steps': new_episode_steps,
+            })
+
+        return new_trajectories
+
+    def _get_answer_log_probs(self, next_query: TokenizedDict, action: TokenizedDict, logits: torch.Tensor) -> torch.Tensor:
+        query_lens = next_query['attention_mask'].sum(dim=1).long()  # Query lengths per sample
+        answer_mask = action['attention_mask']
+        answer_lens = answer_mask.sum(dim=1).long()  # Answer lengths per sample (before padding)
+        max_length = next_query['input_ids'].size(1)
+
+        combined_lens = torch.minimum(
+            query_lens + answer_lens,
+            torch.full_like(query_lens, max_length)
+        )
+        # 2. Extract only answer logits
+        batch_size, _, vocab_size = logits.size()
+        new_logits = torch.zeros((batch_size, max_length, vocab_size), dtype=logits.dtype, device=logits.device)
+
+        for i in range(batch_size):
+            start = query_lens[i].item()
+            end = combined_lens[i].item()
+            valid_len = end - start
+            if valid_len > 0:
+                new_logits[i, :valid_len] = logits[i, start:end]
+
+        # 4. Calculate and mask new shifted log probs
+        new_log_probs = F.log_softmax(new_logits, dim=-1)
+        log_probs = new_log_probs.gather(-1, action['input_ids'].unsqueeze(-1)).squeeze(-1)
+        log_probs *= answer_mask
+
+        return log_probs
+
     def train_epoch(self, dataloader: DataLoader, epoch: int, batch_size: int):
         """Train for one epoch."""
         # 1. Collect trajectories for current epoch
         self.actor.eval()
         trajectories = self.collect_trajectories(dataloader, epoch, batch_size)
+
+        if self.log_probs_source == 'update':
+            trajectories = self.get_pre_update_log_probs(trajectories)
+
         self.actor.train()
 
         # 2. Flatten trajectories, call critic and collect values, dones and rewards, and calculate advantages

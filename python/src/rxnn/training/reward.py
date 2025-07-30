@@ -224,11 +224,11 @@ class MrlRewardModel:
                      include_running_mean: bool = False, negative_running_mean: bool = False) -> torch.Tensor:
         if self.use_running_mean and negative_running_mean:
             gen_and_saved, gen_and_ref, gen_and_mean = self._cosine_sim_running_mean(generated, reference, saved_data)
-            return self.multi_cos_saved_factor * gen_and_saved + self.multi_cos_ref_factor * gen_and_ref + self.multi_cos_saved_factor * (
+            return self.multi_cos_saved_factor * gen_and_saved + self.multi_cos_ref_factor * gen_and_ref + self.multi_cos_running_mean_factor * (
                     1 - gen_and_mean)
         elif self.use_running_mean and include_running_mean:
             gen_and_saved, gen_and_ref, gen_and_mean = self._cosine_sim_running_mean(generated, reference, saved_data)
-            return self.multi_cos_saved_factor * gen_and_saved + self.multi_cos_ref_factor * gen_and_ref + self.multi_cos_saved_factor * gen_and_mean
+            return self.multi_cos_saved_factor * gen_and_saved + self.multi_cos_ref_factor * gen_and_ref + self.multi_cos_running_mean_factor * gen_and_mean
         else:
             gen_and_saved, gen_and_ref = self._cosine_sim(generated, reference, saved_data)
             return self.cos_saved_factor * gen_and_saved + self.cos_ref_factor * gen_and_ref

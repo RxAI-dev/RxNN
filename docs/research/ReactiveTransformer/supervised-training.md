@@ -145,7 +145,11 @@ and finally decoder is processing next interaction - connected to previous ones.
 
 Again, it's made for cold start problem in MRL and generate better initial answers. After this training, memory system will
 be still "weak", but all the vector spaces are connected and model could be finally refined in reinforcement learning stages
-to provide full functionality
+to provide full functionality.
+
+> Without 3rd and 4th stages, with new initialized memory attention, initial reward (65% BLEU, 15% cosine, 10% length) was
+> on ~0.6/10.0 level and improved only to ~0.9/10.0 - the generated answers were completely unreadable. After new supervised
+> stages, it's starting from ~2.0/10.0 and generated answers are mostly correct, including some information from previous steps.
 
 Algorithm steps:
 1. Starting from random (normal) STM state, save first interaction from batch as previous interaction
