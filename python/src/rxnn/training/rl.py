@@ -175,6 +175,7 @@ class PPOAlgorithm(RlAlgorithm):
 
 class IMPOConfig(TypedDict):
     clip_eps: Optional[float]
+    use_gae: Optional[bool]
     gae_lambda: Optional[float]
     gae_gamma: Optional[float]
     entropy_coef: Optional[float]
@@ -218,7 +219,7 @@ class IMPOAlgorithm(RlAlgorithm):
         self.critic_value_clip = config.get('critic_value_clip', 20.0)
         self.debug_mode = config.get('debug_mode', False)
         self.debug_interval = config.get('debug_interval', 10)
-        self.skip_gae = config.get('skip_gae', False)
+        self.use_gae = config.get('use_gae', False)
         self.kl_coeff = config.get('kl_coeff', 0.001)
         self.stm_diff_coeff = config.get('stm_diff_coeff', 0.0001) # should be higher for non-sigmoid residual gates
         self.use_stm_cosine_sim = config.get('use_stm_cosine_sim', False)
@@ -282,11 +283,11 @@ class IMPOAlgorithm(RlAlgorithm):
             if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
                 self.debug_step = 1
                 print(
-                    f"Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
+                    f"-- Logits stats: min={new_logits.min().item():.4f}, max={new_logits.max().item():.4f}, mean={new_logits.mean().item():.4f}")
                 print(
-                    f"Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={((ratio * shifted_mask).sum(dim=-1) / (shifted_mask.sum(dim=-1) + 1e-8)).mean().item():.4f}")
+                    f"-- Ratio stats: min={ratio.min().item():.4f}, max={ratio.max().item():.4f}, mean={((ratio * shifted_mask).sum(dim=-1) / (shifted_mask.sum(dim=-1) + 1e-8)).mean().item():.4f}")
                 print(
-                    f"Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
+                    f"-- Advantage stats: min={advantages.min().item():.4f}, max={advantages.max().item():.4f}, mean={advantages.mean().item():.4f}")
             else:
                 self.debug_step += 1
 
@@ -306,7 +307,7 @@ class IMPOAlgorithm(RlAlgorithm):
         if prev_step_log_probs is not None:
             kl_loss = self.policy_consistency_loss(prev_step_log_probs, new_log_probs.exp(), entropy_mask)
             if self.debug_step != 0 and self.debug_step % self.debug_interval == 0:
-                print(f'KL loss: {kl_loss.item():.4f}, scaled: {(self.kl_coeff * kl_loss).item():.4f}')
+                print(f'---- KL loss: {kl_loss.item():.4f}, scaled: {(self.kl_coeff * kl_loss).item():.4f}')
             policy_loss += self.kl_coeff * kl_loss
         else:
             kl_loss = None
@@ -352,8 +353,11 @@ class IMPOAlgorithm(RlAlgorithm):
         return kl_loss
 
     def calculate_advantages(self, rewards: torch.Tensor, values: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        advantages = rewards - values
-        ref_values = rewards
+        if self.use_gae:
+            advantages, ref_values = self._compute_gae(rewards[:-1], values[:-1], values[-1], dones[:-1])
+        else:
+            advantages = rewards - values
+            ref_values = rewards
 
         if self.use_distributed_advantage_norm:
             mean_advantage = distributed_mean(advantages.mean())
@@ -363,3 +367,23 @@ class IMPOAlgorithm(RlAlgorithm):
             normalized_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
         return normalized_advantages, ref_values
 
+    def _compute_gae(self, rewards: torch.Tensor, values: torch.Tensor,
+                     last_value: torch.Tensor, dones: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        trajectory_len, batch_size = rewards.shape
+        advantages = torch.zeros_like(rewards, device=rewards.device)
+        last_advantage = 0
+        next_value = last_value
+        dones = dones.float()
+
+        for t in reversed(range(trajectory_len)):
+            # Calculate delta from rewards, stored next_value, masked by stored next_done, and values
+            delta = rewards[t] + self.gae_gamma * next_value * (1 - dones[t]) - values[t]
+            # Calculate advantages based on delta, gamma/lambda factors and last advantage, masked by current done flags
+            advantages[t] = delta + self.gae_gamma * self.gae_lambda * (1 - dones[t]) * last_advantage
+            # Store current step data as last_advantage, next_done and next_value, for the next iteration step
+            last_advantage = advantages[t]
+            next_value = values[t]
+
+        # Calculate reference returns, based on advantages and values, and return them with advantages for critic update
+        returns = advantages + values
+        return advantages, returns

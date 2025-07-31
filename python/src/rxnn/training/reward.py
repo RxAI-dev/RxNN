@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 from enum import Enum
-from typing import Optional
+from typing import Optional, Literal
 from .utils import TokenizedDict
 
 
@@ -18,9 +18,12 @@ class MrlRewardModel:
             self,
             shared_embedding: nn.Embedding,
             bleu_with_saved_data: bool = False,
+            bleu_mode: Literal['separate', 'combined'] = 'separate',
             bleu_factor: float = 0.5,
             bleu_ref_factor: float = 0.5,
             bleu_saved_factor: float = 0.5,
+            bleu_first_ref_factor: Optional[float] = None,
+            bleu_first_saved_factor: Optional[float] = None,
             cos_factor: float = 0.5,
             cos_ref_factor: float = 0.5,
             cos_saved_factor: float = 0.5,
@@ -49,10 +52,13 @@ class MrlRewardModel:
     ):
         self.shared_embedding = shared_embedding
         self.bleu_with_saved_data = bleu_with_saved_data
+        self.bleu_mode = bleu_mode
 
         self.bleu_factor = bleu_factor
         self.bleu_ref_factor = bleu_ref_factor
         self.bleu_saved_factor = bleu_saved_factor
+        self.bleu_first_ref_factor = bleu_first_ref_factor if bleu_first_ref_factor is not None else bleu_ref_factor
+        self.bleu_first_saved_factor = bleu_first_saved_factor if bleu_first_saved_factor is not None else bleu_saved_factor
         self.cos_factor = cos_factor
         self.cos_ref_factor = cos_ref_factor
         self.cos_saved_factor = cos_saved_factor
@@ -90,6 +96,7 @@ class MrlRewardModel:
                 assert self.cos_ref_factor + self.cos_saved_factor == 1.0
                 assert self.neg_cos_ref_factor + self.neg_cos_saved_factor == 1.0
                 assert self.neg_bleu_ref_factor + self.neg_bleu_saved_factor == 1.0
+                assert self.bleu_first_ref_factor + self.bleu_first_saved_factor == 1.0
             else:
                 assert self.bleu_factor + self.cos_factor == 1.0
                 assert self.bleu_ref_factor + self.bleu_saved_factor == 1.0
@@ -98,9 +105,10 @@ class MrlRewardModel:
                 assert self.neg_bleu_factor + self.neg_cos_factor == 1.0
                 assert self.neg_cos_ref_factor + self.neg_cos_saved_factor == 1.0
                 assert self.neg_bleu_ref_factor + self.neg_bleu_saved_factor == 1.0
+                assert self.bleu_first_ref_factor + self.bleu_first_saved_factor == 1.0
 
     def _sentence_bleu(self, input_ids: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
-                       masks: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> float:
+                       masks: tuple[torch.Tensor, torch.Tensor, torch.Tensor], is_first_step: bool = False) -> float:
         generated, reference, saved_data = input_ids
         generated_mask, reference_mask, saved_data_mask = masks
 
@@ -112,17 +120,29 @@ class MrlRewardModel:
             print('LENS: ', (len(generated), len(reference), len(saved_data)))
 
         if self.bleu_with_saved_data:
-            ref_bleu = sentence_bleu([reference], generated, weights=self.bleu_ref_weights,
-                                     smoothing_function=self.bleu_smoothing)
-            saved_bleu = sentence_bleu([saved_data], generated, weights=self.bleu_saved_weights,
-                                       smoothing_function=self.bleu_smoothing)
-            if self.debug_mode == 2:
-                print('REF BLEU: ', ref_bleu)
-                print('SAVED BLEU: ', saved_bleu)
+            if self.bleu_mode == 'separate':
+                ref_bleu = sentence_bleu([reference], generated, weights=self.bleu_ref_weights,
+                                         smoothing_function=self.bleu_smoothing)
+                saved_bleu = sentence_bleu([saved_data], generated, weights=self.bleu_saved_weights,
+                                           smoothing_function=self.bleu_smoothing)
+                if self.debug_mode == 2:
+                    print('REF BLEU: ', ref_bleu)
+                    print('SAVED BLEU: ', saved_bleu)
 
-            return self.bleu_ref_factor * ref_bleu + self.bleu_saved_factor * saved_bleu
+                if is_first_step:
+                    return self.bleu_first_ref_factor * ref_bleu + self.bleu_first_saved_factor * saved_bleu
+                else:
+                    return self.bleu_ref_factor * ref_bleu + self.bleu_saved_factor * saved_bleu
+            else:
+                return sentence_bleu(
+                    [reference, saved_data], generated,
+                    weights=self.bleu_ref_weights, smoothing_function=self.bleu_smoothing
+                )
         else:
-            return sentence_bleu([reference], generated, weights=self.bleu_ref_weights)
+            return sentence_bleu(
+                [reference], generated,
+                weights=self.bleu_ref_weights, smoothing_function=self.bleu_smoothing
+            )
 
     def _negative_sentence_bleu(self, input_ids: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
                                 masks: tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> float:
@@ -151,13 +171,14 @@ class MrlRewardModel:
         else:
             return sentence_bleu([reference], generated, weights=self.bleu_ref_weights)
 
-    def batch_bleu(self, generated: TokenizedDict, reference: TokenizedDict, saved_data: TokenizedDict) -> list[float]:
+    def batch_bleu(self, generated: TokenizedDict, reference: TokenizedDict, saved_data: TokenizedDict, is_first_step: bool = False) -> list[float]:
         batch_size = generated['input_ids'].size(0)
 
         return [
             self._sentence_bleu(
                 input_ids=(generated['input_ids'][i], reference['input_ids'][i], saved_data['input_ids'][i]),
-                masks=(generated['attention_mask'][i], reference['attention_mask'][i], saved_data['attention_mask'][i])
+                masks=(generated['attention_mask'][i], reference['attention_mask'][i], saved_data['attention_mask'][i]),
+                is_first_step=is_first_step,
             ) for i in range(batch_size)
         ]
 
@@ -279,24 +300,24 @@ class MrlRewardModel:
         device = generated['input_ids'].device
 
         if mode == MrlRewardMode.STANDARD:
-            bleu = self.batch_bleu(generated, reference, saved_data)
+            bleu = self.batch_bleu(generated, reference, saved_data, is_first_step=prev_data is None)
             cosine = self.batch_cosine(generated, reference, saved_data, include_running_mean=prev_data is not None)
 
             if self.debug_mode >= 1:
-                print('STANDARD MODE')
-                print('BLEU: ', sum(bleu) / len(bleu))
-                print('COSINE: ', sum(cosine) / len(cosine))
+                print('--- STANDARD MODE')
+                print(f'--- BLEU:  {sum(bleu) / len(bleu)}  / max: {max(bleu)} / min: {min(bleu)}')
+                print(f'--- COSINE: {sum(cosine) / len(cosine)} / max: {max(cosine)} / min: {min(cosine)}')
 
             sim_rewards = self.bleu_factor * torch.tensor(bleu, device=device) + self.cos_factor * cosine
         elif mode == MrlRewardMode.LONG_RANGE:
-            bleu = self.batch_bleu(generated, reference, saved_data)
+            bleu = self.batch_bleu(generated, reference, saved_data, is_first_step=prev_data is None)
             cosine = self.batch_cosine(generated, reference, saved_data,
                                        negative_running_mean=prev_data is not None)
 
             if self.debug_mode >= 1:
-                print('LONG MODE')
-                print('BLEU: ', sum(bleu) / len(bleu))
-                print('COSINE: ', sum(cosine) / len(cosine))
+                print('--- LONG MODE')
+                print(f'--- BLEU:  {sum(bleu) / len(bleu)}  / max: {max(bleu)} / min: {min(bleu)}')
+                print(f'--- COSINE: {sum(cosine) / len(cosine)} / max: {max(cosine)} / min: {min(cosine)}')
 
             sim_rewards = self.bleu_factor * torch.tensor(bleu, device=device) + self.cos_factor * cosine
         else:
@@ -304,9 +325,9 @@ class MrlRewardModel:
             cosine = self.negative_cosine(generated, reference, saved_data)
 
             if self.debug_mode >= 1:
-                print('NEGATIVE MODE')
-                print('BLEU: ', sum(bleu) / len(bleu))
-                print('COSINE: ', sum(cosine) / len(cosine))
+                print('--- NEGATIVE MODE')
+                print(f'--- BLEU:  {sum(bleu) / len(bleu)}  / max: {max(bleu)} / min: {min(bleu)}')
+                print(f'--- COSINE: {sum(cosine) / len(cosine)} / max: {max(cosine)} / min: {min(cosine)}')
 
             sim_rewards = self.neg_bleu_factor * torch.tensor(bleu, device=device) + self.neg_cos_factor * cosine
 
@@ -314,7 +335,7 @@ class MrlRewardModel:
             len_reward = self.len_reward(generated, reference)
 
             if self.debug_mode >= 1:
-                print('REWARD LEN: ', (len_reward.sum() / len_reward.size(0)).item())
+                print(f'--- REWARD LEN: {(len_reward.sum() / len_reward.size(0)).item()} / max: {len_reward.max().item()} / min: {len_reward.min().item()}')
 
             rewards = self._pre_scale_rewards(sim_rewards + self.len_factor * len_reward) * self.rewards_scale
         else:

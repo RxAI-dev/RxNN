@@ -672,23 +672,23 @@ class MRLTrainer:
 
     def _log_gradients(self, logits: torch.Tensor):
         print(
-            f"Returned logits stats: min={logits.min().item():.4f}, max={logits.max().item():.4f}")
+            f"----- Returned logits stats: min={logits.min().item():.4f}, max={logits.max().item():.4f}")
         encoder_total, encoder_mean = get_gradient_norms(self.actor.encoder.parameters())
         decoder_total, decoder_mean = get_gradient_norms(self.actor.decoder.parameters())
         mem_att_total, mem_att_mean = get_gradient_norms(self.actor.memory_attention.parameters())
-        print(f"Encoder grad norm - total: {encoder_total:.6f}, mean: {encoder_mean:.6f}")
-        print(f"Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
-        print(f"Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
+        print(f"----- Encoder grad norm - total: {encoder_total:.6f}, mean: {encoder_mean:.6f}")
+        print(f"----- Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
+        print(f"----- Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
 
         enc_mem_total, enc_mem_mean = get_gradient_norms(self.actor.encoder.memory_parameters())
         enc_not_mem_total, enc_not_mem_mean = get_gradient_norms(self.actor.encoder.not_memory_parameters())
         dec_mem_total, dec_mem_mean = get_gradient_norms(self.actor.decoder.memory_parameters())
         dec_not_mem_total, dec_not_mem_mean = get_gradient_norms(self.actor.decoder.not_memory_parameters())
 
-        print(f"Decoder memory params grad norm - total: {dec_mem_total:.6f}, mean: {dec_mem_mean:.6f}")
-        print(f"Decoder not memory params grad norm - total: {dec_not_mem_total:.6f}, mean: {dec_not_mem_mean:.6f}")
-        print(f"Encoder memory params grad norm - total: {enc_mem_total:.6f}, mean: {enc_mem_mean:.6f}")
-        print(f"Encoder not memory params grad norm - total: {enc_not_mem_total:.6f}, mean: {enc_not_mem_mean:.6f}")
+        print(f"----- Decoder memory params grad norm - total: {dec_mem_total:.6f}, mean: {dec_mem_mean:.6f}")
+        print(f"----- Decoder not memory params grad norm - total: {dec_not_mem_total:.6f}, mean: {dec_not_mem_mean:.6f}")
+        print(f"----- Encoder memory params grad norm - total: {enc_mem_total:.6f}, mean: {enc_mem_mean:.6f}")
+        print(f"----- Encoder not memory params grad norm - total: {enc_not_mem_total:.6f}, mean: {enc_not_mem_mean:.6f}")
 
         if self.writer is not None:
             self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
@@ -701,14 +701,14 @@ class MRLTrainer:
 
     def _log_stm_diff(self, stm_diff: torch.Tensor, step_idx: int):
         stm_update_diff = torch.sqrt(stm_diff).item()
-        print(f'STM update diff in step {step_idx + 1}: {stm_update_diff:.6f}')
+        print(f'--- STM update diff in step {step_idx + 1}: {stm_update_diff:.6f}')
         self.writer.add_scalar('STM/update diff (all)', stm_update_diff, self.global_step['train'])
         self.writer.add_scalar(f'STM/memory diff (step {step_idx + 1})', stm_update_diff,
                                self.global_step['train'])
 
     def _log_stm_cosine_sim(self, stm_sim: torch.Tensor, step_idx: int):
         stm_sim = stm_sim.item()
-        print(f'STM cosine sim in step {step_idx + 1}: {stm_sim:.6f}')
+        print(f'--- STM cosine sim in step {step_idx + 1}: {stm_sim:.6f}')
         self.writer.add_scalar('STM/cosine sim (all)', stm_sim, self.global_step['train'])
         self.writer.add_scalar(f'STM/cosine sim (step {step_idx + 1})', stm_sim,
                                self.global_step['train'])
