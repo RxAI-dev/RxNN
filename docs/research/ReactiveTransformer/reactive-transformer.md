@@ -232,6 +232,8 @@ for 0-128k tokens - after 128k spatially sparse attention (Flex Attention) is be
 **Sparse Query Attention** could be easily combined with **Flex Attention**, to enable 4-8x greater sliding window lengths.
 **SQA** is a default choice in our experimental **Reactive Transformer** models - **RxT-Alpha**.
 
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/sqa.png">
+
 More about [Sparse Query Attention](../sparse_query_attention.md)
 
 #### Spatially sparse attention for memory

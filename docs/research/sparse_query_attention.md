@@ -31,9 +31,10 @@ first multiplication. Thanks to this, both multiplications are performed in smal
 regardless of the number of key/value heads, both multiplications are performed in full dimensionality, because the result
 of the first multiplication takes over the dimensions of the query heads.
 
-It seems that reducing the dimensionality of both matrix multiplication operations in _scaled dot product attention_ is
-crucial for the speed of operation in practice. Even SQA variants with theoretically higher computational complexity
-than MQA are much faster than MQA.
+<img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/sqa.png">
+
+It looks like the key factor is the number of query heads, because the first matrix multiplication results in the same
+number of attention weight matrices. With dimensionality diagram it's clear, why it's a lot faster than GQA/MQA approach.
 
 The difference in computational efficiency between SQA and GQA/MQA is also larger than the difference between
 GQA/MQA and classical MHA
