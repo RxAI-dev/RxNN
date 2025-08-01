@@ -13,7 +13,7 @@ dimensions.
 > short context. Apart from that, I only tested longer sequences for computational efficiency, in order to compare with
 > trained models with short sequences. I'm planning to further explore the topic in future research.
 
-Generally, in training tests with short context lengths (256/1024), the computational performance difference was really
+Generally, even in training tests with short context lengths (256/1024), the computational performance difference was really
 noticeable - ~3-10%, while the efficiency decrease (compared to GQA, when comparing to MQA, it's increase) is rather
 unnoticeable (~0.1–0.2% accuracy).
 
@@ -25,25 +25,23 @@ could be a gamechanger and viable alternative to **Flex Attention** (it could be
 The results of the study challenge the generally accepted claim that reducing the number of key/value heads (or further
 reducing from GQA to MQA) in the attention layers leads to greater computational benefits, than reducing the number of
 query heads. This was explained by the fact that the number of key/value heads affects two matrix multiplications in
-the attention operation, while the query heads only affect one. This is completely untrue - it seems that the influence
-of query heads is crucial for both multiplications, due to the reduction in the dimensionality of the result of the
-first multiplication. Thanks to this, both multiplications are performed in smaller dimensions. In traditional GQA and MQA,
-regardless of the number of key/value heads, both multiplications are performed in full dimensionality, because the result
-of the first multiplication takes over the dimensions of the query heads.
+the attention operation, while the query heads only affect one. This is completely wrong. It's the opposite - the influence
+of query heads is crucial for both operations, because it's reducing the number of matrix multiplications, instead of their
+dimensionality.
 
 <img src="https://raw.githubusercontent.com/RxAI-dev/RxNN/refs/heads/main/assets/research/sqa.png">
 
-It looks like the key factor is the number of query heads, because the first matrix multiplication results in the same
-number of attention weight matrices. With dimensionality diagram it's clear, why it's a lot faster than GQA/MQA approach.
-
-The difference in computational efficiency between SQA and GQA/MQA is also larger than the difference between
-GQA/MQA and classical MHA
+In the example from diagram - both GQA and MQA require 8 matrix multiplications (4 for both operations), while SQA variants
+require only 4. Moreover, classic MHA will also require 8 multiplications in this case, so GQA/MQA optimizes matrix multiplications,
+while SQA optimizes the number of matrix multiplications. Then, it has 2x smaller computational complexity in this case.
 
 #### Computational complexity comparison
-- MHA: `O(N*d * N*d)`
-- GQA `O(N*d * N*(d/heads*groups))`
-- MQA `O(N*d * N*(d/heads))`
-- SQA `O(N*(d/heads*query_groups) * N*(d/heads*groups))`
+- MHA: `O(N² × d)`
+- GQA `O(N² × d)`
+- MQA `O(N² × d)`
+- SQA `O(N² × d × q/h)`, where `q < h`
+
+GQA and MQA maintain the same theoretical O(N² × d) complexity as MHA, but improve practical runtime performance through better memory access patterns
 
 ### Difference from GQA
 **Sparse Query Attention** layer is almost the same as **Grouped Query Attention** with some noticeable differences:
