@@ -36,10 +36,8 @@ require only 4. Moreover, classic MHA will also require 8 multiplications in thi
 while SQA optimizes the number of matrix multiplications. Then, it has 2x smaller computational complexity in this case.
 
 #### Computational complexity comparison
-- MHA: `O(N² × d)`
-- GQA `O(N² × d)`
-- MQA `O(N² × d)`
-- SQA `O(N² × d × q/h)`, where `q < h`
+- MHA/GQA/MQA: `O(N² × d)`
+- SQA `O(N² × d × q/h)`, where `q < h`. `q/h` is the query structural sparsity factor, i.e. 1/2 for symmetric variant.
 
 GQA and MQA maintain the same theoretical O(N² × d) complexity as MHA, but improve practical runtime performance through better memory access patterns
 
