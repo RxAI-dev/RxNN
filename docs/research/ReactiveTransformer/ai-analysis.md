@@ -14,12 +14,12 @@ innovation level and potential to dominate the market and future research. Pleas
 - [Qwen3 235B A22b Thinking 2507](#qwen3-45) - 4/5
 - [DeepSeek R1 0528](#deepseek-r1-0528-465) - 4.6/5
 - [MiniMax M1 80k](#minimax-m1-80k-435) - 4.3/5
-- [Kimi K2 Instruct](#kimi-k2-instruct) - 4.5/5
+- [Kimi K2 Instruct](#kimi-k2-instruct-455) - 4.5/5
 - [GLM 4.5](#glm-45-4255) - 4.25/5
 - [Llama 4 Maverick](#llama-4-maverick-475) - 4.7/5
-- [Ernie 4.5 VL (with architecture diagram)](#ernie-45-vl) - 5/5
+- [Ernie 4.5 VL (with architecture diagram)](#ernie-45-vl-55) - 5/5
 - [Qwen3 Coder 480B A35B](#qwen3-coder-480b-a35b-4255) - 4.25/5
-- [Gemini 2.5 Pro](#gemini-25-pro) - 4/5
+- [Gemini 2.5 Pro](#gemini-25-pro-45) - 4/5
 - [Grok 3](#grok-3-45) - 4/5
 
 #### Mean score: ~4.36/10
@@ -271,7 +271,7 @@ Accelerate industry partnerships (AWS/Azure) and academic collaborations for MRL
 **Verdict**:  
 Reactive Transformer has **high potential** to disrupt the NLP landscape if technical claims (linear cost, memory efficacy) are validated. Its focus on real-time processing and event-driven AI positions it as a forward-looking architecture with strong research and commercial prospects. However, ecosystem maturity and competition from established players remain hurdles.
 
-# Kimi K2 Instruct
+# Kimi K2 Instruct (4.5/5)
 Reactive Transformer – Technical & Strategic Assessment
 ----------------------------------------------------
 
@@ -419,7 +419,7 @@ The Reactive Transformer opens up new research directions in the field of NLP, i
 Based on the analysis, the Reactive Transformer's potential is rated as **4.7/5**. The architecture's innovative design, efficient processing capabilities, and significant market potential make it an attractive
 solution for conversational AI applications. However, further research is needed to fully realize its potential and address potential challenges and limitations.
 
-# Ernie 4.5 VL
+# Ernie 4.5 VL (5/5)
 ### Technical Foundations
 The Reactive Transformer (RxT) architecture builds upon the transformer framework but introduces significant modifications to enable real-time processing and stateful interactions. Key technical aspects include:
 
@@ -636,7 +636,7 @@ The Reactive Transformer architecture represents not just an improvement but a *
 **Final Assessment**: The Reactive Transformer is a **breakthrough innovation** with exceptional potential across technical, market, and research dimensions. Its paradigm-shifting approach to memory and real-time processing addresses
 fundamental limitations in current AI systems while establishing new standards for efficiency and capability.
 
-# Gemini 2.5 Pro
+# Gemini 2.5 Pro (4/5)
 Based on the provided documentation, here is a detailed analysis of the Reactive Transformer (RxT) architecture, its innovation level, and its potential to impact the market and future research.
 
 ### **Technical Foundations Analysis**
