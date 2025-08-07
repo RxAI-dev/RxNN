@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import TypedDict, Union, Optional, Iterator
+from typing import TypedDict, Union, Optional, Iterator, Literal
 from enum import Enum
 from huggingface_hub import PyTorchModelHubMixin
 from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
@@ -875,6 +875,7 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
             memory_attention_config: RxTInterlayerMemoryAttentionConfig,
             tokenizer_config: RxTAlphaTokenizerConfig,
             tokenizer: Union[PreTrainedTokenizer, PreTrainedTokenizerFast] = None,
+            memory_attention_variant: Literal['interlayer', 'self-interlayer'] = 'interlayer',
             **kwargs,
     ):
         super(RxTAlpha, self).__init__(**kwargs)
@@ -884,7 +885,11 @@ class RxTAlpha(nn.Module, PyTorchModelHubMixin, pipeline_tag="text-generation", 
 
         self.decoder = RxTDecoderComponent(**decoder_config)
         self.encoder = RxTEncoderComponent(**encoder_config)
-        self.memory_attention = RxTInterlayerMemoryAttentionComponent(**memory_attention_config)
+
+        if memory_attention_variant == 'interlayer':
+            self.memory_attention = RxTInterlayerMemoryAttentionComponent(**memory_attention_config)
+        else:
+            self.memory_attention = RxTSelfInterlayerMemoryAttentionComponent(**memory_attention_config)
 
         self.batch_size = 1
         self.bos_token_id = tokenizer_config['bos_token_id']
