@@ -534,8 +534,9 @@ class MRLTrainer:
             # 2. Collect episode trajectories for all batches in dataset
             for batch_idx, batch in enumerate(dataloader):
                 if self.replay_buffer is not None and self.replay_buffer.initialized and self.replay_buffer[batch_idx] is not None:
+                    self._increment_steps('collect')
                     episode_trajectory = self.replay_buffer[batch_idx]
-                    trajectories.append(trajectory)
+                    trajectories.append(episode_trajectory)
 
                     episode_rewards = [step['reward'] for step in episode_trajectory['steps']]
 
@@ -962,36 +963,45 @@ class MRLTrainer:
 
     def get_pre_update_log_probs(self, trajectories: list[MrlTrajectoryEpisode]) -> list[MrlTrajectoryEpisode]:
         new_trajectories = []
-        for episode_idx, episode in enumerate(trajectories):
-            episode_steps = episode['steps']
-            should_reset_stm = episode['reset_stm']
 
-            # 2. Get advantages and reference values for current full episode (batch_size * episode_steps)
-            num_steps = len(episode_steps)
+        print('Recomputing old log probs')
 
-            # 3. Reset memory for current batch episode
-            if should_reset_stm:
-                self.reset_stm(force=True)
+        with torch.no_grad():
+            for episode_idx, episode in enumerate(trajectories):
+                episode_steps = episode['steps']
+                should_reset_stm = episode['reset_stm']
 
-            new_episode_steps = []
+                if should_reset_stm:
+                    self.reset_stm(force=True)
 
-            # 4. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
-            for step_idx, step in enumerate(episode_steps):
-                # self._increment_steps('train')
-                # 5. Get and move to device collected states, action and log probs
-                state, action = step['state'], step['action']
-                query, answer, next_query = self._move_multiple_batches(*state)
-                action = self._move_batch(action)
+                new_episode_steps = []
 
-                self.actor.clone_reset_memory()
+                # 4. Run episode steps - each episode has number of steps depending on curriculum stage. Each step is run for all batch
+                for step_idx, step in enumerate(episode_steps):
+                    # self._increment_steps('train')
+                    # 5. Get and move to device collected states, action and log probs
+                    state, action = step['state'], step['action']
+                    query, answer, next_query = self._move_multiple_batches(*state)
+                    action = self._move_batch(action)
 
-                if should_reset_stm and step_idx == 0:
-                    self.memory_warmup(query, answer)
+                    self.actor.clone_reset_memory()
 
-                self.encode_and_update_stm(query, answer)
+                    if should_reset_stm and step_idx == 0:
+                        self.memory_warmup(query, answer)
 
-                if self.use_amp:
-                    with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                    self.encode_and_update_stm(query, answer)
+
+                    if self.use_amp:
+                        with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
+                            # 6.1 Concatenate next query and action and get action logits from decoder
+                            inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
+                                                  pad_token_id=self.pad_token_id)
+                            logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
+                                                action=MrlActorAction.DECODE)
+                            if self.clamp_logits is not None:
+                                logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
+                            log_probs = self._get_answer_log_probs(next_query, action, logits)
+                    else:
                         # 6.1 Concatenate next query and action and get action logits from decoder
                         inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
                                               pad_token_id=self.pad_token_id)
@@ -1000,24 +1010,15 @@ class MRLTrainer:
                         if self.clamp_logits is not None:
                             logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
                         log_probs = self._get_answer_log_probs(next_query, action, logits)
-                else:
-                    # 6.1 Concatenate next query and action and get action logits from decoder
-                    inputs = smart_concat(next_query, action, max_length=self.max_seq_len,
-                                          pad_token_id=self.pad_token_id)
-                    logits = self.actor(inputs['input_ids'], attention_mask=inputs['attention_mask'],
-                                        action=MrlActorAction.DECODE)
-                    if self.clamp_logits is not None:
-                        logits = logits.clamp(min=-self.clamp_logits, max=self.clamp_logits)
-                    log_probs = self._get_answer_log_probs(next_query, action, logits)
 
-                new_episode_steps.append({
-                    **step,
-                    'log_probs': log_probs.detach().cpu(),
+                    new_episode_steps.append({
+                        **step,
+                        'log_probs': log_probs.detach().cpu(),
+                    })
+                new_trajectories.append({
+                    **episode,
+                    'steps': new_episode_steps,
                 })
-            new_trajectories.append({
-                **episode,
-                'steps': new_episode_steps,
-            })
 
         return new_trajectories
 
