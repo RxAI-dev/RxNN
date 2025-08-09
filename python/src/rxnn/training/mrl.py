@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, DistributedSampler
 from torch.utils.tensorboard import SummaryWriter
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
-from typing import Optional, TypedDict, Union, TypeAlias, Literal, Callable
+from typing import Optional, TypedDict, Union, TypeAlias, Literal, Callable, Any
 from enum import Enum
 import random, os
 from ..transformers.sampler import BatchSampler
@@ -54,7 +54,7 @@ class MrlStrategy(Enum):
     LONG_RANGE_STRATEGY = 3
 
 
-UnfreezeStrategyFn = Callable[[int], None]
+UnfreezeStrategyFn = Callable[[int, Any], None]
 UnfreezeItem = Union[int, tuple[int, float]]
 UnfreezeEpochsStrategy: TypeAlias = Union[int, tuple[UnfreezeItem, UnfreezeItem, int], UnfreezeStrategyFn]
 
@@ -1329,7 +1329,7 @@ class MRLTrainer:
             # 5. Freeze all components except memory attention and memory cross-attention layers in decoder/encoder
             if unfreeze_epoch != 0:
                 if callable(unfreeze_epoch):
-                    unfreeze_epoch(-1)
+                    unfreeze_epoch(-1, self)
                 elif isinstance(unfreeze_epoch, tuple):
                     self.actor.freeze_components('warmup', freeze_embeddings=self.freeze_embeddings)
                     print(
@@ -1384,7 +1384,7 @@ class MRLTrainer:
 
                 # 12. Apply the unfreeze strategy
                 if callable(unfreeze_epoch):
-                    unfreeze_epoch(epoch)
+                    unfreeze_epoch(epoch, self)
                 else:
                     self._apply_unfreeze_strategy(epoch, unfreeze_epoch)
 
