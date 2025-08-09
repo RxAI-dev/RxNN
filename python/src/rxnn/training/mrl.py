@@ -533,7 +533,7 @@ class MRLTrainer:
         with torch.no_grad():
             # 2. Collect episode trajectories for all batches in dataset
             for batch_idx, batch in enumerate(dataloader):
-                if self.replay_buffer is not None and self.replay_buffer.initialized and self.replay_buffer[batch_idx] is not None:
+                if self.replay_buffer is not None and self.replay_buffer.initialized and batch_idx < self.replay_buffer.size and self.replay_buffer[batch_idx] is not None:
                     self._increment_steps('collect')
                     episode_trajectory = self.replay_buffer[batch_idx]
                     trajectories.append(episode_trajectory)
