@@ -58,6 +58,80 @@ UnfreezeStrategyFn = Callable[[int, Any], None]
 UnfreezeItem = Union[int, tuple[int, float]]
 UnfreezeEpochsStrategy: TypeAlias = Union[int, tuple[UnfreezeItem, UnfreezeItem, int], UnfreezeStrategyFn]
 
+class SamplerConfig(TypedDict):
+    temperature: float
+    top_k: Optional[int]
+    top_p: Optional[float]
+
+
+class MrlTrajectoryStep(TypedDict):
+    state: tuple[TokenizedDict, TokenizedDict, TokenizedDict]
+    action: TokenizedDict
+    log_probs: torch.Tensor
+    reward: torch.Tensor
+    reference: TokenizedDict
+    done: bool
+
+
+class MrlTrajectoryEpisode(TypedDict):
+    reset_stm: bool
+    steps: list[MrlTrajectoryStep]
+
+
+class MrlReplayBuffer:
+    def __init__(self, size: int, update_size: int, max_age: int = 3):
+        self.size = size
+        self.update_size = update_size
+        self.max_age = max_age
+        self.trajectories = []
+        self.initialized = False
+
+    def __getitem__(self, idx: int) -> MrlTrajectoryEpisode:
+        return self.trajectories[idx]['episode']
+
+    def reset(self):
+        self.trajectories = []
+        self.initialized = False
+
+    def _process_episode(self, episode: MrlTrajectoryEpisode):
+        steps_scores = [(step['reward'].mean() - step['reward'].std()).item() for step in episode['steps']]
+
+        return {
+            'episode': episode,
+            'score': sum(steps_scores) / len(steps_scores),
+        }
+
+    def initialize(self, collected: list[MrlTrajectoryEpisode]):
+        processed = [{ **self._process_episode(ep), 'age': 0 } for ep in collected]
+        processed.sort( key=lambda ep: ep['score'], reverse=True)
+        self.trajectories = processed[:self.size]
+        self.trajectories.sort(key=lambda _: random.random())
+        self.initialized = True
+
+    def update(self, collected: list[MrlTrajectoryEpisode]):
+        self.trajectories = [{ **traj, 'age': traj['age'] + 1 } for traj in self.trajectories]
+        filtered, removed  = [], 0
+        for traj in self.trajectories:
+            if traj['age'] >= self.max_age and removed < self.update_size:
+                removed += 1
+            else:
+                filtered.append(traj)
+
+        if removed < self.update_size:
+            filtered.sort(key=lambda ep: ep['score'])
+            filtered = filtered[self.update_size - removed:]
+
+        self.trajectories = filtered
+
+        processed_collected = [{ **self._process_episode(ep), 'age': 0 } for ep in collected]
+        processed_collected.sort( key=lambda ep: ep['score'], reverse=True)
+        new_collected = processed_collected[:self.update_size]
+
+        self.trajectories = (self.trajectories + new_collected)
+        self.trajectories.sort(key=lambda _: random.random())
+
+        assert len(self.trajectories) == self.size
+
 
 class CurriculumConfig(TypedDict):
     steps: int
@@ -86,25 +160,8 @@ class CurriculumConfig(TypedDict):
     teacher_forcing: Optional[bool]
     use_memory_warmup: Optional[bool]
     hard_warmup: Optional[bool]
+    replay_buffer: Optional[MrlReplayBuffer]
 
-class SamplerConfig(TypedDict):
-    temperature: float
-    top_k: Optional[int]
-    top_p: Optional[float]
-
-
-class MrlTrajectoryStep(TypedDict):
-    state: tuple[TokenizedDict, TokenizedDict, TokenizedDict]
-    action: TokenizedDict
-    log_probs: torch.Tensor
-    reward: torch.Tensor
-    reference: TokenizedDict
-    done: bool
-
-
-class MrlTrajectoryEpisode(TypedDict):
-    reset_stm: bool
-    steps: list[MrlTrajectoryStep]
 
 OptimField: TypeAlias = Literal[
     'lr', 'critic_lr', 'weight_decay', 'critic_weight_decay', 'separate_memory_lr',
@@ -249,6 +306,7 @@ class MRLTrainer:
         self.global_epoch = 0
         self.global_epochs_count = 0
         self.teacher_forcing = False
+        self.replay_buffer = None
 
     def _init_optimizers(
             self,
@@ -475,105 +533,120 @@ class MRLTrainer:
         with torch.no_grad():
             # 2. Collect episode trajectories for all batches in dataset
             for batch_idx, batch in enumerate(dataloader):
-                if batch['query']['input_ids'].size(0) == batch_size:
-                    self._increment_steps('collect')
-                    # 3. Reset Short-Term Memory state (with random reset ratio - sometimes it will be good to build memory
-                    # state from existing one, instead of new random one)
-                    reset_done = self.reset_stm()
+                if self.replay_buffer is not None and self.replay_buffer.initialized and self.replay_buffer[batch_idx] is not None:
+                    episode_trajectory = self.replay_buffer[batch_idx]
+                    trajectories.append(trajectory)
 
-                    # 4. Reset reward prev data running mean - it's calculated for multistep retention, we have to reset it before episode
-                    self.reward.reset_running_mean()
-
-                    # 5. Get first batch of interactions (data to save) and follow-up interactions for current episode, based on curriculum step
-                    first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
-                    interactions = interactions[:self.curriculum_steps]
-                    interactions_len = len(interactions)
-
-                    first_interaction = self._move_multiple_batches(first_query, first_answer)
-
-                    if reset_done:
-                        self.memory_warmup(*first_interaction)
-                    # 6. Encode and update STM with data to save from first interaction
-                    self.encode_and_update_stm(*first_interaction)
-
-                    # 7. Save first interaction as data to save (for trajectory state)
-                    query, answer = first_query, first_answer
-
-                    # 8. Run training strategy for follow-up interactions
-                    episode_steps = []
-                    episode_rewards = []
-
-                    prev_interaction = None
-
-                    for i, interaction in enumerate(interactions):
-                        # 9. Generate batch of answers based on batch of follow-up queries
-                        next_query = self._move_batch(interaction['query'])
-                        generated_answer, log_probs = self.generate_answer(next_query)
-
-                        is_last_interaction = (i + 1) == interactions_len
-
-                        detached_answer = self._batch_detach(generated_answer)
-
-                        # 10. Depending on strategy compute reward
-                        if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
-                            # a) long-range - first interaction - change topic - negative reward (it shouldn't include saved data)
-                            reward = self.compute_reward(
-                                detached_answer, interaction['answer'], (query, answer),
-                                interaction['query'], mode=MrlRewardMode.NEGATIVE
-                            )
-                        elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
-                            # b) long-range - last interaction - first interaction topic - long-range reward (it should include content from first interaction)
-                            reward = self.compute_reward(
-                                detached_answer, interaction['answer'], (first_query, first_answer),
-                                interaction['query'], mode=MrlRewardMode.LONG_RANGE, prev_data=prev_interaction
-                            )
-                        else:
-                            # c) standard reward - generated answer should include some content from previous interaction (saved data), like reference answer
-                            reward = self.compute_reward(
-                                detached_answer, interaction['answer'], (query, answer),
-                                interaction['query'], mode=MrlRewardMode.STANDARD, prev_data=prev_interaction
-                            )
-
-                        # 11. Update STM with generated response (except last interaction, it's not needed)
-                        if not is_last_interaction:
-                            self.encode_and_update_stm(
-                                next_query,
-                                self._move_batch(interaction['answer']) if self.teacher_forcing else generated_answer
-                            )  # update with generated_answer on GPU
-
-                        cpu_detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
-
-                        # 12. Store trajectory step
-                        trajectory: MrlTrajectoryStep = {
-                            'state': (query, answer, interaction['query']),
-                            'action': cpu_detached_answer,
-                            'log_probs': log_probs.detach().cpu(),
-                            'reward': reward.detach().cpu(),
-                            'reference': interaction['answer'],
-                            'done': is_last_interaction,
-                        }
-                        episode_steps.append(trajectory)
-                        episode_rewards.append(reward)
-
-                        # 13. Set previous and current interaction query and generated answer (batches), as saved data for next interaction
-                        if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
-                            prev_interaction = (query, answer)
-                        query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else cpu_detached_answer)
-
-                    # 14. Append full batched episode (number of steps depends on curriculum stage) to trajectories
-                    episode_trajectory: MrlTrajectoryEpisode = {
-                        'reset_stm': reset_done,
-                        'steps': episode_steps,
-                    }
-                    trajectories.append(episode_trajectory)
+                    episode_rewards = [step['reward'] for step in episode_trajectory['steps']]
 
                     mean_episode_reward = torch.stack(episode_rewards).mean().item()
 
                     self._collect_writer(mean_episode_reward, epoch)
 
+                    print(f'Batch {batch_idx} from replay buffer')
                     # 15. Run "on episode collected" callbacks
                     for cb in self.callbacks:
                         cb.on_episode_collected(self.actor, batch_idx, episode_trajectory, mean_episode_reward)
+                else:
+                    if batch['query']['input_ids'].size(0) == batch_size:
+                        self._increment_steps('collect')
+                        # 3. Reset Short-Term Memory state (with random reset ratio - sometimes it will be good to build memory
+                        # state from existing one, instead of new random one)
+                        reset_done = self.reset_stm()
+
+                        # 4. Reset reward prev data running mean - it's calculated for multistep retention, we have to reset it before episode
+                        self.reward.reset_running_mean()
+
+                        # 5. Get first batch of interactions (data to save) and follow-up interactions for current episode, based on curriculum step
+                        first_query, first_answer, interactions = batch['query'], batch['answer'], batch['interactions']
+                        interactions = interactions[:self.curriculum_steps]
+                        interactions_len = len(interactions)
+
+                        first_interaction = self._move_multiple_batches(first_query, first_answer)
+
+                        if reset_done:
+                            self.memory_warmup(*first_interaction)
+                        # 6. Encode and update STM with data to save from first interaction
+                        self.encode_and_update_stm(*first_interaction)
+
+                        # 7. Save first interaction as data to save (for trajectory state)
+                        query, answer = first_query, first_answer
+
+                        # 8. Run training strategy for follow-up interactions
+                        episode_steps = []
+                        episode_rewards = []
+
+                        prev_interaction = None
+
+                        for i, interaction in enumerate(interactions):
+                            # 9. Generate batch of answers based on batch of follow-up queries
+                            next_query = self._move_batch(interaction['query'])
+                            generated_answer, log_probs = self.generate_answer(next_query)
+
+                            is_last_interaction = (i + 1) == interactions_len
+
+                            detached_answer = self._batch_detach(generated_answer)
+
+                            # 10. Depending on strategy compute reward
+                            if self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0:
+                                # a) long-range - first interaction - change topic - negative reward (it shouldn't include saved data)
+                                reward = self.compute_reward(
+                                    detached_answer, interaction['answer'], (query, answer),
+                                    interaction['query'], mode=MrlRewardMode.NEGATIVE
+                                )
+                            elif self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and is_last_interaction:
+                                # b) long-range - last interaction - first interaction topic - long-range reward (it should include content from first interaction)
+                                reward = self.compute_reward(
+                                    detached_answer, interaction['answer'], (first_query, first_answer),
+                                    interaction['query'], mode=MrlRewardMode.LONG_RANGE, prev_data=prev_interaction
+                                )
+                            else:
+                                # c) standard reward - generated answer should include some content from previous interaction (saved data), like reference answer
+                                reward = self.compute_reward(
+                                    detached_answer, interaction['answer'], (query, answer),
+                                    interaction['query'], mode=MrlRewardMode.STANDARD, prev_data=prev_interaction
+                                )
+
+                            # 11. Update STM with generated response (except last interaction, it's not needed)
+                            if not is_last_interaction:
+                                self.encode_and_update_stm(
+                                    next_query,
+                                    self._move_batch(interaction['answer']) if self.teacher_forcing else generated_answer
+                                )  # update with generated_answer on GPU
+
+                            cpu_detached_answer = self._cpu_detach(generated_answer)  # detach and keep states on CPU
+
+                            # 12. Store trajectory step
+                            trajectory: MrlTrajectoryStep = {
+                                'state': (query, answer, interaction['query']),
+                                'action': cpu_detached_answer,
+                                'log_probs': log_probs.detach().cpu(),
+                                'reward': reward.detach().cpu(),
+                                'reference': interaction['answer'],
+                                'done': is_last_interaction,
+                            }
+                            episode_steps.append(trajectory)
+                            episode_rewards.append(reward)
+
+                            # 13. Set previous and current interaction query and generated answer (batches), as saved data for next interaction
+                            if not (self.strategy == MrlStrategy.LONG_RANGE_STRATEGY and i == 0):
+                                prev_interaction = (query, answer)
+                            query, answer = interaction['query'], (interaction['answer'] if self.teacher_forcing else cpu_detached_answer)
+
+                        # 14. Append full batched episode (number of steps depends on curriculum stage) to trajectories
+                        episode_trajectory: MrlTrajectoryEpisode = {
+                            'reset_stm': reset_done,
+                            'steps': episode_steps,
+                        }
+                        trajectories.append(episode_trajectory)
+
+                        mean_episode_reward = torch.stack(episode_rewards).mean().item()
+
+                        self._collect_writer(mean_episode_reward, epoch)
+
+                        # 15. Run "on episode collected" callbacks
+                        for cb in self.callbacks:
+                            cb.on_episode_collected(self.actor, batch_idx, episode_trajectory, mean_episode_reward)
 
         return trajectories
 
@@ -969,10 +1042,15 @@ class MRLTrainer:
             if valid_len > 0:
                 new_logits[i, :valid_len] = logits[i, start:end]
 
+        # 3. Shift sequences for correct probabilities alignment
+        shifted_logits = new_logits[:, :-1, :] # Remove last sequence element logits - most likely padding or [EOS]
+        shifted_targets = action['input_ids'][:, 1:] # Remove first answer token - deterministic [A] token
+        shifted_mask = answer_mask[:, 1:] # Remove also first position from attention mask
+
         # 4. Calculate and mask new shifted log probs
-        new_log_probs = F.log_softmax(new_logits, dim=-1)
-        log_probs = new_log_probs.gather(-1, action['input_ids'].unsqueeze(-1)).squeeze(-1)
-        log_probs *= answer_mask
+        new_log_probs = F.log_softmax(shifted_logits, dim=-1)
+        log_probs = new_log_probs.gather(-1, shifted_targets.unsqueeze(-1)).squeeze(-1)
+        log_probs *= shifted_mask
 
         return log_probs
 
@@ -1017,6 +1095,13 @@ class MRLTrainer:
             # 7. Accumulate losses for epoch callbacks
             critic_loss_sum += critic_loss
             policy_loss_sum += policy_loss
+
+        if self.replay_buffer is not None:
+            print('Updating replay buffer')
+            if self.replay_buffer.initialized:
+                self.replay_buffer.update(trajectories)
+            else:
+                self.replay_buffer.initialize(trajectories)
 
         # 8. Return policy and critic mean losses for epoch callbacks
         return policy_loss_sum / self.update_epochs, critic_loss_sum / self.update_epochs
@@ -1285,6 +1370,11 @@ class MRLTrainer:
         elif self.optim_config != self.base_optim_config:
             self.optim_config = self.base_optim_config
             self.optimizer, self.critic_optimizer = self._init_optimizers(**self.optim_config)
+
+        if 'replay_buffer' in config and config['replay_buffer'] is not None:
+            self.replay_buffer = config['replay_buffer']
+        else:
+            self.replay_buffer = None
 
         # 2. Get epochs and random resets configs
         epochs = config.get('epochs', 5)  # number of epochs for current stage

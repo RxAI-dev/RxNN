@@ -265,16 +265,15 @@ class IMPOAlgorithm(RlAlgorithm):
         shifted_logits = new_logits[:, :-1, :] # Remove last sequence element logits - most likely padding or [EOS]
         shifted_targets = answer['input_ids'][:, 1:] # Remove first answer token - deterministic [A] token
         shifted_mask = answer_mask[:, 1:] # Remove also first position from attention mask
-        shifted_old_log_probs = old_log_probs[:, 1:] # And from old log probs - it's for [A] deterministic token
 
         # 4. Calculate and mask new shifted log probs
         new_log_probs = F.log_softmax(shifted_logits, dim=-1)
         shifted_log_probs = new_log_probs.gather(-1, shifted_targets.unsqueeze(-1)).squeeze(-1)
         shifted_log_probs *= shifted_mask
-        shifted_old_log_probs *= shifted_mask
+        old_log_probs *= shifted_mask
 
         # 5. Calculate ratio
-        ratio = (shifted_log_probs - shifted_old_log_probs).exp()
+        ratio = (shifted_log_probs - old_log_probs).exp()
 
         advantages = advantages.unsqueeze(-1)
 

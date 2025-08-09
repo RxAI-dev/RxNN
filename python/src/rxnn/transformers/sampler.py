@@ -367,16 +367,7 @@ class BatchSampler:
                 generated_ids[i, :gen_len] = working_ids[i, start-1:end] # -1 to include [A] token
                 generated_mask[i, :gen_len] = working_mask[i, start-1:end] # -1 to include [A] token
 
-        # Add hardcoded (high probability) log probs for [A] token - it will be then removed from calculation in shift
-        prepended_log_probs = torch.cat([
-            torch.full(
-                (log_probs.size(0), 1), -1e-5,
-                device=log_probs.device, dtype=log_probs.dtype
-            ),
-            log_probs[:, :-1]
-        ], dim=-1)
-
-        return generated_ids, generated_mask, prepended_log_probs
+        return generated_ids, generated_mask, log_probs
 
 
 class BatchSampleDecoder:
