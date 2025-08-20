@@ -83,7 +83,7 @@ class StmMemoryAttention(nn.Module):
 
             # 6. Calculate memory attention and update layer
             new_stm[i] = self._main_attention(i, x, layer_stm, mask=attention_mask)
-        # 11. Update all layers/models
+        # 11. Update all layers
         self.stm.update_all(new_stm)
         return self.stm.memory
 
@@ -145,7 +145,7 @@ class InterlayerStmMemoryAttention(StmMemoryAttention):
 
             # 9. Main memory attention
             new_stm[i] = self._main_attention(i, x, updated_layer_stm, mask=attention_mask)
-        # 10. Update all layers/models
+        # 10. Update all layers
         self.stm.update_all(new_stm)
         return self.stm.memory
 

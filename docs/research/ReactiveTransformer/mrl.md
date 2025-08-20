@@ -1,23 +1,36 @@
-# Reactive Transformer Training: Memory Reinforcement Learning & Reinforcement Learning From Human Feedback for Reactive Models
+# Reactive Transformer: Memory Reinforcement Learning for Attention-Based Memory System
 Draft by Adam Filipek/Reactive AI (adamfilipek@rxai.dev)
 
 > After MRL experiments this draft is little outdated - it will be updated soon
 
+## Abstract
+**Reactive Transformer (RxT)**, the world's first **Reactive Language Model (RxLM)** architecture, is a breakthrough in the way artificial
+intelligence works, as well as in its computational cost. Real-time, stateful processing of individual interactions and transferring context
+to dedicated memory layers is a crucial milestone for upcoming awareness models and AGI, but training such an advanced system is a much bigger
+challenge than training stateless **Large Language Models (LLM)**. The initial, supervised training stages were designed to maximize preparation
+for the final stages of reinforcement learning. These stages alone are insufficient to achieve the full functionality of an **Attention-Based Memory System (ABMS)**,
+as supervised training cannot replicate the full dynamics of **Reactive Neural Networks (RxNN)**. The concepts of **Event-Driven AI** and **RxNN**
+implemented in **RxT** are strongly linked to the theoretical foundations of reinforcement learning – the model operates according to the principles
+of a _Markov chain_, with each subsequent interaction dependent on the previous state.
+
+In this research, we present "Memory Reinforcement Learning", the most important step in training **RxLMs**, that transforms a "weak" supervised
+memory system into a fully functional **ABMS**, together with the **Implicit Memory Policy Optimization (IMPO)** algorithm, which is an extension
+of **PPO** dedicated to memory learning.
+
 ### Memory Reinforcement Learning (MRL)
 **Memory Reinforcement Learning** is a crucial step for all the reactive models, as it finally training models for inter-sequence memory
-retention. It's based on _Curriculum Learning_ concept, starting from single step retention, up to long-term multistep retention. Short-Term
-Memory is treated as model's internal state, that's not observable by the RL environment - its influence is implicitly deducted from processed
-interactions. Then, rewards and advantages are not calculated from STM states, but from input/output sequences (interactions).
+retention. It's based on _Curriculum Learning_ concept, starting from single topic multistep retention, up to long-range multi-topic retention.
+**Short-Term Memory (STM)** is treated as model's internal state, that's not observable by the RL environment - its influence is implicitly
+deducted from processed interactions. Then, rewards and advantages are not calculated from STM states, but from input/output sequences (interactions).
 
-Technically, it's very similar to RLHF, but with different goals and rewards - remember the previous interactions, instead of more human-like
-text processing in RLHF.
+It's inspired by RLHF, but it has different goals and rewards - remember the previous interactions, instead of more human-like text processing in RLHF.
 
 #### MRL Training Curriculum
 The flow of Memory Reinforcement Learning is rather simple and has a little reversed order. We are starting from passing a complete interaction
 with question and answer about data that we want to save in memory, to the components responsible for update: encoder and memory-attention layers.
 Encoder will transform the interaction with data to its abstract representation in the memory latent spaces, then the results are passed to each
-memory attention layer (as keys/values), to be combined with previous layer's STM state (used as a query). New combined data is then added to
-current STM state with residual connection - memory should be updated (of course not at the beginning of training).
+memory attention network's layer, to be combined with previous layer's STM state . New updated data is then dynamically combined with current STM
+state by Residual Gate - memory should be updated (of course not at the beginning of training).
 
 Then, the process depends on the curriculum step:
 - on the start, it's a single interaction retention, so decoder takes the question about saved data as an input and have to generate the response,
@@ -135,18 +148,5 @@ Our **RxNN** library (based on **PyTorch**) is already integrated with **Hugging
 decoders. We provide our custom implementation. Our datasets (connected to specialized trainer) are extending **PyTorch Datasets**
 and some features from **HuggingFace Datasets**, especially for loading them from [Hub](https://huggingface.co).
 Trainers are specialized for training tasks, like autoregressive/masked language modeling - for MRL there's separate module `rxnn.training.mrl`.
-
-### Reinforcement Learning from Human Feedback for Reactive Models (RxRLHF)
-In the last training stage, after the model is able to correctly use its Short-Term Memory, it should be finally trained on
-human preferences' alignment. During **RxRLHF** model is improving the dialog quality, just like in regular **RLHF**. The only
-difference is in real-time processing, so it needs specialized datasets and different environment handling, but it should be
-simply - just not use full history as inputs, but only single interactions. According to that difference, we have to extend
-the HuggingFace `trl` implementation in our **RxNN** framework.
-
-#### Combining MRL and RxRLHF
-As the MRL is very similar to RLHF and the most noticeable difference is the rewarding scheme, it could be possible to combine
-these stages, by adding the conversation quality reward to MRL. In this mode, each interaction will get 2 rewards - for memory
-retention and for response/answer quality. It should save a time and resources, but the training may be less stable. We have
-to check separate steps and if we achieve success, then we could check the combined approach
 
 ### Research in progress

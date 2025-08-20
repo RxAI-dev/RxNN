@@ -89,6 +89,12 @@ class MrlReplayBuffer:
     def __getitem__(self, idx: int) -> MrlTrajectoryEpisode:
         return self.trajectories[idx]['episode']
 
+    def __call__(self, collected: list[MrlTrajectoryEpisode]):
+        if self.initialized:
+            return self.update(collected)
+        else:
+            return self.initialize(collected)
+
     def reset(self):
         self.trajectories = []
         self.initialized = False
@@ -102,14 +108,23 @@ class MrlReplayBuffer:
         }
 
     def initialize(self, collected: list[MrlTrajectoryEpisode]):
+        # 1. Init - get all collected episode scores (reward mean - reward std)
         processed = [{ **self._process_episode(ep), 'age': 0 } for ep in collected]
+        # 2. Sort collected episodes by highest score
         processed.sort( key=lambda ep: ep['score'], reverse=True)
+        # 3. Save N episodes with the highest score
         self.trajectories = processed[:self.size]
+        # 4. Shuffle episodes for next run
         self.trajectories.sort(key=lambda _: random.random())
+        # 5. Set Buffer as initialized
         self.initialized = True
 
     def update(self, collected: list[MrlTrajectoryEpisode]):
+        # 1. Update - increment age of buffered episodes
         self.trajectories = [{ **traj, 'age': traj['age'] + 1 } for traj in self.trajectories]
+        # 2. Sort buffered episodes by lowest score
+        self.trajectories.sort( key=lambda ep: ep['score'])
+        # 3. Remove the oldest episodes (starting from lower score)
         filtered, removed  = [], 0
         for traj in self.trajectories:
             if traj['age'] >= self.max_age and removed < self.update_size:
@@ -117,19 +132,19 @@ class MrlReplayBuffer:
             else:
                 filtered.append(traj)
 
+        # 4. When there wasn't enough old episodes, remove those with the lowest scores
         if removed < self.update_size:
-            filtered.sort(key=lambda ep: ep['score'])
             filtered = filtered[self.update_size - removed:]
 
-        self.trajectories = filtered
-
-        processed_collected = [{ **self._process_episode(ep), 'age': 0 } for ep in collected]
+        # 5. Get processed episodes from new collected ones
+        processed_collected = [{ **self._process_episode(ep), 'age': 0 } for ep in collected[self.size:]]
+        # 6. Sort collected episodes by the highest scores
         processed_collected.sort( key=lambda ep: ep['score'], reverse=True)
-        new_collected = processed_collected[:self.update_size]
-
-        self.trajectories = (self.trajectories + new_collected)
+        # 7. Save filtered buffered and new collected episodes as new buffered episodes
+        self.trajectories = (filtered + processed_collected[:self.update_size])
+        # 8. Shuffle episodes for the next run
         self.trajectories.sort(key=lambda _: random.random())
-
+        # 9. Assert correct size of the buffer
         assert len(self.trajectories) == self.size
 
 
@@ -754,22 +769,16 @@ class MRLTrainer:
         print(f"----- Decoder grad norm - total: {decoder_total:.6f}, mean: {decoder_mean:.6f}")
         print(f"----- Memory attention grad norm - total: {mem_att_total:.6f}, mean: {mem_att_mean:.6f}")
 
-        enc_mem_total, enc_mem_mean = get_gradient_norms(self.actor.encoder.memory_parameters())
-        enc_not_mem_total, enc_not_mem_mean = get_gradient_norms(self.actor.encoder.not_memory_parameters())
         dec_mem_total, dec_mem_mean = get_gradient_norms(self.actor.decoder.memory_parameters())
         dec_not_mem_total, dec_not_mem_mean = get_gradient_norms(self.actor.decoder.not_memory_parameters())
 
         print(f"----- Decoder memory params grad norm - total: {dec_mem_total:.6f}, mean: {dec_mem_mean:.6f}")
         print(f"----- Decoder not memory params grad norm - total: {dec_not_mem_total:.6f}, mean: {dec_not_mem_mean:.6f}")
-        print(f"----- Encoder memory params grad norm - total: {enc_mem_total:.6f}, mean: {enc_mem_mean:.6f}")
-        print(f"----- Encoder not memory params grad norm - total: {enc_not_mem_total:.6f}, mean: {enc_not_mem_mean:.6f}")
 
         if self.writer is not None:
             self.writer.add_scalar('Gradient/encoder', encoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder', decoder_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/mem-att', mem_att_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder memory', enc_mem_mean, self.global_step['train'])
-            self.writer.add_scalar('Gradient/encoder not memory', enc_not_mem_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder memory', dec_mem_mean, self.global_step['train'])
             self.writer.add_scalar('Gradient/decoder not memory', dec_not_mem_mean, self.global_step['train'])
 
@@ -1099,10 +1108,7 @@ class MRLTrainer:
 
         if self.replay_buffer is not None:
             print('Updating replay buffer')
-            if self.replay_buffer.initialized:
-                self.replay_buffer.update(trajectories)
-            else:
-                self.replay_buffer.initialize(trajectories)
+            self.replay_buffer(trajectories)
 
         # 8. Return policy and critic mean losses for epoch callbacks
         return policy_loss_sum / self.update_epochs, critic_loss_sum / self.update_epochs
