@@ -176,13 +176,13 @@ class MrlActorModel(nn.Module):
         """Freeze encoder/decoder except memory-related layers."""
         # Freeze/unfreeze encoder
         if self.encoder.freeze_all is not None:
-            if stage == 'update' or stage == 'fetch':
+            if stage == 'update':
                 self.encoder.unfreeze_all()
             else:
                 self.encoder.freeze_all()
         else:
             for param in self.encoder.parameters():
-                param.requires_grad = True if stage != 'warmup' else False
+                param.requires_grad = True if stage == 'update' else False
 
         # Freeze/unfreeze decoder
         if self.decoder.freeze_without_memory is not None:

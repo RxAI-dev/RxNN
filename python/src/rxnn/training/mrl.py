@@ -1250,18 +1250,7 @@ class MRLTrainer:
     def _apply_unfreeze_strategy(self, epoch: int, unfreeze_epoch: UnfreezeEpochsStrategy):
         is_scheduled_unfreeze = isinstance(unfreeze_epoch, tuple)
         if is_scheduled_unfreeze:
-            update_epoch, fetch_epoch, all_epoch = unfreeze_epoch
-
-            if isinstance(update_epoch, tuple):
-                switch_epoch, decoder_lr = update_epoch
-                if epoch == switch_epoch:
-                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
-                    self.optimizer = self._init_unfreeze_optimizer('update', decoder_lr)
-                    print(f"Activating 'update' unfreeze strategy with custom decoder lr: {decoder_lr}")
-            elif epoch == update_epoch:
-                self.actor.freeze_components('update', freeze_embeddings=self.freeze_embeddings)
-                print(
-                    f"Activating 'update' unfreeze strategy - memory-attention and encoder trainable / decoder frozen")
+            fetch_epoch, update_epoch, all_epoch = unfreeze_epoch
 
             if isinstance(fetch_epoch, tuple):
                 switch_epoch, decoder_lr = fetch_epoch
@@ -1273,7 +1262,16 @@ class MRLTrainer:
                 self.actor.freeze_components('fetch', freeze_embeddings=self.freeze_embeddings)
                 print(
                     f"Activating 'fetch' unfreeze strategy - memory-attention, encoder and decoder cross-attention trainable / rest of decoder frozen")
-
+            if isinstance(update_epoch, tuple):
+                switch_epoch, decoder_lr = update_epoch
+                if epoch == switch_epoch:
+                    self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
+                    self.optimizer = self._init_unfreeze_optimizer('update', decoder_lr)
+                    print(f"Activating 'update' unfreeze strategy with custom decoder lr: {decoder_lr}")
+            elif epoch == update_epoch:
+                self.actor.freeze_components('update', freeze_embeddings=self.freeze_embeddings)
+                print(
+                    f"Activating 'update' unfreeze strategy - memory-attention and encoder trainable / decoder frozen")
             if epoch == all_epoch:
                 self.actor.unfreeze_components(freeze_embeddings=self.freeze_embeddings)
                 self.optimizer = self._init_unfreeze_optimizer('all', 0.)
