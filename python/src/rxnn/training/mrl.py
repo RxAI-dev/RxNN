@@ -817,6 +817,9 @@ class MRLTrainer:
         # 5. Get updated STM state
         updated_stm = self.actor.memory_attention.model.stm.memory.clone()
 
+        # Remove last item from old_log_probs in 'collect' mode
+        old_log_probs = old_log_probs[:, :-1] if self.log_probs_source == 'collect' else old_log_probs
+
         # 6. Update actor - with autocast on/off
         if self.use_amp:
             with torch.amp.autocast(device_type=self.device.type, dtype=self.dtype):
